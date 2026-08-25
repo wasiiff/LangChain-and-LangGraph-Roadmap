@@ -70,13 +70,13 @@ Async/await, TypeScript basics, Pydantic and Zod are all taught in [Day 03](week
 
 | Day | Topic | |
 |---|---|---|
-| 08 | Chains: sequential, parallel, router, conversation, document chains | *coming next* |
-| 09 | Documents, loaders, splitting & chunking strategy | *coming next* |
-| 10 | Embeddings deep dive & similarity metrics (worked by hand) | *coming next* |
-| 11 | Vector databases: HNSW, metadata filters, hybrid search | *coming next* |
-| 12 | **Naive RAG end-to-end** — then break it on purpose | *coming next* |
-| 13 | Advanced RAG: reranking, HyDE, multi-query, Corrective/Self/Adaptive RAG | *coming next* |
-| 14 | Memory — and how it *really* works in modern LangChain · Week-2 project | *coming next* |
+| 08 | Chains: sequential, parallel, router & **document chains** | [→](week-02-data-embeddings-and-rag/day-08-chains.md) |
+| 09 | Documents, loaders, splitting & chunking strategy | [→](week-02-data-embeddings-and-rag/day-09-documents-and-splitting.md) |
+| 10 | Embeddings deep dive & similarity metrics (worked by hand) | [→](week-02-data-embeddings-and-rag/day-10-embeddings.md) |
+| 11 | Vector databases: HNSW, metadata filters, **hybrid search** | [→](week-02-data-embeddings-and-rag/day-11-vector-databases.md) |
+| 12 | **Naive RAG end-to-end** — then break it six ways on purpose | [→](week-02-data-embeddings-and-rag/day-12-naive-rag.md) |
+| 13 | Advanced RAG: reranking, HyDE, multi-query, Corrective/Self/Adaptive | [→](week-02-data-embeddings-and-rag/day-13-advanced-rag.md) |
+| 14 | Memory — and how it *really* works now · Week-2 project | [→](week-02-data-embeddings-and-rag/day-14-memory.md) |
 
 ### 🟠 Week 3 — Tools, Agents & LangGraph
 *Goal: build things that decide, act, loop, and can be paused for a human.*
@@ -114,7 +114,7 @@ Async/await, TypeScript basics, Pydantic and Zod are all taught in [Day 03](week
 | [resources/glossary.md](resources/glossary.md) | Every term in this book, one line each |
 | `resources/cheatsheet-lcel.md` | Runnables at a glance |
 | `resources/cheatsheet-langgraph.md` | Graph API at a glance |
-| `resources/cheatsheet-rag-patterns.md` | Which RAG pattern for which problem |
+| [resources/cheatsheet-rag-patterns.md](resources/cheatsheet-rag-patterns.md) | Which RAG pattern for which problem |
 | `resources/js-vs-python-mapping.md` | Every API, JS name ↔ Python name |
 | `resources/interview-bank.md` | ~150 questions with answers |
 | `resources/capstone-projects.md` | 12 project specs with architecture |
@@ -128,11 +128,12 @@ Rather than 28 disconnected toy examples, one product grows through the whole bo
 
 ```
 Day 07  StudyBuddy v1   a CLI tutor that explains topics at your level
-Day 12  StudyBuddy v2   + reads your lecture PDFs and cites page numbers
-Day 16  StudyBuddy v3   + uses tools (calculator, web search, your notes)
-Day 21  StudyBuddy v4   + a LangGraph agent that asks permission before acting
-Day 22  StudyBuddy v5   + a team of agents: researcher, writer, quiz-master
-Day 27  StudyBuddy v6   + deployed, streaming, observed, and rate-limited
+Day 12  StudyBuddy v2   + reads your documents and cites verified sources
+Day 14  StudyBuddy v3   + reranking, and memory that survives across sessions
+Day 16  StudyBuddy v4   + uses tools (calculator, web search, your notes)
+Day 21  StudyBuddy v5   + a LangGraph agent that asks permission before acting
+Day 22  StudyBuddy v6   + a team of agents: researcher, writer, quiz-master
+Day 27  StudyBuddy v7   + deployed, streaming, observed, and rate-limited
 ```
 
 Every day you add one capability to something real.

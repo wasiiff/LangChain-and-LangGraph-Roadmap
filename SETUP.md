@@ -57,6 +57,11 @@ Verify it's running:
 ollama run llama3.2 "say hi in five words"
 ```
 
+> ⚠️ **Groq has no embeddings endpoint.** From Week 2 (Day 10) onward, embeddings come from
+> **Ollama** (`nomic-embed-text`, local and free) or **Google** (`text-embedding-004`, free tier).
+> Chat still uses Groq. If you only set up one extra thing for Week 2, make it `ollama pull
+> nomic-embed-text`.
+
 > 💡 **Why bother with Ollama?** Three reasons: (1) zero rate limits while you're hammering
 > the API doing exercises, (2) you learn that *the model is just a swappable component*,
 > (3) some jobs require on-prem models for privacy — knowing Ollama is a real interview edge.
@@ -160,10 +165,10 @@ npm init -y
 npm install langchain @langchain/core @langchain/groq @langchain/google-genai zod dotenv
 
 # Week 2 — RAG (install when you get there)
-npm install @langchain/community @langchain/textsplitters pdf-parse chromadb
+npm install @langchain/classic @langchain/textsplitters @langchain/community @langchain/ollama chromadb
 
 # Week 3 — agents & graphs
-npm install @langchain/langgraph @langchain/ollama
+npm install @langchain/langgraph
 ```
 
 ### Verify
@@ -231,10 +236,10 @@ after this will install to the wrong place.
 pip install langchain langchain-groq langchain-google-genai pydantic python-dotenv
 
 # Week 2 — RAG
-pip install langchain-community langchain-text-splitters pypdf chromadb
+pip install langchain-classic langchain-text-splitters langchain-community langchain-ollama langchain-chroma pypdf
 
-# Week 3 — agents & graphs
-pip install langgraph langchain-ollama
+# Week 3 — agents & graphs  (langgraph already ships with langchain 1.x in Python)
+pip install langgraph
 ```
 
 ### Verify
