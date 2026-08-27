@@ -83,13 +83,13 @@ Async/await, TypeScript basics, Pydantic and Zod are all taught in [Day 03](week
 
 | Day | Topic | |
 |---|---|---|
-| 15 | Tools: creating, calling, schemas, errors, retries | *coming next* |
-| 16 | Agents from first principles — hand-build ReAct in 40 lines | *coming next* |
-| 17 | LangGraph basics: `StateGraph`, nodes, edges, compile, visualize | *coming next* |
-| 18 | State & reducers · state vs memory vs context vs store vs checkpoint | *coming next* |
-| 19 | Conditional edges, loops, `Command`, `Send` fan-out, subgraphs | *coming next* |
-| 20 | Persistence & checkpointing, threads, time travel | *coming next* |
-| 21 | Human-in-the-loop: `interrupt`, resume, approve/reject/edit · Week-3 project | *coming next* |
+| 15 | Tools: creating, calling, schemas, errors, retries | [→](week-03-tools-agents-and-langgraph/day-15-tools.md) |
+| 16 | Agents from first principles — hand-build ReAct in 40 lines | [→](week-03-tools-agents-and-langgraph/day-16-agents.md) |
+| 17 | LangGraph basics: `StateGraph`, nodes, edges, compile, visualize | [→](week-03-tools-agents-and-langgraph/day-17-langgraph-basics.md) |
+| 18 | State & reducers · state vs memory vs context vs store vs checkpoint | [→](week-03-tools-agents-and-langgraph/day-18-state-and-reducers.md) |
+| 19 | Conditional edges, loops, `Command`, `Send` fan-out, subgraphs | [→](week-03-tools-agents-and-langgraph/day-19-control-flow.md) |
+| 20 | Persistence & checkpointing, threads, time travel | [→](week-03-tools-agents-and-langgraph/day-20-persistence-and-checkpointing.md) |
+| 21 | Human-in-the-loop: `interrupt`, resume, approve/reject/edit · Week-3 project | [→](week-03-tools-agents-and-langgraph/day-21-human-in-the-loop.md) |
 
 ### 🔴 Week 4 — Multi-agent, Production, Projects & Interviews
 *Goal: ship it, watch it, and talk about it convincingly.*
