@@ -1,0 +1,9 @@
+.env
+node_modules/
+__pycache__/
+.venv/
+*.db
+chroma_db/
+JS/
+Python/
+langchain-practice/
