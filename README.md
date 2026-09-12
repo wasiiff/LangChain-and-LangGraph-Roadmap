@@ -96,10 +96,10 @@ Async/await, TypeScript basics, Pydantic and Zod are all taught in [Day 03](week
 
 | Day | Topic | |
 |---|---|---|
-| 22 | Multi-agent: supervisor, hierarchical, handoffs — and when it backfires | *coming next* |
-| 23 | Streaming & events: stream modes, token streaming to a UI, SSE | *coming next* |
-| 24 | Reliability: retries, fallbacks, timeouts, circuit breakers, guardrails | *coming next* |
-| 25 | Observability & evaluation: LangSmith, datasets, LLM-as-judge, RAG metrics | *coming next* |
+| 22 | Multi-agent: supervisor, hierarchical, handoffs — and when it backfires | [→](week-04-production-projects-and-interviews/day-22-multi-agent.md) |
+| 23 | Streaming & events: stream modes, token streaming to a UI, SSE | [→](week-04-production-projects-and-interviews/day-23-streaming-and-events.md) |
+| 24 | Reliability: retries, fallbacks, timeouts, circuit breakers, guardrails | [→](week-04-production-projects-and-interviews/day-24-reliability.md) |
+| 25 | Observability & evaluation: LangSmith, datasets, LLM-as-judge, RAG metrics | [→](week-04-production-projects-and-interviews/day-25-observability-and-evaluation.md) |
 | 26 | **MCP** (servers, clients, transports, security) + **Vercel AI SDK** compared | *coming next* |
 | 27 | Deployment & architecture: Docker, serverless, queues, scaling to 1M users | *coming next* |
 | 28 | **12 capstone projects** + **interview crash course** & mock interviews | *coming next* |
