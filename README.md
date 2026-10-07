@@ -100,9 +100,9 @@ Async/await, TypeScript basics, Pydantic and Zod are all taught in [Day 03](week
 | 23 | Streaming & events: stream modes, token streaming to a UI, SSE | [→](week-04-production-projects-and-interviews/day-23-streaming-and-events.md) |
 | 24 | Reliability: retries, fallbacks, timeouts, circuit breakers, guardrails | [→](week-04-production-projects-and-interviews/day-24-reliability.md) |
 | 25 | Observability & evaluation: LangSmith, datasets, LLM-as-judge, RAG metrics | [→](week-04-production-projects-and-interviews/day-25-observability-and-evaluation.md) |
-| 26 | **MCP** (servers, clients, transports, security) + **Vercel AI SDK** compared | *coming next* |
-| 27 | Deployment & architecture: Docker, serverless, queues, scaling to 1M users | *coming next* |
-| 28 | **12 capstone projects** + **interview crash course** & mock interviews | *coming next* |
+| 26 | **MCP** (servers, clients, transports, security) + **Vercel AI SDK** compared | [→](week-04-production-projects-and-interviews/day-26-mcp-and-ai-sdk.md) |
+| 27 | Deployment & architecture: Docker, serverless, queues, scaling to 1M users | [→](week-04-production-projects-and-interviews/day-27-deployment-and-architecture.md) |
+| 28 | **12 capstone projects** + **interview crash course** & mock interviews | [→](week-04-production-projects-and-interviews/day-28-capstones-and-interviews.md) |
 
 ---
 
@@ -112,13 +112,23 @@ Async/await, TypeScript basics, Pydantic and Zod are all taught in [Day 03](week
 |---|---|
 | [SETUP.md](SETUP.md) | Free API keys, Node & Python environments, `.env`, verification script |
 | [resources/glossary.md](resources/glossary.md) | Every term in this book, one line each |
-| `resources/cheatsheet-lcel.md` | Runnables at a glance |
-| `resources/cheatsheet-langgraph.md` | Graph API at a glance |
+| [resources/cheatsheet-lcel.md](resources/cheatsheet-lcel.md) | Runnables at a glance |
+| [resources/cheatsheet-langgraph.md](resources/cheatsheet-langgraph.md) | Graph API at a glance |
 | [resources/cheatsheet-rag-patterns.md](resources/cheatsheet-rag-patterns.md) | Which RAG pattern for which problem |
-| `resources/js-vs-python-mapping.md` | Every API, JS name ↔ Python name |
-| `resources/interview-bank.md` | ~150 questions with answers |
-| `resources/capstone-projects.md` | 12 project specs with architecture |
-| `resources/troubleshooting.md` | Error message → cause → fix |
+| [resources/js-vs-python-mapping.md](resources/js-vs-python-mapping.md) | Every API, JS name ↔ Python name, day by day |
+| [resources/interview-bank.md](resources/interview-bank.md) | 378 questions with model answers |
+| [resources/capstone-projects.md](resources/capstone-projects.md) | 12 project specs, tiers and a skills matrix |
+| [resources/troubleshooting.md](resources/troubleshooting.md) | Exact error text → cause → fix, plus silent failures |
+
+### For maintainers of this book
+
+| File | What's in it |
+|---|---|
+| [KB/README.md](KB/README.md) | The knowledge base: how to pick this book up and change it correctly |
+| [KB/03-verified-findings.md](KB/03-verified-findings.md) | Every behaviour that was verified by running it, with the evidence |
+| [CLAUDE.md](CLAUDE.md) | The five rules any contributor (human or AI) follows here |
+| `tools/verify.py` | Links, structure, language parity and stats for the whole repo |
+| `tools/gen_resources.py` | Regenerates the three generated reference files from the day files |
 
 ---
 
