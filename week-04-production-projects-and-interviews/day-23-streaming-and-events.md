@@ -2,11 +2,25 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 22](day-22-multi-agent.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** how to show the user what's happening *while* it happens. The five
-kinds of things a LangGraph run can stream, how to pick out only the tokens a user should
-see, custom progress events from inside nodes and tools, streaming a multi-agent system,
-and how to get all of it to a browser over Server-Sent Events. Plus cancellation — where
-JavaScript and Python behave **differently**, and the difference costs real money.
+**Today you learn:** An agent that shows nothing for eight seconds feels broken, even when it
+works. Today you show the user what's happening *while* it happens: progress lines, the
+answer word by word, and **custom events** from inside nodes and tools. You send all of it
+to a browser over **Server-Sent Events**. You also learn **cancellation**, where JavaScript and Python
+behave **differently** — and the difference costs real money.
+
+> 📖 **Words you'll meet today**
+>
+> - **Streaming** — sending output piece by piece as it is produced, not all at once at the end.
+> - **Stream mode** — the kind of pieces a LangGraph run sends: full state, node results,
+>   tokens, or your own events.
+> - **Token chunk** — a small piece of the model's answer, sent as soon as it is generated.
+> - **Custom event** — a progress message your own code sends from inside a node or tool.
+> - **Server-Sent Events (SSE)** — a simple one-way format for streaming text from a server to
+>   a browser over ordinary HTTP.
+> - **Cancellation** — stopping a run when nobody is waiting for its result any more.
+> - **Buffering** — something between your server and the browser holding the response back
+>   until it is complete.
+> - **Perceived latency** — how long the wait *feels* to the user, not the total time.
 
 ---
 
@@ -51,9 +65,12 @@ A restaurant. Two kitchens, same food, same 20-minute wait.
                Starters one at a time as they're ready.
 ```
 
-Kitchen B isn't faster. It's **legible**. Streaming is how you make an AI system legible:
-progress (what stage are we at), partial results (the answer as it's written), and honest
-status (it's still working, and here's what it's doing).
+Kitchen B isn't faster. It's **legible** — you can see what's going on. Streaming makes an AI
+system legible in three ways:
+
+- **progress** — what stage are we at;
+- **partial results** — the answer as it's written;
+- **honest status** — it's still working, and here's what it's doing.
 
 ---
 
@@ -108,16 +125,19 @@ the UI understands**, and **stop the work when nobody's listening**.
 
 ### 3.1 How tokens escape a node
 
+> 💬 **In plain words:** you don't rewrite your nodes to stream. You pick a stream mode when you
+> run the graph, and the tokens flow out on their own.
+
 You've been writing nodes like this:
 
 ```js
 async (state) => ({ messages: [await model.invoke(state.messages)] })
 ```
 
-That's `invoke`, not `stream` — so how can the tokens be streamed? Because every LangChain
-model call reports events through **callbacks**, and when you run a graph with
-`streamMode: "messages"`, LangGraph attaches a handler that forwards each token as it's
-generated. The node still receives the complete message at the end; your loop receives the
+That's `invoke`, not `stream` — so how can the tokens be streamed? Every LangChain model call
+reports events through **callbacks** (functions the library calls as things happen). When
+you run a graph with `streamMode: "messages"`, LangGraph attaches a handler that forwards
+each token as it's generated. The node still receives the complete message at the end; your loop receives the
 pieces along the way.
 
 Verified: a node calling `model.invoke(...)` produced a stream of `AIMessageChunk`s tagged
@@ -126,8 +146,11 @@ stream mode when you run the graph.
 
 ### 3.2 The modes, measured
 
-A two-node graph — `research` emits two custom progress events, `answer` calls a model —
-streamed in each mode (identical shape in both languages):
+> 💬 **In plain words:** each mode sends a different kind of piece — whole state, node results,
+> tokens or your own events. Pick the smallest one your screen needs.
+
+Here is a two-node graph streamed in each mode. `research` emits two custom progress events,
+and `answer` calls a model. The shape is identical in both languages:
 
 ```
    mode         chunks   first chunk
@@ -147,15 +170,18 @@ Things to notice:
   ran. And each chunk is the whole state, which is why it's the wrong thing to send to a
   browser once state gets large.
 - **`messages` chunk size depends on the model.** Real providers stream roughly token by
-  token. The fake test models used here split differently (JS's `FakeListChatModel` by
-  character, Python's `GenericFakeChatModel` by word), which is why the counts differ between
-  languages in this chapter's tests — that's the fakes, not LangGraph.
+  token. The fake test models used here split differently: JS's `FakeListChatModel` by
+  character, Python's `GenericFakeChatModel` by word. That's why the counts differ between
+  languages in this chapter's tests. The difference comes from the fakes, not LangGraph.
 - **`checkpoints` needs a checkpointer.** Without one it fails with an unhelpful error (JS:
   `Cannot read properties of undefined (reading 'slice')`; Python: `IndexError: list index out
   of range`). With one, you get each checkpoint's `next` as it's written: `[__start__]`,
   `[a]`, `[]`. The parent-config key is `parentConfig` in JS and `parent_config` in Python.
 
 ### 3.3 The `messages` tuple — and why you must filter it
+
+> 💬 **In plain words:** every model in the graph streams its words, not only the one answering
+> the user. Label the answering model and forward only its words.
 
 Each `messages` chunk arrives with metadata:
 
@@ -164,8 +190,8 @@ Each `messages` chunk arrives with metadata:
      { langgraph_node: "answer", tags: ["final"], … } ]
 ```
 
-That metadata is what saves you, because **every model call in the graph streams** — the
-router, the classifier, the grader, the supervisor deciding who to call. Verified: a graph
+That metadata is what saves you. **Every model call in the graph streams** — the router, the
+classifier, the grader, the supervisor deciding who to call. Verified: a graph
 with a `route` node and a `write` node streamed tokens from *both*. If you forward
 everything, the user watches your router think "ROUTE" before the answer starts.
 
@@ -181,6 +207,9 @@ Verified: tagging the answering model `final` and filtering on the tag produced 
 `"final answer"` — none of the router's tokens.
 
 ### 3.4 Custom events
+
+> 💬 **In plain words:** your code can send its own progress messages from inside a node or a
+> tool. They reach the user at once and are never saved.
 
 Some progress lives *inside* a node: "fetched 3 of 10 sources", "retrying the database".
 Custom events let a node or a tool emit anything, on demand:
@@ -198,6 +227,9 @@ Verified in both languages: events emitted from a node **and from inside a tool 
 > are free, immediate, and never persisted.
 
 ### 3.5 Streaming a multi-agent system — the languages differ
+
+> 💬 **In plain words:** whether a specialist's words reach your stream depends on the
+> language. JavaScript includes them by default; Python includes them only when you ask.
 
 On Day 22 the specialists run *inside tools*: a separate graph invoked from a tool
 function. Do their tokens reach the parent's `messages` stream? Verified, and the answer
@@ -225,9 +257,12 @@ So:
 
 ### 3.6 `streamEvents` — the firehose
 
+> 💬 **In plain words:** this is an older, very detailed event stream — far more than you
+> usually need. For graphs, use stream modes instead.
+
 Before stream modes existed, the way to see inside a run was `streamEvents` (JS) /
 `astream_events` (Python), version `"v2"`. It emits every start, stream and end event for
-every runnable. Counted on the same two-node graph:
+every runnable — a firehose of events. Counted on the same two-node graph:
 
 ```
    JavaScript   on_chain_start 4 · on_chain_end 4 · on_chain_stream 2 ·
@@ -237,10 +272,13 @@ every runnable. Counted on the same two-node graph:
 ```
 
 It's powerful and noisy, and its exact counts are an implementation detail (note they
-differ between languages). **For graphs, prefer stream modes**; reach for `streamEvents`
-when you're streaming a plain LCEL chain, or you need an event stream modes don't provide.
+differ between languages). **For graphs, prefer stream modes.** Use `streamEvents` when
+you're streaming a plain LCEL chain, or you need an event stream modes don't provide.
 
 ### 3.7 Cancellation — where JS and Python differ
+
+> 💬 **In plain words:** when the user leaves, Python stops the run for you. JavaScript keeps
+> running — and spending money — until you stop it yourself.
 
 A user closes the tab. What happens to the run? Verified on a three-node chain
 `first → second (150 ms) → third`, stopping the consumer after the first chunk:
@@ -256,9 +294,9 @@ A user closes the tab. What happens to the run? Verified on a three-node chain
      (sync and async alike)
 ```
 
-That first JS row is the expensive one. Breaking out of the loop stops *you* reading; it
+That first JS row is the expensive one. Breaking out of the loop stops *you* reading. It
 doesn't stop the graph, which runs to the end in the background — model calls and all. In
-JS, cancellation is something you must wire:
+JS, cancellation is something you must wire up yourself:
 
 ```
    1. pass { signal } to stream()               so the graph stops between supersteps
@@ -267,11 +305,14 @@ JS, cancellation is something you must wire:
    3. abort when the client disconnects         req.on("close") / request.signal
 ```
 
-In Python, closing the generator — which is what happens when you `break`, or when a web
-framework cancels a streaming response because the client left — stops the graph before the
-next superstep. The node already running still finishes.
+In Python, closing the generator stops the graph before the next superstep. That happens
+when you `break`, or when a web framework cancels a streaming response because the client
+left. The node already running still finishes.
 
 ### 3.8 Server-Sent Events in one screen
+
+> 💬 **In plain words:** SSE is ordinary HTTP that stays open and sends short text messages,
+> each ending with a blank line.
 
 SSE is plain HTTP with a long-lived response and a tiny text format:
 
@@ -298,9 +339,9 @@ SSE is plain HTTP with a long-lived response and a tiny text format:
    exactly the shape of "stream a response"   more than you need for this
 ```
 
-For "the server streams a response to a request", SSE is the right default. The one browser
-limitation: the built-in `EventSource` only does GET and can't set headers, so for POST
-bodies or an `Authorization` header you read the stream with `fetch` instead (§4.8).
+For "the server streams a response to a request", SSE is the right default. There is one
+browser limitation. The built-in `EventSource` only does GET and can't set headers. For POST
+bodies or an `Authorization` header, read the stream with `fetch` instead (§4.8).
 
 ---
 
@@ -315,7 +356,7 @@ import { StateGraph, MessagesAnnotation, Annotation, START, END } from "@langcha
 import { HumanMessage } from "@langchain/core/messages";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const State = Annotation.Root({
   ...MessagesAnnotation.spec,
@@ -437,9 +478,9 @@ for await (const [mode, chunk] of await app.stream(input, {
 }
 ```
 
-Verified order for the research/answer graph: `custom, custom, updates, messages…, updates` —
-the node's custom events arrive before its update, and the answer's tokens arrive before
-the `answer` node's update (which lands when the node finishes).
+Verified order for the research/answer graph: `custom, custom, updates, messages…, updates`.
+The node's custom events arrive before its update. The answer's tokens arrive before the
+`answer` node's update, which lands when the node finishes.
 
 ### 4.5 Streaming a supervisor (Day 22)
 
@@ -460,8 +501,8 @@ if (mode === "messages") {
 }
 ```
 
-For a namespaced view — which specialist, which nested node — add `subgraphs: true`; each
-item then arrives as `[namespace, [token, meta]]` with namespaces like
+For a namespaced view (each token labelled with the specialist and nested node that produced
+it), add `subgraphs: true`. Each item then arrives as `[namespace, [token, meta]]` with namespaces like
 `"delegate:<id>/sub_llm:<id>"`.
 
 ### 4.6 An SSE endpoint — Node's `http`, with cancellation
@@ -508,7 +549,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(3000);
 ```
 
-And inside nodes, pass the signal to slow calls, so the node in flight stops too:
+And inside nodes, pass the signal to slow calls, so the node that is still running stops too:
 
 ```js
 .addNode("answer", async (state, config) => ({
@@ -611,14 +652,17 @@ streamChat("How does HTTPS work?", "student-42", {
 });
 ```
 
-Two details: `{ stream: true }` in `decode` handles multi-byte characters split across
-network chunks, and keeping a `buffer` handles events split across chunks. Without either,
-Urdu or emoji text arrives garbled and occasionally an event is dropped. (This parser is the
-one used to verify §4.6.)
+Two details matter:
 
-For cancellation from the browser, pass an `AbortController`'s `signal` to `fetch` and
-call `abort()` when the user clicks "Stop" — the server sees the disconnect and aborts the
-graph.
+- `{ stream: true }` in `decode` handles multi-byte characters (letters such as Urdu script or
+  emoji, which take several bytes) split across network chunks.
+- Keeping a `buffer` handles events split across chunks.
+
+Without either, Urdu or emoji text arrives garbled and occasionally an event is dropped.
+(This parser is the one used to verify §4.6.)
+
+For cancellation from the browser, pass an `AbortController`'s `signal` to `fetch`. Call
+`abort()` when the user clicks "Stop". The server sees the disconnect and aborts the graph.
 
 ---
 
@@ -633,7 +677,7 @@ from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class State(TypedDict):
     messages: Annotated[list, add_messages]
@@ -679,6 +723,13 @@ for chunk, meta in app.stream({"messages": [HumanMessage("How does HTTPS work?")
 ```
 
 (`MessagesState` comes from `langgraph.graph`.)
+
+> ⚠️ **Reasoning models stream thinking first.** We streamed `openai/gpt-oss-120b` once with
+> `model.stream("Explain HTTPS in one sentence.")`. Of 61 chunks, 26 had empty `content`; 23 of
+> those carried hidden reasoning in `additional_kwargs["reasoning_content"]`. The first visible
+> text came in chunk 25. Printing `chunk.content` is still correct (empty strings print
+> nothing), but the user waits through the thinking before the first word. Show a "thinking…"
+> indicator until the first non-empty chunk arrives, so the screen isn't blank.
 
 ### 5.3 Custom progress events — from nodes and tools
 
@@ -738,8 +789,8 @@ for namespace, (token, meta) in supervisor.stream(inp, stream_mode="messages", s
         ui.status(f"{who} is working…")
 ```
 
-With `subgraphs=True` each item is `(namespace, (token, meta))`; an empty namespace means
-the top-level graph, and a specialist invoked inside a tool shows up under the tool-calling
+With `subgraphs=True` each item is `(namespace, (token, meta))`. An empty namespace means
+the top-level graph. A specialist invoked inside a tool shows up under the tool-calling
 node's namespace (verified: `"delegate:<id>"`).
 
 ### 5.6 An SSE endpoint — FastAPI
@@ -790,13 +841,14 @@ Verified with FastAPI's `TestClient`: content type `text/event-stream; charset=u
 `progress`, two `step`s, the tokens, and `done`.
 
 **Cancellation comes almost for free.** When the client disconnects, the server cancels the
-response's async generator; closing the generator closes `app.astream(...)`, which stops the
-graph before its next superstep (verified: breaking out of `astream` meant the next node never
-ran). The node in flight still finishes — for long model calls, set a request timeout on the
-client (§ Day 24).
+response's async generator. Closing the generator closes `app.astream(...)`, which stops the
+graph before its next superstep. (Verified: breaking out of `astream` meant the next node
+never ran.) The node that is already running still finishes. For long model calls, set a
+request timeout on the client (Day 24).
 
 > ⚠️ Use `async def` and `astream` inside the endpoint. A synchronous `app.stream(...)` in an
-> `async` endpoint blocks the event loop, and every other request waits behind it.
+> `async` endpoint blocks the event loop (the one thread that serves every request), and every
+> other request waits behind it.
 
 ### 5.7 The JS ↔ Python translation for today
 
@@ -840,12 +892,12 @@ and in your UI code, not in the graph.
 
 `values` sends the entire state after every superstep. With a 20-message conversation and a
 six-node graph, that's the whole conversation six times per request — to show the user one
-new answer. `updates` sends only what changed; `messages` sends only tokens. Use `values` in
+new answer. `updates` sends only what changed, and `messages` sends only tokens. Use `values` in
 debuggers and tests.
 
 ### 6.3 Buffering: the silent killer
 
-Your server streams perfectly on localhost and not at all in production. Something between
+Your server streams perfectly on localhost (your own machine) and not at all in production. Something between
 you and the browser is **buffering** the response until it's complete:
 
 ```
@@ -855,29 +907,30 @@ you and the browser is **buffering** the response until it's complete:
    dev servers with hot reload     occasionally buffer; test against a production build
 ```
 
-The symptom is always the same — everything arrives at once at the end — and the cause is
-almost never your code. Check the headers in the browser's network tab: a streamed response
+The symptom is always the same: everything arrives at once at the end. The cause is almost
+never your code. Check the headers in the browser's network tab: a streamed response
 shows the body growing while the request is still pending.
 
 ### 6.4 Keeping connections alive
 
-Long silences (a slow model call) can make proxies or load balancers close an idle
-connection. The SSE format has comments for exactly this — a line starting with `:` is
-ignored by clients:
+Long silences (a slow model call) can make proxies or load balancers — servers that sit
+between the user and your app — close an idle connection. The SSE format has comments for
+exactly this. A line starting with `:` is ignored by clients:
 
 ```
    : keep-alive
                         ← send every ~15 s while waiting
 ```
 
-Custom progress events double as keep-alives, which is another reason to emit them from slow
-nodes.
+Custom progress events also work as keep-alives (messages that stop the connection looking
+idle). That is another reason to emit them from slow nodes.
 
 ### 6.5 Reconnection and duplicate work
 
 `EventSource` reconnects automatically after a dropped connection — and a naive server
 starts the whole request again. For an agent that can mean duplicated model calls or, worse,
-duplicated side effects. Two defences:
+duplicated side effects (actions in the outside world, such as sending an email or charging a
+card). Two defences:
 
 ```
    1. Separate "start a run" from "watch a run". POST /runs starts the work (with a
@@ -886,8 +939,8 @@ duplicated side effects. Two defences:
    2. Keep side effects idempotent (Day 21's rule), so a repeated step can't double-charge.
 ```
 
-Pattern 1 is also how the LangGraph platform exposes runs (Day 27); it's worth designing
-towards even in a hand-rolled server.
+Pattern 1 is also how the LangGraph platform exposes runs (Day 27). It's worth designing
+towards, even in a server you write yourself.
 
 ---
 
@@ -900,7 +953,7 @@ towards even in a hand-rolled server.
 ✅ app.stream(input, { streamMode: ["updates", "messages", "custom"] })
 ```
 
-It works in the demo and melts under real conversation lengths. `values` is a debugging view.
+It works in the demo and breaks down under real conversation lengths. `values` is a debugging view.
 
 ### ❌ 2. Forwarding every token
 
@@ -932,7 +985,7 @@ In JS, `break` stops you reading, not the work. Every abandoned request keeps sp
 ✅ async (state, config) => ({ messages: [await model.invoke(state.messages, { signal: config.signal })] })
 ```
 
-Verified: with the signal ignored, the in-flight node finished after the abort. With
+Verified: with the signal ignored, the running node finished after the abort. With
 `config.signal` honoured, it stopped immediately. A 30-second model call is exactly the
 thing you want to stop.
 
@@ -953,8 +1006,8 @@ Neither message mentions checkpointers. Compile with one, and pass a `thread_id`
 ```
 
 Verified: without `subgraphs=True`, a graph invoked inside a tool contributes nothing to the
-parent's `messages` stream in Python — while in JS it does. Porting code between the two is
-where this bites.
+parent's `messages` stream in Python. In JS it does. This causes bugs when you port code
+between the two.
 
 ### ❌ 7. Progress in graph state
 
@@ -1006,9 +1059,9 @@ still sees everything arrive at once. Test through the real infrastructure, and 
 ### Exercise 1 — See every mode ●○○○○
 
 Build a two-node graph with no API key: `research` emits two custom events, `answer` calls a
-fake streaming model. Stream it in every mode (`values`, `updates`, `messages`, `custom`,
-`debug`, `tasks`, and `checkpoints` with a checkpointer) and print the number of chunks and
-the first chunk of each.
+fake streaming model. Stream it in every mode: `values`, `updates`, `messages`, `custom`,
+`debug`, `tasks`, and `checkpoints` (with a checkpointer). For each mode, print the number of
+chunks and the first chunk.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1109,7 +1162,7 @@ checkpoints    3  {"config":{...},"values":{...},"next":["__start__"],...}
 
 1. `values` = `updates` + 1: the extra chunk is the state before any node ran.
 2. The `messages` count is a property of the model, not the graph. Real providers stream
-   roughly per token; the two fake models split differently, which is the only reason the JS
+   roughly per token. The two fake models split differently, which is the only reason the JS
    and Python counts differ.
 3. Each run uses a fresh `thread_id`. Reusing one would append to the same conversation,
    and `values` would grow with every loop iteration — a nice demonstration of why threads
@@ -1202,8 +1255,9 @@ HTTPS is HTTP running over TLS.
 ```
 
 **Why tag instead of node name?** Rename `answer` to `respond` and a node-name filter
-silently shows nothing. A tag lives on the model and states the intent — "these are the
-words the user reads" — which survives refactors and is obvious in code review.
+silently shows nothing. A tag lives on the model and states the intent: "these are the
+words the user reads". It survives refactors (reorganising the code) and is obvious in code
+review.
 
 **Notice the order:** the answer's tokens arrive *before* `✓ Done`, because an `updates` chunk
 lands when the node finishes. If you want "Writing…" to show while tokens flow, emit it as a
@@ -1314,8 +1368,8 @@ for ns, (token, meta) in parent.stream(inp, stream_mode="messages", subgraphs=Tr
 ```
 
 **The lesson in one line:** cancellation and nested streaming are exactly where the two
-languages part ways, so test them explicitly when you port code — the happy path looks the
-same in both.
+languages differ. Test them explicitly when you port code, because the happy path (the
+normal, no-error case) looks the same in both.
 </details>
 
 ---
@@ -1344,7 +1398,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 
-const base = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const base = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 // specialists (Day 22), untagged — their tokens are NOT for the student
 const researcher = createAgent({ model: base, tools: [], name: "researcher",
@@ -1525,7 +1579,7 @@ from langchain_groq import ChatGroq
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 
-base = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+base = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 researcher = create_agent(base, tools=[], name="researcher",
     system_prompt="Explain study topics accurately in under 120 words.")
@@ -1603,22 +1657,23 @@ async def chat(body: ChatBody):
 **Design decisions worth defending:**
 
 1. **Tag the supervisor, not the specialists.** One `withConfig({ tags: ["final"] })` decides
-   what the student reads. In JS, where specialists' tokens reach the parent stream by
-   default, this is what keeps their drafts out of the UI; in Python it's what separates the
+   what the student reads. In JS, specialists' tokens reach the parent stream by default, so
+   this is what keeps their drafts out of the UI. In Python, it's what separates the
    supervisor's words from its routing thoughts.
 2. **Progress comes from the tool wrapper.** The wrapper already knows the human-readable
    label ("Asking the researcher"), so it emits the custom event. No state channel, no
    checkpoint writes.
-3. **Cancellation is end to end.** Browser "Stop" → `fetch` aborts → the server sees the
-   connection close → JS aborts the graph's signal (and the specialist call, via
-   `config.signal`), Python's response generator is cancelled, closing `astream`. Without
-   this chain, every "Stop" click keeps spending tokens.
+3. **Cancellation is end to end.** The browser's "Stop" makes `fetch` abort. The server sees
+   the connection close. Then JS aborts the graph's signal (and the specialist call, via
+   `config.signal`), while in Python the response generator is cancelled, closing `astream`.
+   Without this chain, every "Stop" click keeps spending tokens.
 4. **`typeof token.content === "string" && token.content`** skips empty chunks and the
-   non-text content blocks some providers emit around tool calls — the supervisor's tool-call
-   message has empty text content, which you don't want to send as an empty token event.
+   non-text content blocks some providers emit around tool calls. The supervisor's tool-call
+   message has empty text content, and you don't want to send that as an empty token event.
 5. **One thread per browser tab.** The random `threadId` gives each tab its own conversation
    in the checkpointer. In a real app it comes from your server's session and is checked
-   for ownership (Day 20's IDOR warning).
+   for ownership. That is Day 20's IDOR warning: a user must never reach another user's
+   thread just by changing its id.
 </details>
 
 ---
@@ -1674,11 +1729,12 @@ redesign it.
 ```
 
 **The trade-off to state out loud:** decoupling the run from the connection means a closed
-tab *doesn't* cancel the work automatically — which is what you want for "generate my study
-plan" (the user expects it to be ready when they come back) and not what you want for a chat
-reply nobody will read. Decide per endpoint: chat replies cancel on disconnect; long jobs
-run to completion with an explicit cancel button. This is also the model the LangGraph
-platform uses for runs (Day 27), so designing towards it now makes that migration trivial.
+tab *doesn't* cancel the work automatically. That is what you want for "generate my study
+plan", because the user expects it to be ready when they come back. It is not what you want
+for a chat reply nobody will read. Decide per endpoint: chat replies cancel on disconnect,
+and long jobs run to completion with an explicit cancel button. This is also the model the
+LangGraph platform uses for runs (Day 27), so designing towards it now makes that migration
+easy.
 </details>
 
 ---
@@ -1690,24 +1746,27 @@ platform uses for runs (Day 27), so designing towards it now makes that migratio
 **Q1. Why stream at all, if the total time doesn't change?**
 
 Because users judge speed by time-to-first-feedback, not time-to-completion. Streaming
-progress and tokens makes an 8-second response feel responsive, reduces abandonment and
-double-submits, and shows the user the system is working on the right thing.
+progress and tokens makes an 8-second response feel responsive. Fewer users give up or submit
+twice, and they can see the system is working on the right thing.
 
 ---
 
 **Q2. Name LangGraph's stream modes.**
 
-`values` (full state after each superstep), `updates` (each node's returned patch),
-`messages` (LLM token chunks with metadata), `custom` (your own events), plus `debug`,
-`tasks` and `checkpoints` for internals. You can request several; chunks then come tagged
-with their mode.
+- `values` — full state after each superstep.
+- `updates` — each node's returned patch.
+- `messages` — LLM token chunks with metadata.
+- `custom` — your own events.
+- Plus `debug`, `tasks` and `checkpoints` for internals.
+
+You can request several. Chunks then come tagged with their mode.
 
 ---
 
 **Q3. How do you get tokens out of a node that calls `model.invoke()`?**
 
-Stream the graph with `streamMode: "messages"`. Model calls report tokens through callbacks
-and LangGraph forwards them, tagged with the node that produced them — you don't need to
+Stream the graph with `streamMode: "messages"`. Model calls report tokens through callbacks,
+and LangGraph forwards them, tagged with the node that produced them. You don't need to
 change `invoke` to `stream` inside the node.
 
 ---
@@ -1722,9 +1781,9 @@ them. They're immediate and never persisted.
 
 **Q5. Why SSE rather than WebSockets for streaming responses?**
 
-The data flows one way, server to client. SSE is plain HTTP, so auth, proxies and CDNs work
-normally; browsers reconnect automatically; and the format is trivial. WebSockets are for
-genuinely bidirectional traffic. The one limitation — `EventSource` is GET-only with no
+The data flows one way, server to client. SSE is plain HTTP, so auth, proxies and CDNs
+(content delivery networks) work normally. Browsers reconnect automatically, and the format
+is very simple. WebSockets are for genuinely two-way traffic. The one limitation — `EventSource` is GET-only with no
 custom headers — is solved by reading the stream with `fetch`.
 
 ---
@@ -1736,7 +1795,7 @@ custom headers — is solved by reading the stream with `fetch`.
 Every model call in the graph streams in `messages` mode, not just the one producing the
 answer. Tag the answering model — `model.withConfig({ tags: ["final"] })` — and forward only
 chunks whose metadata tags include `"final"`. Filtering by `langgraph_node` also works but
-breaks when nodes are renamed; tags state intent.
+breaks when nodes are renamed. Tags state intent.
 
 ---
 
@@ -1744,10 +1803,10 @@ breaks when nodes are renamed; tags state intent.
 
 It differs by language. In JS, leaving the `for await` loop doesn't stop the graph — it runs
 to completion in the background (verified). You pass an `AbortSignal` to `stream()`, which
-stops the graph between supersteps, and pass `config.signal` into slow calls inside nodes so
-the in-flight step stops too. In Python, closing the stream generator — a `break`, or a web
-framework cancelling the response on disconnect — stops the graph before the next superstep;
-the running node still finishes.
+stops the graph between supersteps. You also pass `config.signal` into slow calls inside
+nodes, so the running step stops too. In Python, closing the stream generator stops the graph
+before the next superstep. That happens on a `break`, or when a web framework cancels the
+response on disconnect. The running node still finishes.
 
 ---
 
@@ -1755,8 +1814,8 @@ the running node still finishes.
 
 In JS, a nested graph's tokens reach the parent's `messages` stream by default, so filter by
 tag to keep specialists' drafts out of the user's view. In Python they don't appear unless
-you stream with `subgraphs=True`, which yields `(namespace, (token, meta))` — the namespace
-tells you which specialist is talking, handy for "researcher is typing…" indicators. Tag the
+you stream with `subgraphs=True`, which yields `(namespace, (token, meta))`. The namespace
+tells you which specialist is talking — handy for "researcher is typing…" indicators. Tag the
 supervisor's model `final` either way.
 
 ---
@@ -1765,7 +1824,7 @@ supervisor's model `final` either way.
 
 It sends the whole state after every superstep. With a real conversation and a multi-node
 graph, that's the entire history several times per request, to deliver one new message.
-`updates` sends only diffs and `messages` only tokens.
+`updates` sends only the changes (diffs), and `messages` only tokens.
 
 ---
 
@@ -1773,8 +1832,8 @@ graph, that's the entire history several times per request, to deliver one new m
 
 Buffering between the server and the browser — compression middleware, nginx's proxy
 buffering, or a platform that doesn't support streamed responses. Disable compression for
-`text/event-stream`, send `X-Accel-Buffering: no` (or turn proxy buffering off), and verify
-in the browser's network tab that the body grows while the request is pending.
+`text/event-stream`, and send `X-Accel-Buffering: no` (or turn proxy buffering off). Then
+check in the browser's network tab that the body grows while the request is pending.
 
 ---
 
@@ -1782,7 +1841,7 @@ in the browser's network tab that the body grows while the request is pending.
 
 It's the older, lower-level event stream: every start/stream/end event for every runnable in
 the run. Useful for plain LCEL chains or for events stream modes don't expose. For graphs,
-stream modes are simpler, more stable, and less noisy — the exact event counts differ between
+stream modes are simpler, more stable, and less noisy. The exact event counts differ between
 the JS and Python implementations, which tells you not to build a UI on them.
 
 ---
@@ -1793,45 +1852,54 @@ the JS and Python implementations, which tells you not to build a UI on them.
 
 Separate starting a run from watching it. `POST /runs` validates ownership, deduplicates with
 an idempotency key, starts the run in the background with a checkpointer, and returns a run
-id. `GET /runs/:id/stream` streams events via SSE; a reconnect sends a "state so far" summary
+id. `GET /runs/:id/stream` streams events via SSE. A reconnect sends a "state so far" summary
 from `getState` and then attaches to live events, never restarting the work. The connection
-dropping stops streaming, not the run; an explicit cancel endpoint stops the work. Progress
+dropping stops streaming, not the run. An explicit cancel endpoint stops the work. Progress
 comes from custom events emitted in long nodes, which also serve as keep-alives. Side effects
-are idempotent so a retried step can't double-act. This is also the platform's run model, so
-it migrates cleanly.
+are idempotent (safe to repeat), so a retried step can't act twice. This is also the
+platform's run model, so it migrates cleanly.
 
 ---
 
 **Q13. How would you test streaming code?**
 
-Use scripted or fake streaming models so token sequences are deterministic, and assert on
-the *sequence of events*, not only the final text: the right progress events in order, only
-`final`-tagged tokens forwarded, a `done` at the end, an `error` event with a generic message
-on failure. Test cancellation explicitly — abort after the first chunk and assert that later
-nodes did not run (and, in JS, that you passed the signal, since `break` alone won't pass
-that test). Run one end-to-end test through a real HTTP server and a real stream parser, as
-in §4.6, because framing bugs (a missing blank line, split multi-byte characters) only show
-up there.
+Use scripted or fake streaming models so token sequences are deterministic (the same on every
+run). Then assert on the *sequence of events*, not only the final text:
+
+- the right progress events, in order;
+- only `final`-tagged tokens forwarded;
+- a `done` at the end;
+- an `error` event with a generic message on failure.
+
+Test cancellation explicitly. Abort after the first chunk and assert that later nodes did not
+run. In JS, also check that you passed the signal, since `break` alone won't pass that test.
+Run one end-to-end test through a real HTTP server and a real stream parser, as in §4.6.
+Framing bugs (a missing blank line, split multi-byte characters) only show up there.
 
 ---
 
 **Q14. What are the security considerations for streaming endpoints?**
 
-The same as any endpoint, plus a few specific ones: authenticate the stream route and check
-thread ownership (a stream is a read of the conversation); never forward raw exceptions,
-since they end up in the browser; don't stream internal tokens (routers, graders,
-specialists' drafts, tool arguments) that can reveal prompts or other data; bound
-concurrency per user, because long-lived connections are a cheap way to exhaust a server; and
-make sure cancellation works, since unstopped abandoned runs are a cost-exhaustion vector.
+The same as any endpoint, plus a few specific ones:
+
+- Authenticate the stream route and check thread ownership (a stream is a read of the
+  conversation).
+- Never forward raw exceptions, since they end up in the browser.
+- Don't stream internal tokens (routers, graders, specialists' drafts, tool arguments) that
+  can reveal prompts or other data.
+- Bound concurrency per user (limit how many streams one user can hold open). Long-lived
+  connections are a cheap way to exhaust a server.
+- Make sure cancellation works. Abandoned runs that never stop are a cost-exhaustion vector —
+  a way for someone to run up your bill.
 
 ---
 
 **Q15. How do streaming and human-in-the-loop interact?**
 
 An interrupt ends the current stream: the run pauses, the checkpoint holds the pending
-question, and the stream completes. The UI should treat that as a normal end state — show
-the approval request (read it from the stream's final update or from `getState().tasks`) —
-and resuming is a new request, which can itself be streamed. The design rule from Q12
+question, and the stream completes. The UI should treat that as a normal end state and show
+the approval request (read it from the stream's final update or from `getState().tasks`).
+Resuming is a new request, which can itself be streamed. The design rule from Q12
 applies: the pause lives in the checkpointer, not in a held-open connection, so a user can
 approve from a different device an hour later.
 
@@ -1842,15 +1910,17 @@ approve from a different device an hour later.
 ### What you learned
 
 - ✅ Streaming improves **perceived** latency — the total time doesn't change, the experience does
-- ✅ Modes: **`values` · `updates` · `messages` · `custom`** (+ `debug`/`tasks`/`checkpoints`)
+- ✅ Modes: **`values`, `updates`, `messages` and `custom`** (plus `debug`, `tasks` and
+  `checkpoints`)
 - ✅ A node calling `model.invoke()` still streams tokens — **no node changes needed**
 - ✅ **Every** model call streams; filter to the user-facing one with a **`final` tag**
 - ✅ Custom events: `config.writer` (JS) / `get_stream_writer()` (Python) — from nodes **and tools**
-- ✅ Several modes at once → `[mode, chunk]` / `(mode, chunk)`
+- ✅ Several modes at once give `[mode, chunk]` (JS) or `(mode, chunk)` (Python)
 - ✅ Nested agents: **JS includes their tokens by default; Python needs `subgraphs=True`**
 - ✅ Cancellation: **JS `break` does not stop the graph** — use a signal and `config.signal`;
   Python stops before the next superstep when the generator closes
-- ✅ SSE: `event:` + `data:` + **a blank line**; `fetch` + a reader for POST and auth headers
+- ✅ SSE: `event:` and `data:` lines, then **a blank line**; use `fetch` and a reader for POST
+  and auth headers
 - ✅ Buffering (gzip, nginx) is the usual reason streaming "doesn't work" in production
 - ✅ For long jobs, **separate starting a run from watching it**
 
@@ -1882,10 +1952,10 @@ policies.
 <details>
 <summary>Answers</summary>
 
-1. In JS, `break` stops your loop reading chunks; it does **not** cancel the graph, which keeps
-   running to the end in the background (verified). Pass an `AbortSignal` to `stream()`,
-   abort it when the client disconnects (`req.on("close")` or `request.signal`), and pass
-   `config.signal` into slow calls inside nodes so the step in flight stops too.
+1. In JS, `break` stops your loop reading chunks. It does **not** cancel the graph, which keeps
+   running to the end in the background (verified). Pass an `AbortSignal` to `stream()`, and
+   abort it when the client disconnects (`req.on("close")` or `request.signal`). Also pass
+   `config.signal` into slow calls inside nodes, so the running step stops too.
 
 2. **`subgraphs=True`.** In Python a graph invoked inside a tool doesn't contribute to the
    parent's `messages` stream unless you opt in (verified). With it, each item arrives as
@@ -1894,7 +1964,7 @@ policies.
 
 3. Send a **generic, user-safe message** ("Something went wrong — please try again") and,
    if useful, a correlation id the user can quote to support. Don't send the exception text,
-   stack traces, SQL, file paths or prompt contents; log those on the server where you can
+   stack traces, SQL, file paths or prompt contents. Log those on the server, where you can
    read them.
 </details>
 

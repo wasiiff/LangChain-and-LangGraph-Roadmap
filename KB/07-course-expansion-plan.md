@@ -1,8 +1,41 @@
 # 07 — Plan: from LangChain book to full AI Engineering course
 
-**Status: DRAFT — waiting for your review.** Nothing in the course has been changed yet.
-Mark each row in the **Your call** column (`OK` / `Change: …` / `Skip`), or just reply with the
-IDs, for example: *"All OK except D5 skip, D9 change to optional."*
+**Status: APPROVED — being implemented** (owner: "start implementing this now", 2026-10-07).
+All rows accepted; Part E answered with the recommendations: **append** (no renumbering), beginner
+path + English first, then Weeks 5–6; Python-only allowed for D6–D8 with a JS "call the result"
+section; title changes in README only; **no git commits unless asked**.
+
+> 🔒 **Owner's rule for the English pass: no code may change.** Enforced by
+> `tools/check_code_unchanged.py` (every fenced block and inline-code span from the git-index
+> copy must survive character for character).
+
+### Progress — all waves done (2026-10-07)
+
+| Wave | Work | State |
+|---|---|---|
+| 1 | Tools: `readability.py`, `check_code_unchanged.py`, `add_footers.py`; `verify.py` / `gen_resources.py` handle Weeks 0–6 and labels like `0A` | ✅ done |
+| 1 | Week 0 README (three tracks + self-check) · Days 0A, 0B, 0C | ✅ done |
+| 1 | Day 03 re-focused: essentials moved to 0B, + choosing a model (file renamed `day-03-choosing-a-model-and-why-langchain.md`) | ✅ done |
+| 1 | Plain-English pass on Days 01–28 (words boxes, "In plain words", rewritten openings, long sentences split) + C2–C6, C8, B5 | ✅ done — code check OK on every file |
+| 1 | Unmeasured numbers labelled (16 days) · ~30 prose errors fixed · missing footers added (Days 1–16) | ✅ done |
+| 2 | Week 5 (Days 29–35) and Week 6 (Days 36–40) + READMEs | ✅ done |
+| 2 | Glossary 137 → 308 terms · KB 02/03/04/05/06 · CONTRIBUTING.md · master README · resources regenerated | ✅ done |
+| — | Code bugs found in existing days, and shut-down Google model names | ⏸ waiting for the owner (KB/06 items 10–11) |
+
+**Measured result:** mean Flesch 61 → **70** (lowest day 49 → 61); 28 → **43** day files;
+378 → **587** interview questions; `verify.py`: no problems, 0 broken links.
+
+File names fixed for Weeks 5–6 (so forward references stay stable):
+`week-05-the-model-layer/day-29-open-and-local-models.md`, `day-30-inference-and-serving.md`,
+`day-31-fine-tuning.md`, `day-32-dataset-engineering.md`, `day-33-multimodal.md`,
+`day-34-cost-and-latency.md`, `day-35-ai-security.md` ·
+`week-06-advanced-agents-product-and-career/day-36-context-engineering-and-agent-patterns.md`,
+`day-37-advanced-retrieval.md`, `day-38-emerging-agents.md`, `day-39-ai-product-engineering.md`,
+`day-40-final-capstone-and-career.md`.
+
+---
+
+*The original review table follows, unchanged.*
 
 How this was made:
 
@@ -109,7 +142,7 @@ Week 6  Advanced & career (new)   agent patterns, product, capstone     Days 36�
 
 Each row was checked against the current days with `grep`. "Covered now" shows what exists
 today. **Can verify here?** says whether I can run it on this Windows machine with no GPU and no
-paid keys — rule 1 of `CLAUDE.md` says every claim must be run, so anything marked ⚠️ would be
+paid keys — rule 1 of `CONTRIBUTING.md` says every claim must be run, so anything marked ⚠️ would be
 labelled "not executed" in the text.
 
 | ID | New day | What it teaches (simple words) | Covered now | Why it belongs | Can verify here? | Your call |

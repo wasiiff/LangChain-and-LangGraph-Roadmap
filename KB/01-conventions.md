@@ -7,7 +7,8 @@ shape being identical from Day 1 to Day 28.
 
 ## The day file
 
-Filename: `week-0N-<slug>/day-NN-<kebab-topic>.md`, zero-padded so files sort.
+Filename: `week-0N-<slug>/day-NN-<kebab-topic>.md`, zero-padded so files sort. Week 0 uses
+`day-00a-…`, `day-00b-…`, `day-00c-…` and the header label `Day 0A` (tools accept `0A`–`0C`).
 
 ### Header
 
@@ -16,8 +17,15 @@ Filename: `week-0N-<slug>/day-NN-<kebab-topic>.md`, zero-padded so files sort.
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 23](day-23-streaming-and-events.md) · 🧩 **Difficulty:** ●●●●○
 
-**Today you learn:** one paragraph, concrete, naming the mechanisms and what gets built.
+**Today you learn:** 2–4 short sentences: the problem first, then what gets built.
+
+> 📖 **Words you'll meet today**
+>
+> - **Term** — one plain sentence.
 ```
+
+The **words box** (5–8 terms) sits directly after "Today you learn", before the first `---`.
+Under every `### 3.x` heading, the first line is `> 💬 **In plain words:** …` (1–2 sentences).
 
 Difficulty is five dots, filled to taste (`●●●○○`). Time is 2.5–3 hours for most days.
 
@@ -60,7 +68,8 @@ Footer, on every day:
 ### Interview questions — two formats exist
 
 - **Days 1–16:** collapsed blocks — `<details><summary><b>Q: …</b></summary>` + answer.
-- **Days 17–28:** open format — `**Q1. …**` then the answer, separated by `---`.
+- **Days 17–40 and Week 0:** open format — `**Q1. …**` then the answer, separated by `---`.
+  (Day 03 keeps the collapsed format of Days 1–16.)
 
 Match the local file's format when editing. `tools/gen_resources.py` counts both.
 
@@ -72,6 +81,15 @@ Match the local file's format when editing. `tools/gen_resources.py` counts both
 - **Mechanism, number, trade-off.** Every explanation should land on at least one. Those three
   are also what the book teaches readers to say in interviews (Day 28 §3.5).
 - Second person, present tense, plain words. British spelling.
+- **Plain English for every reader** (added October 2026 — many readers are beginners or read
+  English as a second language): sentences ≤ 25 words where possible and none over 30 in prose;
+  define each technical term at first use; no idioms; symbols such as `≫` or `·` become words in
+  prose. Target **Flesch ≥ 60** — measure with `python tools/readability.py <file>`.
+- **Prose edits never touch code.** After editing the English of an existing day, run
+  `python tools/check_code_unchanged.py <file>` — it must print `OK — all code unchanged`.
+- Optional per-day callouts: `> 📏 **Measure it:**` (a 3-case check before Day 25's full evals),
+  `> 📚 **Sources**` (end of §6, for facts that can't be run), `> 🐍 **Why Python only here:**`
+  (Week 5 days where real tooling is Python-only).
 - Lines wrap at ~100 characters. Tables and code may exceed it.
 - Callouts: `> 📦` package/API note · `> ⚠️` trap · `> 🔒` security · `> 💡` tip · `> 🎯` do this ·
   `> ⏱` timing · `> 🪟` Windows-specific.
@@ -84,8 +102,12 @@ Match the local file's format when editing. `tools/gen_resources.py` counts both
 - **Markdown only** — no runnable project folders in the repo (a deliberate decision: nothing
   to drift or break).
 - Every snippet is real code that was run, or clearly marked as a sketch.
-- **Free-first providers:** `ChatGroq` (`llama-3.3-70b-versatile`) as the default, Gemini or
-  Ollama where a different capability is needed (Groq has no embeddings). Paid alternates go in
+- **Free-first providers:** `ChatGroq` (`openai/gpt-oss-120b`; small model `openai/gpt-oss-20b`)
+  as the default, Gemini (`gemini-3.8-flash`, embeddings `gemini-embedding-2`) or Ollama where a
+  different capability is needed (Groq has no embeddings). Both GPT-OSS models are **reasoning
+  models**: keep `maxTokens` generous (≥ 512) or set `reasoningEffort: "low"`, and don't rely on
+  `logprobs`, `n > 1` or text stop-sequence protocols (use `qwen/qwen3.8-27b`, a Groq preview
+  model, for those). Paid alternates go in
   a collapsed `<details>💰`.
 - **Keyless verification:** from Day 22 on, examples and tests use scripted/fake models
   (`BaseChatModel` subclass in JS, `GenericFakeChatModel` subclass in Python) so a reader with

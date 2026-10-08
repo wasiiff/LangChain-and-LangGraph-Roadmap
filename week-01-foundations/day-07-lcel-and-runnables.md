@@ -2,14 +2,29 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 06](day-06-output-parsers-structured-output.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** what `.pipe()` / `|` actually builds, and the six Runnables that compose
-into every LangChain pipeline: `RunnableSequence`, `RunnableParallel`, `RunnableLambda`,
-`RunnablePassthrough`, `RunnableAssign`, `RunnableBranch`.
+**Today you learn:** When you join steps with plain functions, streaming, retries and tracing
+become your problem in every function. LCEL solves that. You learn what `.pipe()` / `|` actually
+builds, and the six Runnables that compose into every LangChain pipeline: `RunnableSequence`,
+`RunnableParallel`, `RunnableLambda`, `RunnablePassthrough`, `RunnableAssign`, `RunnableBranch`.
 
 Then you build **StudyBuddy v1** — the Week 1 project.
 
 If you only deeply learn one day from Week 1, make it this one. It's the most-asked LangChain
 interview topic, and it's the foundation for Week 2's RAG chains and Week 3's graphs.
+
+> 📖 **Words you'll meet today**
+>
+> - **Runnable** — LangChain's standard building block: a step you can invoke, stream, batch or
+>   pipe into another step.
+> - **LCEL** — LangChain Expression Language: joining Runnables with `.pipe()` or `|` to build a
+>   chain.
+> - **Compose** — to join small steps into a bigger one that still behaves like a single step.
+> - **Concurrent** — running at the same time, instead of one after another.
+> - **Buffering** — holding output back until a step has all of its input, which pauses
+>   streaming.
+> - **Trace** — a recorded tree of every step in a run, with its inputs, outputs and timing.
+> - **Routing** — choosing which chain runs next, based on the input.
+> - **Acyclic graph** — a flow where data only moves forward and never loops back.
 
 ---
 
@@ -49,8 +64,9 @@ concurrency cap.
 
 Every one of those is now your problem, in every function you write.
 
-**LCEL's proposition:** express the *structure* declaratively, and get streaming, batching,
-async, retries, fallbacks, and tracing across the whole thing for free.
+**LCEL's offer:** describe the *structure* declaratively — say what connects to what, not how
+to run it. In return you get streaming, batching, async, retries, fallbacks, and tracing across
+the whole thing for free.
 
 ---
 
@@ -99,6 +115,9 @@ async, retries, fallbacks, and tracing across the whole thing for free.
 
 ### 3.1 `RunnableSequence` — the pipe
 
+> 💬 **In plain words:** a sequence runs steps one after another. Each step's output becomes the
+> next step's input, so the types must fit together.
+
 ```js
 prompt.pipe(model).pipe(parser)
 // is exactly
@@ -118,6 +137,9 @@ Data flows left to right. Types must line up:
 
 ### 3.2 `RunnableParallel` — fan out
 
+> 💬 **In plain words:** parallel sends the same input to several steps at once and gathers
+> their answers into one object.
+
 Run several Runnables on the **same input**, concurrently, and collect the results into an object.
 
 ```js
@@ -132,8 +154,8 @@ await parallel.invoke("Some article text");
 // All three ran AT THE SAME TIME.
 ```
 
-**The sugar that trips everyone up:** a plain object literal in a chain position is
-*automatically* coerced to a `RunnableParallel`.
+**The shortcut that confuses everyone:** a plain object literal in a chain position is
+*automatically* coerced (converted) to a `RunnableParallel`.
 
 ```js
 chain = { summary: summaryChain, keywords: keywordChain }.pipe(next)   // ❌ objects have no .pipe
@@ -148,13 +170,16 @@ Python's `|` operator handles dicts natively. In JS you need the object to be in
 
 ### 3.3 `RunnableLambda` — any function becomes a step
 
+> 💬 **In plain words:** wrap your own function and it can sit in a chain like any other step.
+> It takes one argument; pass an object if you need more.
+
 ```js
 const upper = new RunnableLambda({ func: (x) => x.toUpperCase() });
 // or the shorthand:
 const upper = RunnableLambda.from((x) => x.toUpperCase());
 ```
 
-Plain functions are auto-coerced too:
+Plain functions are converted automatically too:
 
 ```js
 chain.pipe((x) => x.toUpperCase())        // ✅ becomes a RunnableLambda
@@ -172,12 +197,16 @@ RunnableLambda.from(({ a, b }) => a + b)
 ```
 
 > ⚠️ **Async lambdas in JS:** `RunnableLambda.from(async (x) => await something(x))` works fine.
-> In Python, use a regular function for sync chains and an `async def` for async chains — or let
-> LangChain wrap the sync one (it runs it in a thread pool for `ainvoke`).
+> In Python, use a regular function for sync chains and an `async def` for async chains. Or let
+> LangChain wrap the sync one: it runs it in a thread pool for `ainvoke`.
 
 ### 3.4 `RunnablePassthrough` — carry data forward
 
-The identity function. Sounds useless; it's essential.
+> 💬 **In plain words:** passthrough hands its input on unchanged. You use it to keep the
+> original input next to the new values a parallel step computes.
+
+The identity function: it returns exactly what it receives. It sounds useless, but it's
+essential.
 
 ```js
 const chain = RunnableSequence.from([
@@ -202,6 +231,9 @@ This is the single most common pattern in RAG (Week 2):
 ```
 
 ### 3.5 `RunnableAssign` — add a key, keep everything else
+
+> 💬 **In plain words:** assign adds new keys to the object and keeps all the old ones. Parallel,
+> by contrast, throws the old ones away.
 
 `RunnablePassthrough.assign()` is `RunnableAssign`. It takes an object and **adds** keys.
 
@@ -232,6 +264,9 @@ Assign is how you build up a growing context object through a multi-step pipelin
 
 ### 3.6 `RunnableBranch` — if/else routing
 
+> 💬 **In plain words:** a branch checks conditions in order and runs the chain that matches
+> first, with a default for everything else.
+
 ```js
 const branch = RunnableBranch.from([
   [(x) => x.category === "BILLING", billingChain],   // [condition, runnable]
@@ -257,6 +292,9 @@ Conditions are evaluated in order; the first `true` wins.
 
 ### 3.7 Runnable modifiers
 
+> 💬 **In plain words:** modifiers add retries, fallbacks or settings to any step. The result is
+> still a step, so you can use it anywhere in a chain.
+
 These wrap any Runnable and return a Runnable — so they compose anywhere in a chain:
 
 ```js
@@ -269,6 +307,9 @@ chain.withListeners({ onStart, onEnd })   // hooks
 
 ### 3.8 Streaming through a chain
 
+> 💬 **In plain words:** call `.stream()` on a whole chain and text flows out as the model writes
+> it. One step that needs all its input at once stops that flow.
+
 This is the payoff. `.stream()` propagates automatically:
 
 ```js
@@ -277,7 +318,7 @@ for await (const chunk of await chain.stream({ topic: "rain" })) {
 }
 ```
 
-**But there's a catch that catches everyone.** A step can only stream if it can produce output
+**But there's a trap that almost everyone falls into.** A step can only stream if it can produce output
 incrementally. A `RunnableLambda` that takes the whole input, transforms it, and returns —
 *can't*. So it **buffers**: everything before it streams internally, but the chain's output
 only starts flowing once that lambda completes.
@@ -287,10 +328,13 @@ prompt → model → parser                       ✅ streams token by token
 prompt → model → parser → (x) => x.trim()      ❌ buffers — trim() needs the whole string
 ```
 
-Rule of thumb: **anything after a non-streaming step blocks streaming.** Put transformations
+A simple rule: **anything after a non-streaming step blocks streaming.** Put transformations
 before the model, or accept the buffering, or write a generator-based transform (Day 23).
 
 ### 3.9 `streamEvents` — see inside the chain
+
+> 💬 **In plain words:** `.streamEvents()` reports what each step inside the chain is doing as it
+> runs, so your UI can show progress, not just the final answer.
 
 `.stream()` gives you the *final* output. `.streamEvents()` gives you every intermediate step:
 
@@ -325,7 +369,7 @@ import {
   RunnablePassthrough, RunnableBranch,
 } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const str = new StringOutputParser();
 
 // ── 1. SEQUENCE ──────────────────────────────────────────────────────────
@@ -396,7 +440,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnableSequence, RunnablePassthrough } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const Triage = z.object({
   category: z.enum(["BILLING", "BUG", "FEATURE", "OTHER"]),
@@ -454,7 +498,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnableSequence, RunnableBranch } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const str = new StringOutputParser();
 
 const reply = (system) =>
@@ -505,7 +549,7 @@ import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const streams = ChatPromptTemplate
   .fromMessages([["human", "Explain {topic} in 60 words."]])
@@ -528,6 +572,7 @@ async function timeStream(name, chain) {
 
 await timeStream("streaming", streams);
 await timeStream("buffered", buffers);
+// illustrative numbers (not a recorded run) — the shape is what matters:
 // streaming    first chunk at 210ms,  total 1400ms
 // buffered     first chunk at 1420ms, total 1420ms   ← ALL the latency moved to the front
 
@@ -589,7 +634,7 @@ from langchain_core.runnables import (
 )
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 strp = StrOutputParser()
 
 # ── 1. SEQUENCE ──────────────────────────────────────────────────────────
@@ -661,7 +706,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class Triage(BaseModel):
     """Triage classification of a support ticket."""
@@ -720,7 +765,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableBranch
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 def reply(system):
     return (ChatPromptTemplate.from_messages([("system", system), ("human", "{ticket}")])
@@ -775,7 +820,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 streams = (
     ChatPromptTemplate.from_messages([("human", "Explain {topic} in 60 words.")])
@@ -796,6 +841,7 @@ def time_stream(name, chain):
 
 time_stream("streaming", streams)
 time_stream("buffered", buffers)
+# illustrative numbers (not a recorded run) — the shape is what matters:
 # streaming    first chunk at    210ms, total 1400ms
 # buffered     first chunk at   1420ms, total 1420ms   ← ALL the latency moved to the front
 
@@ -1064,7 +1110,8 @@ anything you'll want to find later.
 **❌ Reaching for LCEL when you need a loop**
 
 LCEL is acyclic. If your logic is "call a tool, look at the result, maybe call another" — that's
-a cycle. ✅ Use LangGraph (Week 3). Forcing loops into LCEL with recursive lambdas gets ugly fast.
+a cycle. ✅ Use LangGraph (Week 3). Forcing loops into LCEL with recursive lambdas quickly
+becomes hard to read.
 
 ---
 
@@ -1087,7 +1134,7 @@ import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnableSequence, RunnableParallel, RunnableLambda,
          RunnablePassthrough, RunnableBranch } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const str = new StringOutputParser();
 const REVIEW = "The plot dragged for the first hour but the last act was genuinely thrilling.";
 
@@ -1138,7 +1185,7 @@ from langchain_core.runnables import (
 )
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 strp = StrOutputParser()
 REVIEW = "The plot dragged for the first hour but the last act was genuinely thrilling."
 
@@ -1206,7 +1253,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnableSequence, RunnablePassthrough } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.4 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.4 });
 const str = new StringOutputParser();
 
 const outlineChain = ChatPromptTemplate
@@ -1250,7 +1297,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.4)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.4)
 strp = StrOutputParser()
 
 outline_chain = (
@@ -1300,9 +1347,9 @@ of the chain, and still compose. Not everything in a chain has to be an LLM call
 
 ### Exercise 3 — Parallel analysis dashboard ●●●○○
 
-Build a chain that analyses a piece of text **five ways concurrently** (summary, sentiment,
-key entities via structured output, reading level, and a suggested title), keeps the original
-text, and formats everything into a report. Measure it against a sequential version.
+Build a chain that analyses a piece of text **five ways concurrently**: summary, sentiment, key
+entities (via structured output), reading level, and a suggested title. It keeps the original
+text and formats everything into a report. Measure it against a sequential version.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1316,7 +1363,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnableSequence, RunnablePassthrough } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const str = new StringOutputParser();
 
 const ask = (instruction, runName) =>
@@ -1397,7 +1444,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 strp = StrOutputParser()
 
 def ask(instruction, run_name):
@@ -1463,9 +1510,11 @@ print(f"\nparallel: {parallel_ms:.0f}ms · sequential: {sequential_ms:.0f}ms · 
       f"speedup {sequential_ms / parallel_ms:.1f}x")
 ```
 
-**Expect roughly a 3–4× speedup**, not 5×, because the slowest branch sets the floor —
-`entities` (structured output, more tokens) dominates. That's Amdahl's law in a chain:
-parallelism buys you `slowest` instead of `sum`, never zero.
+**Expect a speedup short of 5×** (read the exact figure from your own run's `speedup` line;
+it varies run to run), because the slowest branch sets the floor —
+`entities` (structured output, more tokens) dominates. That's Amdahl's law in a chain (the whole
+can never be faster than its slowest part): parallelism buys you `slowest` instead of `sum`,
+never zero.
 
 **Two design details:**
 - `assign` rather than `parallel`, so `x.text` is still available in the formatter for the word count.
@@ -1479,9 +1528,9 @@ parallelism buys you `slowest` instead of `sum`, never zero.
 ### Exercise 4 — Semantic router with fallback ●●●●○
 
 Build a router that classifies an incoming question into one of four domains (`code`, `maths`,
-`history`, `other`), routes to a specialised chain for each, and:
+`history`, `other`). It routes to a specialised chain for each domain, and it:
 - attaches the detected domain and confidence to the output
-- falls back to the `other` chain if confidence < 0.6
+- falls back to the `other` chain if confidence is below 0.6
 - retries the classifier once on failure
 - logs which route was taken and how long it took
 
@@ -1497,8 +1546,8 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnableSequence, RunnablePassthrough, RunnableLambda } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
-const creative = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.5 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
+const creative = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.5 });
 const str = new StringOutputParser();
 
 // ── the specialists ──────────────────────────────────────────────────────
@@ -1586,8 +1635,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
-creative = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.5)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+creative = ChatGroq(model="openai/gpt-oss-120b", temperature=0.5)
 strp = StrOutputParser()
 
 # ── the specialists ──────────────────────────────────────────────────────
@@ -1709,7 +1758,7 @@ Bring the whole week together. Build a CLI study assistant that:
 5. **Streams** the explain-mode answer to the terminal
 6. Keeps conversation history with a `MessagesPlaceholder`
 7. Has retries and a fallback provider
-8. Prints a timing + token summary after each turn
+8. Prints a timing and token summary after each turn
 
 <details>
 <summary>✅ Solution</summary>
@@ -1728,12 +1777,19 @@ import { RunnableSequence, RunnablePassthrough, RunnableLambda } from "@langchai
 import { HumanMessage, AIMessage, trimMessages } from "@langchain/core/messages";
 
 // ─── models ───────────────────────────────────────────────────────────────
-const fast = new ChatGroq({ model: "llama-3.1-8b-instant", temperature: 0 });
-const main = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.4 });
-const backup = new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", temperature: 0.4 });
+const fast = new ChatGroq({ model: "openai/gpt-oss-20b", temperature: 0 });
+const main = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.4 });
+const backup = new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash", temperature: 0.4 });
 
 const resilient = main.withRetry({ stopAfterAttempt: 2 }).withFallbacks([backup]);
 const str = new StringOutputParser();
+
+// Structured output goes on EACH model, before the wrappers. A wrapped model has no
+// withStructuredOutput: `resilient.withStructuredOutput(...)` is a TypeError.
+const resilientStructured = (schema) =>
+  main.withStructuredOutput(schema)
+    .withRetry({ stopAfterAttempt: 2 })
+    .withFallbacks([backup.withStructuredOutput(schema)]);
 
 // ─── 1. analysis (runs in parallel, uses the CHEAP model) ─────────────────
 const Analysis = z.object({
@@ -1775,7 +1831,7 @@ const quizChain = ChatPromptTemplate.fromMessages([
   ["system", "Write a 3-question multiple-choice quiz at {difficulty} level about the topic. " +
              "Exactly one option correct. Plausible distractors. Vary the correct index."],
   ["human", "{question}"],
-]).pipe(resilient.withStructuredOutput(Quiz)).withConfig({ runName: "mode_quiz" });
+]).pipe(resilientStructured(Quiz)).withConfig({ runName: "mode_quiz" });
 
 const Plan = z.object({
   goal: z.string().describe("A one-sentence restatement of what they want to learn"),
@@ -1792,7 +1848,7 @@ const planChain = ChatPromptTemplate.fromMessages([
   ["system", "Create a practical study plan at {difficulty} level for {domain}. " +
              "Steps must be concrete and doable, never 'read about X'."],
   ["human", "{question}"],
-]).pipe(resilient.withStructuredOutput(Plan)).withConfig({ runName: "mode_plan" });
+]).pipe(resilientStructured(Plan)).withConfig({ runName: "mode_plan" });
 
 // ─── 3. the pipeline ──────────────────────────────────────────────────────
 const enrich = RunnableSequence.from([
@@ -1904,16 +1960,24 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.messages import HumanMessage, AIMessage, trim_messages
+from langchain_core.messages.utils import count_tokens_approximately
 
 load_dotenv()
 
 # ─── models ───────────────────────────────────────────────────────────────
-fast   = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-main   = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.4)
-backup = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.4)
+fast   = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+main   = ChatGroq(model="openai/gpt-oss-120b", temperature=0.4)
+backup = ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0.4)
 
 resilient = main.with_retry(stop_after_attempt=2).with_fallbacks([backup])
 strp = StrOutputParser()
+
+# Structured output goes on EACH model, before the wrappers. A wrapped model has no
+# with_structured_output: `resilient.with_structured_output(...)` is an AttributeError.
+def resilient_structured(schema):
+    return (main.with_structured_output(schema)
+            .with_retry(stop_after_attempt=2)
+            .with_fallbacks([backup.with_structured_output(schema)]))
 
 # ─── 1. analysis (runs first, uses the CHEAP model) ───────────────────────
 class Analysis(BaseModel):
@@ -1961,7 +2025,7 @@ quiz_chain = (
         ("system", "Write a 3-question multiple-choice quiz at {difficulty} level about the topic. "
                    "Exactly one option correct. Plausible distractors. Vary the correct index."),
         ("human", "{question}"),
-    ]) | resilient.with_structured_output(Quiz)
+    ]) | resilient_structured(Quiz)
 ).with_config(run_name="mode_quiz")
 
 class Step(BaseModel):
@@ -1981,7 +2045,7 @@ plan_chain = (
         ("system", "Create a practical study plan at {difficulty} level for {domain}. "
                    "Steps must be concrete and doable, never 'read about X'."),
         ("human", "{question}"),
-    ]) | resilient.with_structured_output(Plan)
+    ]) | resilient_structured(Plan)
 ).with_config(run_name="mode_plan")
 
 # ─── 3. the pipeline ──────────────────────────────────────────────────────
@@ -2058,7 +2122,7 @@ while True:
     try:
         # Trim history before every turn so cost stays bounded.
         trimmed = trim_messages(history, max_tokens=800, strategy="last",
-                                token_counter=main, start_on="human")
+                                token_counter=count_tokens_approximately, start_on="human")
 
         enriched = enrich.invoke({"question": question, "history": trimmed})
         stuck = " · seems stuck" if enriched["analysis"].seems_confused else ""
@@ -2086,6 +2150,58 @@ while True:
         print(f"\n  ⚠️  {str(err)[:120]}\n")
 ```
 
+**A real session** (Python, 8 October 2026, abridged — your wording and timings will differ):
+
+```
+[explain] › What is recursion? I keep getting confused by it
+  ↳ programming/beginner · seems stuck
+
+It is completely normal to find this tricky, so imagine opening a set of Russian nesting
+dolls. … In programming, recursion is simply when a function solves a problem by calling
+*itself* to handle a smaller piece of the task. …
+What do you think would happen to the computer if we forgot to include that stopping point?
+
+  ⏱  14752ms · avg 14752ms over 1 turns
+
+[quiz] › What is recursion?
+  ↳ programming/beginner
+
+1. What is recursion in programming?
+   ✅ A) A function that calls itself
+      B) A loop that repeats until a condition is met
+   …
+[plan] › I want to learn SQL joins
+  ↳ other/intermediate
+
+🎯 Learn to write and understand the different types of SQL joins (INNER, LEFT, RIGHT, FULL, CROSS).
+…
+⏱  Total: ~7 hours
+```
+
+Three things in that run are worth noticing.
+
+- **The fallback really fired.** The explain answer took 14.7 seconds and came from Gemini, not
+  Groq. We were sharing a free Groq key, which allows 30 requests per minute. The quiz and plan
+  turns went back to Groq once the limit cleared.
+- **When both providers fail, you see the first error.** Two JavaScript turns printed
+  Groq's error even though a fallback existed. It was
+  `429 … Rate limit reached for model openai/gpt-oss-120b … on requests per minute (RPM): Limit
+  30, Used 30`. A check run minutes earlier got this from Gemini:
+  `503 … This model is currently experiencing high demand`. A fallback chain reports the
+  *primary's* error when everything fails, so check every provider before blaming the first.
+- **The classifier is not perfect.** "I want to learn SQL joins" came back as `other`, not
+  `programming`. A cheap classifier is allowed to be wrong sometimes; the value fallback and the
+  rest of the turn still worked.
+
+> ⚠️ **Why `count_tokens_approximately` in Python?** It guesses about four characters per
+> token, with no download, and a budget only needs a guess. Our first version passed
+> `token_counter=main`. On the second turn the history was no longer empty, so the model had to
+> count. `ChatGroq` has no tokenizer of its own, so LangChain fell back to GPT-2's. It printed
+> `UserWarning: Using fallback GPT-2 tokenizer for token counting`, downloaded GPT-2 from
+> Hugging Face, and that turn took 82 seconds. (The fallback also needs the `transformers`
+> package.) JavaScript's `tokenCounter: main` uses GPT-2's tokenizer too, but fetches it once in
+> under a second. Both counts are estimates, which is fine for a budget.
+
 **Every Week 1 concept is in here. Trace them:**
 
 | Day | Where it shows up |
@@ -2100,8 +2216,8 @@ while True:
 
 **The three architectural decisions worth defending in an interview:**
 
-1. **The cheap model does the analysis.** `llama-3.1-8b-instant` classifies domain and
-   difficulty; the 70B model writes the answer. Classification is easy and happens on every
+1. **The cheap model does the analysis.** `openai/gpt-oss-20b` classifies domain and
+   difficulty; the 120B model writes the answer. Classification is easy and happens on every
    turn — using one big model for everything is the most common way teams overspend.
 
 2. **The analysis chain has a *value* fallback, not an error fallback.** If the classifier dies,
@@ -2113,7 +2229,7 @@ while True:
    per output type, not a global switch.
 
 **What it still can't do — and that's the point.** Ask it *"quiz me, and if I get one wrong,
-explain that specific thing and quiz me again."* That's a **loop**: act → observe → decide →
+explain that specific thing and quiz me again."* That's a **loop**: act, observe, decide, and
 maybe repeat. LCEL is a directed *acyclic* graph. You'd have to write the loop outside the chain
 in plain JavaScript/Python, at which point you lose streaming, tracing and state management
 across iterations.
@@ -2140,7 +2256,7 @@ without glue code.
 <details>
 <summary><b>Q: What is a Runnable?</b></summary>
 
-The core LangChain interface. Anything implementing it provides `invoke` (one input → one
+The core LangChain interface. Anything implementing it provides `invoke` (one input, one
 output), `stream` (incremental output), `batch` (many inputs concurrently), and `pipe`
 (composition). Models, prompts, parsers, retrievers, lambdas, and entire chains all implement
 it — which is what makes composition uniform.
@@ -2152,7 +2268,8 @@ it — which is what makes composition uniform.
 `RunnableSequence` runs steps **one after another**, passing each output as the next input —
 that's what `.pipe()` / `|` builds. `RunnableParallel` runs several Runnables **concurrently on
 the same input** and collects results into an object keyed by name. Sequence is for dependent
-steps; Parallel is for independent ones, and it turns sum-of-latencies into max-of-latencies.
+steps; Parallel is for independent ones. Parallel also changes the total wait: instead of the
+sum of every step's latency, you wait only as long as the slowest step.
 </details>
 
 <details>
@@ -2175,7 +2292,7 @@ parallel block to carry the original input forward alongside computed values.
 `RunnableAssign` (via `RunnablePassthrough.assign()`) takes a dict input and **adds** keys to
 it, preserving everything already there.
 
-The three-way contrast is the thing to have crisp:
+The three-way contrast is the thing to have clear in your head:
 
 | | `{a: 1}` becomes |
 |---|---|
@@ -2208,7 +2325,8 @@ The rule is that **output of step N must match input of step N+1**, so almost ev
 type mismatch at one seam.
 
 1. **Invoke sub-chains independently.** Because composition is closed, any prefix of the chain
-   is itself a Runnable you can call directly. Binary-search the pipeline.
+   is itself a Runnable you can call directly. Binary-search the pipeline: test the first half,
+   then keep halving the part that fails.
 2. **Insert tap lambdas** that log and return their input unchanged.
 3. **Name the steps** with `withConfig({ runName })` and read the LangSmith trace — you get
    input and output for every node.
@@ -2227,8 +2345,8 @@ routing logic is a core part of the design. A lambda is more readable when the c
 complex or when you're choosing between many options from a lookup table.
 
 Either way, both are **static** routing: the structure is fixed and data flows forward once.
-When the routing decision needs to be revisited after seeing a result — "try this, and if it
-fails, try something else" — you've left LCEL's territory and want a graph.
+Sometimes the routing decision must be revisited after seeing a result: "try this, and if it
+fails, try something else". Then you've left LCEL's territory and want a graph.
 </details>
 
 ### Advanced
@@ -2245,9 +2363,9 @@ per step, so each child run gets its own ID with a parent pointer. That's how La
 reconstructs a nested trace with zero instrumentation from you. It also carries tags, metadata,
 concurrency limits, and recursion limits.
 
-`stream` is the more interesting implementation: it finds the last step with a `transform`
-method (one that accepts an async iterator), runs the prefix with `invoke`, and chains iterators
-from there. `RunnableParallel` uses `Promise.all` / `asyncio.gather` (or a thread pool for sync
+`stream` is the more interesting implementation. It finds the last step with a `transform`
+method (one that accepts an async iterator). It runs everything before that step with `invoke`,
+and chains iterators from there. `RunnableParallel` uses `Promise.all` / `asyncio.gather` (or a thread pool for sync
 Python), giving every branch the identical input.
 
 The design consequence worth stating: because composition is closed under the interface, generic
@@ -2259,13 +2377,14 @@ rather than per component. That's the actual payoff, more than the syntax.
 <summary><b>Q: What are LCEL's limitations, and when do you reach for LangGraph?</b></summary>
 
 LCEL builds a **directed acyclic graph**. Data flows forward, each step runs once, and the
-structure is fixed at build time. That's a great fit for retrieve → prompt → generate → parse.
+structure is fixed at build time. That's a great fit for retrieve, then prompt, then generate,
+then parse.
 
 It's the wrong fit when you need:
 
 - **Cycles** — an agent that calls a tool, observes the result, and decides whether to call
   another. You can fake it with a recursive lambda, but you lose streaming, tracing coherence,
-  and any sane view of state across iterations.
+  and any clear view of state across iterations.
 - **Shared mutable state** — LCEL threads a value through steps; there's no state object that
   multiple nodes read and update with defined merge semantics (reducers).
 - **Persistence and resumption** — pausing mid-execution, saving, and resuming later.
@@ -2306,11 +2425,13 @@ input: { question, history }
   accumulated context. A `parallel` anywhere in the middle silently drops keys and you'd get a
   missing-variable error three steps later.
 - **Query rewriting first** — retrieval on a raw follow-up question ("what about the second
-  one?") retrieves nothing useful. This is the highest-ROI stage in conversational RAG.
+  one?") retrieves nothing useful. This stage gives the biggest gain for its cost in
+  conversational RAG.
 - **Hybrid retrieval in a `RunnableParallel`** — vector and BM25 are independent, so they run
   concurrently; the merge happens in a lambda afterwards.
 - **Reranking as a separate stage** — retrieve 20 cheaply, rerank to 5 accurately. Keeps the
-  final prompt small, which matters for both cost and the lost-in-the-middle effect.
+  final prompt small, which matters for both cost and the lost-in-the-middle effect (models pay
+  less attention to the middle of a long prompt).
 - **Answer generation last so it streams** — everything before it is `invoke`d, then tokens flow.
   Citations are parsed from the *complete* answer, so you'd emit them after the stream ends
   rather than piping them (a post-stream lambda would block streaming).
@@ -2327,11 +2448,12 @@ Week 2 builds the LCEL version; Week 3 rebuilds it as a graph for exactly this r
 ## 10. Recap
 
 - ✅ LCEL is operator overloading on the `Runnable` interface — not a DSL, not a compiler
-- ✅ `RunnableSequence` (pipe) — sequential, output N → input N+1
+- ✅ `RunnableSequence` (pipe) — sequential; the output of step N is the input of step N+1
 - ✅ `RunnableParallel` — concurrent, same input to all, **replaces** the input object
 - ✅ `RunnableLambda` — any function becomes a step; one argument only
 - ✅ `RunnablePassthrough` — identity, carries the input forward
-- ✅ `RunnableAssign` — adds keys, **keeps** the rest. The workhorse of multi-step pipelines
+- ✅ `RunnableAssign` — adds keys, **keeps** the rest. The step you'll use most in multi-step
+  pipelines
 - ✅ `RunnableBranch` — declarative if/elif/else routing
 - ✅ Streaming propagates automatically — until a non-streaming step buffers it
 - ✅ Name your steps; unnamed traces are useless
@@ -2339,21 +2461,33 @@ Week 2 builds the LCEL version; Week 3 rebuilds it as a graph for exactly this r
 
 ### 🎉 Week 1 complete
 
-You can now: explain how an LLM generates text, engineer prompts deliberately, call any provider
-through one interface, template your prompts, get validated typed objects out of a model, and
-compose all of it into streaming pipelines.
+You can now:
+
+- explain how an LLM generates text;
+- engineer prompts deliberately;
+- call any provider through one interface;
+- template your prompts;
+- get validated typed objects out of a model;
+- compose all of it into streaming pipelines.
 
 **You built StudyBuddy v1** — a real multi-mode study assistant with parallel analysis, routing,
 structured output, streaming, history, retries and fallbacks.
+
+> 📏 **Measure it:** Before running §4.3 (`day07-routing.js`), note which reply each of its three
+> tickets should get, using the system prompts in `CHAINS` as your guide. It passes when the
+> double charge gets the billing reply, the broken export button gets the bug reply and the
+> dark-mode request gets the feature reply. Day 25 turns this habit into a proper evaluation
+> suite.
 
 ### Next week
 
 **Week 2 — Data, Embeddings, RAG & Memory.** StudyBuddy currently knows nothing about *your*
 lecture notes. Next week it reads your PDFs and cites the page number.
 
-You'll cover chains, document loading and splitting, embeddings from first principles, vector
-databases, naive RAG end-to-end, then advanced RAG (reranking, HyDE, multi-query, corrective and
-self-RAG), and how memory really works in modern LangChain.
+You'll cover chains, document loading and splitting, embeddings from first principles, and
+vector databases. Then you build naive RAG end-to-end, and move on to advanced RAG (reranking,
+HyDE, multi-query, corrective and self-RAG). Finally, you see how memory really works in modern
+LangChain.
 
 ### Quick self-check
 
@@ -2374,3 +2508,11 @@ self-RAG), and how memory really works in modern LangChain.
    outside the chain, losing streaming, coherent tracing and state management across iterations.
    That's what LangGraph is for (Week 3).
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 06 — Output Parsers & Structured Output (Zod ↔ Pydantic)](day-06-output-parsers-structured-output.md)** · **[Week 1 index](README.md)** · **[Day 08 — Chains →](../week-02-data-embeddings-and-rag/day-08-chains.md)**
+
+</div>

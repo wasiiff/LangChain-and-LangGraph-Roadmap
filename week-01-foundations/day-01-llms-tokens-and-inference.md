@@ -1,10 +1,26 @@
 # Day 01 — What an LLM Actually Is: Tokens, Context & Inference
 
-> ⏱ **Time:** ~2 hours · 🎯 **Prereqs:** [SETUP.md](../SETUP.md) done · 🧩 **Difficulty:** ●○○○○
+> ⏱ **Time:** ~2 hours · 🎯 **Prereqs:** [SETUP.md](../SETUP.md) done (new to programming? start with [Week 0](../week-00-start-here/README.md)) · 🧩 **Difficulty:** ●○○○○
 
-**Today you learn:** what a token is, why context windows exist, what temperature *really*
-does, and the exact path a message takes from your keyboard to the model's answer. No
-LangChain today — you can't use a tool well if you don't know what it's wrapping.
+**Today you learn:** LLMs surprise new developers. They forget earlier messages, invent facts,
+and answer the same question differently each time. Today you follow one message from your
+keyboard to the model's answer, so you can predict those problems instead of being surprised by
+them. You'll count tokens, budget a context window, and change the temperature to watch the
+answers change. No LangChain today — you can't use a tool well if you don't know what it wraps.
+
+> 📖 **Words you'll meet today**
+>
+> - **LLM (large language model)** — a program trained on huge amounts of text to predict the
+>   next piece of text.
+> - **Token** — a small chunk of text, often part of a word, that the model reads and writes.
+> - **Context window** — the most tokens the model can handle in one call, input and output
+>   together.
+> - **Inference** — running a finished model to get an answer. Every API call is inference.
+> - **Sampling** — choosing the next token from the model's list of likely options.
+> - **Temperature** — a setting that makes sampling more predictable (low) or more varied (high).
+> - **Hallucination** — a fluent, confident answer that is not true.
+> - **Attention** — the step inside the model where each token decides which other tokens
+>   matter to it.
 
 ---
 
@@ -18,18 +34,19 @@ Imagine you hire an assistant with a very unusual condition.
 - When you ask her something, she doesn't "look up" an answer. She writes the answer **one word at a time**, each time picking the word that feels most likely to come next.
 - She will never say "I don't know" unless you tell her she's allowed to.
 
-That's an LLM. Every weird behaviour you've heard about — hallucinations, forgetting the start
-of a long chat, giving different answers to the same question — falls directly out of those
-five properties.
+That's an LLM. Every strange behaviour you've heard about comes directly from those five
+properties. That includes hallucinations (confident, invented answers), forgetting the start of
+a long chat, and giving different answers to the same question.
 
 **Concrete pain this causes:**
 
-> A junior dev builds a customer support bot. It works great in testing. In production,
+> A junior developer builds a customer support bot. It works well in testing. In production,
 > customers complain it "forgets what they said two messages ago" and "makes up refund
-> policies." The dev thinks the model is broken. It isn't. He never sent the chat history
+> policies." The developer thinks the model is broken. It isn't. He never sent the chat history
 > (property 2), and he never gave it the real policy document (property 1).
 
-Today's goal: make those five properties concrete enough that you'd predict that bug before shipping it.
+Today's goal: make those five properties so concrete that you would predict that bug before you
+release the bot.
 
 ---
 
@@ -73,8 +90,9 @@ Today's goal: make those five properties concrete enough that you'd predict that
 ```
 
 **The single most important idea on this page:** the model does not generate a *response*.
-It generates **one token**, then gets fed its own output and generates one more. A 500-word
-answer is 600-ish forward passes through the network. That's why:
+It generates **one token**, then gets fed its own output and generates one more. Each step is a
+*forward pass* — one full run of the network over the input. A 500-word answer is about 600
+forward passes. That's why:
 
 - streaming is possible (tokens exist one at a time anyway),
 - output tokens cost more than input tokens (each one is a full pass),
@@ -86,8 +104,12 @@ answer is 600-ish forward passes through the network. That's why:
 
 ### 3.1 Tokens — the atoms
 
+> 💬 **In plain words:** the model reads and writes text in small chunks called tokens. You pay
+> per token, and the same idea can cost more tokens in some languages than others.
+
 Models don't see letters and they don't see words. They see **tokens**: chunks of characters
-that the tokenizer learned are statistically useful. Roughly:
+that appear often enough in text to be worth their own entry. The *tokenizer* is the program
+that splits text into tokens and turns each one into a number (its ID). Roughly:
 
 ```
 "The cat sat on the mat"     →  ["The", " cat", " sat", " on", " the", " mat"]   6 tokens
@@ -110,9 +132,9 @@ trailing space in your prompt can subtly change output quality.
 | 1,000 tokens | ≈ 750 words ≈ 1.5 pages |
 
 **Other languages are more expensive.** The same sentence in Hindi, Arabic, Thai or Chinese
-can cost 2–4× the tokens of English, because the tokenizer's vocabulary was built mostly from
-English text. If you're building for a non-English market, your cost model is not the one in
-the blog posts.
+can cost 2–4 times as many tokens as English. That's because the tokenizer's vocabulary (its
+list of known tokens) was built mostly from English text. If you're building for a non-English
+market, your costs will not match the estimates in English-focused blog posts.
 
 > 🧠 **Analogy.** Tokens are LEGO bricks. Common words like `" the"` got their own custom
 > moulded brick because they show up constantly. Rare words get built from smaller generic
@@ -120,8 +142,11 @@ the blog posts.
 
 ### 3.2 The context window — the desk
 
+> 💬 **In plain words:** there is a fixed limit on how much text one call can hold, question
+> and answer together. Sending more text costs more, and it doesn't always give better answers.
+
 The **context window** is the maximum number of tokens the model can look at in a single call.
-Crucially, it covers **input + output together**.
+The key point: it covers **input + output together**.
 
 ```
 ┌───────────────── context window: 128,000 tokens ──────────────────┐
@@ -138,18 +163,25 @@ Typical sizes today: 8K (small local models), 128K (most hosted models), 200K–
 
 **Three things people get wrong:**
 
-1. **Bigger context ≠ better answers.** Models exhibit a *"lost in the middle"* effect —
-   information at the very start and very end of a long context is used reliably; stuff buried
-   in the middle gets ignored. This is a big reason RAG (Week 2) beats "just paste the whole book in."
+1. **Bigger context does not mean better answers.** Models show a *"lost in the middle"*
+   effect. They use information at the very start and very end of a long context reliably.
+   Information buried in the middle often gets ignored. This is a big reason RAG (Week 2) beats
+   "just paste the whole book in". RAG, *retrieval-augmented generation*, means finding the few
+   relevant passages and sending only those.
 2. **Context is not memory.** Nothing persists between calls. If a chatbot "remembers" your
    name, it's because your app re-sent the whole conversation. You'll build that on Day 04.
 3. **Cost scales with context.** You pay for every input token, on **every turn**. A 50-message
-   conversation re-sends all 50 messages on message 51. Naive chatbots get quadratically expensive.
+   conversation re-sends all 50 messages on message 51. So a simple chatbot gets *quadratically*
+   expensive: the total cost grows with the square of the number of messages.
 
 ### 3.3 The probability distribution — where "creativity" comes from
 
+> 💬 **In plain words:** the model never picks one word directly. It gives every possible next
+> token a probability, and a separate step chooses one of them.
+
 After the forward pass, the model produces a score (a *logit*) for **every token in its
-vocabulary** — typically 30,000–200,000 numbers. Softmax turns those into probabilities:
+vocabulary** — typically 30,000–200,000 numbers. *Softmax* is a small formula that turns any
+list of scores into probabilities that add up to 100%:
 
 ```
 Prompt: "The capital of France is"
@@ -165,11 +197,22 @@ Prompt: "The capital of France is"
 **The model always knows the whole distribution. Sampling is what picks one.** And *that's*
 the layer your parameters control.
 
+> 📦 **Can you see these probabilities yourself?** Some APIs return them when you ask for
+> `logprobs` (log-probabilities: the same numbers on a log scale). The current Groq models
+> refuse. Our request in October 2026 returned
+> ``400 `logprobs` is not supported with this model``. Providers that support it include OpenAI
+> (a paid API, not executed here), so check your provider's docs before you rely on it.
+
 ### 3.4 The sampling knobs
+
+> 💬 **In plain words:** a few settings control how the next token is chosen. Low temperature
+> gives safe, repeatable answers; high temperature gives varied ones. `max_tokens` only cuts the
+> answer off.
 
 #### `temperature` — flatten or sharpen the distribution
 
-Temperature divides the logits before softmax.
+Temperature divides the logits before softmax. A low temperature makes the top token even more
+likely. A high temperature spreads the probability more evenly.
 
 ```
 temperature = 0.0        temperature = 0.7        temperature = 2.0
@@ -190,16 +233,21 @@ temperature = 0.0        temperature = 0.7        temperature = 2.0
 | `1.0+` | Brainstorming, creative writing, generating diverse variations |
 | `>1.5` | Rarely useful — output degrades into word salad |
 
-> ⚠️ **`temperature: 0` is not "deterministic".** It's *greedy* — always pick the top token.
-> You'll still get different answers across runs, because floating-point non-determinism on
-> GPUs, batching, and provider-side model updates all shift the top choice on near-ties.
-> Never build a test that asserts exact string equality on LLM output.
+> ⚠️ **`temperature: 0` is not "deterministic"** (it does not guarantee the same output every
+> time). It's *greedy* — always pick the top token. You'll still get different answers across
+> runs. When two tokens are almost tied, small things can change which one is on top. Examples
+> are tiny floating-point rounding differences on GPUs, how the server batches requests
+> together, and provider-side model updates. Never build a test that asserts exact string
+> equality on LLM output.
 
 #### `top_p` (nucleus sampling) — truncate the tail
 
-Instead of scaling probabilities, `top_p` **cuts off** the long tail. `top_p = 0.9` means:
-sort tokens by probability, keep adding until they sum to 90%, discard the rest, sample from
-what's left.
+Instead of scaling probabilities, `top_p` **cuts off** the long tail of unlikely tokens.
+`top_p = 0.9` means:
+
+1. Sort tokens by probability.
+2. Keep adding them until their probabilities sum to 90%.
+3. Discard the rest, and sample from what's left.
 
 ```
 top_p = 0.9
@@ -211,8 +259,8 @@ top_p = 0.9
 " banana"  0.001% ❌ discarded — can NEVER be chosen
 ```
 
-This is why `top_p` is good at preventing "the model said something insane" — the insane
-tokens are removed from the pool entirely, no matter what temperature does.
+This is why `top_p` is good at preventing "the model said something absurd". The absurd tokens
+are removed from the pool entirely, no matter what temperature does.
 
 > 🎯 **Practical advice:** tune **one** of temperature or top_p, not both. Most teams set
 > `top_p = 1` and adjust temperature. Adjusting both makes the effect impossible to reason about.
@@ -226,32 +274,51 @@ Both fight repetition, differently:
 | `frequency_penalty` | Penalty grows **with each repeat** | Stops "very very very very good" |
 | `presence_penalty` | Flat penalty once a token appears **at all** | Pushes toward new topics/vocabulary |
 
-Range is typically `-2.0` to `2.0`; `0` is off. Useful values are small: `0.1`–`0.6`. Note that
-these are OpenAI-style parameters — not every provider supports them (Anthropic doesn't).
+The range is typically `-2.0` to `2.0`, and `0` is off. Useful values are small: `0.1`–`0.6`.
+These are OpenAI-style parameters, and not every provider supports them (Anthropic doesn't).
 
 #### `max_tokens` — a budget, not an instruction
 
-`max_tokens` caps the **output**. It does not make the model write concisely; it makes the
+`max_tokens` caps the **output**. It does not make the model write concisely. It makes the
 model get **cut off mid-sentence**. If you want short answers, say so in the prompt *and* set
 `max_tokens` as a safety net.
 
 ```
 ❌ max_tokens: 50, prompt: "Explain photosynthesis"
-   → "Photosynthesis is the process by which plants convert light energy into chemical
-      energy. It occurs in the chloroplasts, specifically in structures called thyla"   ✂️
+   → ""   (empty!)   finish_reason: "length"   47 of the 50 tokens were hidden reasoning
 
-✅ prompt: "Explain photosynthesis in exactly two sentences."  + max_tokens: 200
-   → complete, short answer
+✅ prompt: "Explain photosynthesis in exactly two sentences."  + max_tokens: 1024
+   → "Photosynthesis is the process by which green plants, algae, and certain bacteria
+      capture light energy to transform carbon dioxide and water into glucose, releasing
+      oxygen as a by-product. This conversion takes place in chloroplasts, ..."
+      finish_reason: "stop"   199 tokens used, 125 of them hidden reasoning
 ```
+
+Both lines are real runs against `openai/gpt-oss-120b` on Groq. Your wording will differ.
 
 Check `finish_reason` / `stop_reason` in the response: `"length"` means you got truncated,
 `"stop"` means the model finished naturally.
 
+> ⚠️ **Reasoning models spend `max_tokens` on thinking first.** This course's default model,
+> `openai/gpt-oss-120b`, is a *reasoning model*. Before the answer, it writes hidden "thinking"
+> tokens, and those count towards `max_tokens`. With a small limit, the thinking uses it all.
+> You get an **empty** answer with `finish_reason: "length"` and no error. Even
+> `max_tokens: 200` only just fitted the two-sentence answer above: 188 tokens used, 112 of them
+> thinking. There are two fixes:
+>
+> - Raise the limit. 512–1024 is a safe start for short answers.
+> - Ask for less thinking with `reasoning_effort: "low"` (`reasoningEffort` in LangChain JS).
+>   In our test, "2+2" then used 16 output tokens instead of about 40–90.
+
 ### 3.5 Why hallucinations are inevitable
 
-Sampling picks the *statistically plausible* next token. It has no truth-check step. If you ask
-about a nonexistent library, "I don't know" is a rare continuation in the training data —
-confident documentation is common. So the model writes confident documentation.
+> 💬 **In plain words:** the model writes what *sounds* likely, not what it has checked. Giving
+> it real facts in the prompt is the best fix.
+
+Sampling picks the *statistically plausible* next token — the one that best fits the patterns
+it learned. It has no truth-check step. Suppose you ask about a library that doesn't exist. In
+the training data, "I don't know" is a rare continuation, and confident documentation is
+common. So the model writes confident documentation.
 
 ```
 "How do I use the getUserPreferences() method in Express?"
@@ -262,17 +329,127 @@ Model's output:            confident, well-formatted, completely invented API
 
 **Fixes, in order of effectiveness:**
 
-1. **Give it the facts** — retrieval (RAG, Week 2). By far the biggest lever.
+1. **Give it the facts** — retrieval (RAG, Week 2). By far the most effective fix.
 2. **Give it tools** — let it look things up (Week 3).
 3. **Give it permission to fail** — "If the context doesn't contain the answer, say 'I don't know.'"
 4. **Lower temperature** — helps a little.
 5. **Ask for citations** — makes hallucination visible even if it doesn't prevent it.
 
+### 3.6 How a model is made
+
+> 💬 **In plain words:** a model first learns to continue text, then learns to follow
+> instructions, then learns which answers people prefer. After that it is frozen and served —
+> your API calls never teach it anything.
+
+The five strange properties from §1 make more sense once you know how a chat model is built. It
+happens in stages. Exact recipes differ between labs and are often not published, so treat this
+as the common outline, not a precise specification.
+
+```
+random parameters
+      │  1. pre-training: predict the next token over a huge amount of text
+      ▼
+base model            continues text; doesn't "answer" anything yet
+      │  2. instruction tuning: learn from examples of good answers
+      ▼
+instruction model     follows the chat format and roles
+      │  3. preference tuning (RLHF / DPO): learn which answers people prefer
+      ▼
+chat model            helpful tone, refusals, "I can't help with that"
+      │  4. serving: parameters frozen, loaded onto GPUs
+      ▼
+your API call         inference only — nothing is learned from it
+```
+
+**1. Pre-training.** The model starts as billions of random numbers, called *parameters* or
+*weights*. It reads a very large collection of text (web pages, books, code) and plays one game
+over and over: guess the next token. Each wrong guess nudges the parameters slightly, so the
+right token becomes a little more likely next time. After enough text, the model has absorbed
+grammar, style, many facts and many patterns of reasoning — but only as patterns. That is
+property 1 from §1: she remembers the *patterns*, not the facts as facts.
+
+The result is a **base model**. It continues text; it does not answer you. Give a base model a
+question and it may carry on with more questions, because that is a likely continuation of a
+list of questions.
+
+**2. Instruction tuning** (also called *supervised fine-tuning*). The base model is trained
+further on a much smaller, carefully chosen set of examples: an instruction, then a good
+response. These examples are written or checked by people. This is where the model learns the
+chat format from §6 — system, user and assistant turns — and learns that text after an
+instruction should *answer* it.
+
+**3. Preference tuning.** People compare two answers to the same prompt and pick the better one.
+The model is then trained to produce more answers like the preferred ones. Two common methods:
+
+- **RLHF** (*reinforcement learning from human feedback*) first trains a separate *reward model*
+  to predict which answer people would prefer. It then adjusts the LLM to score well with it.
+- **DPO** (*direct preference optimisation*) skips the reward model and learns from the pairs of
+  preferred and rejected answers directly.
+
+This stage explains a lot of "assistant" behaviour. The polite, helpful tone and the habit of
+refusing some requests are largely *learned* preferences. They are not rules written in code.
+Providers may also run separate safety filters around the model, but the refusal habit itself
+comes from training. That is why it can be too cautious on some harmless requests, and why
+cleverly worded prompts can sometimes get around it. Day 02 shows a related problem, *prompt
+injection*.
+
+**4. Serving.** The finished parameters are frozen and loaded onto GPUs. Every API call is
+*inference*: the forward-pass loop from §2, running on fixed parameters. Nothing you send
+changes the model during your call, which is why it has no memory (property 2). It also means
+the model's knowledge stops at the end of its training data. Whether a provider later uses your
+data to train *future* models is a policy question — check its terms.
+
+> 💡 **Why this matters to you.** Prompting (Day 02) changes the *input* to a frozen model.
+> Fine-tuning changes the *parameters*. RAG (Week 2) changes the input by adding facts. Most of
+> this course works at the input level, because that is fast, cheap and under your control.
+
+### 3.7 Attention, by intuition
+
+> 💬 **In plain words:** inside the model, each token looks at the tokens before it and decides
+> which ones matter most. Then it mixes in their meaning. That step is called attention.
+
+Words get their meaning from other words. In *"The cat sat down because it was tired"*, the
+token `" it"` means nothing on its own — it needs `" cat"`. In *"river bank"* and *"bank loan"*,
+`" bank"` means different things. Before the model can predict a good next token, every token
+needs some information from the tokens around it.
+
+**Attention** is the step that does this. Inside the network, each token is a *vector* — a list
+of numbers that stands for its meaning. Attention updates each token's vector in three steps:
+
+1. **Score.** The token compares itself with every token before it, including itself. The
+   comparison is a *dot product*: multiply two vectors number by number and add up the results.
+   Vectors that point the same way give a high score.
+2. **Weigh.** Softmax — the same formula from §3.3 — turns the scores into weights that add up
+   to 1. A high score becomes a large share of the attention.
+3. **Mix.** The token's new vector is the weighted average of the others. If `" it"` gives
+   most of its weight to `" cat"`, its new vector carries a lot of "cat" meaning.
+
+In a real model, each token's vector is turned into three learned versions first. The *query*
+says "what am I looking for?", the *key* says "what do I contain?", and the *value* is "what I
+pass on if chosen". Scores compare one token's query with the other tokens' keys, and the mix
+uses their values. A model runs many attention steps side by side (*heads*) and stacks many
+layers of them. Roughly speaking, each head can learn to look for a different kind of
+relationship. You'll compute one attention step by hand in §4.6 / §5.6.
+
+**This connects to two things you've already met:**
+
+- **The KV-cache** (§6). In models like these, a token only looks *backwards*, so the keys and
+  values of earlier tokens don't change when a new token arrives. The server stores them — that
+  store is the KV-cache. Each new output token then computes only its own query, key and value,
+  and compares against the stored keys instead of recomputing everything.
+- **Long contexts cost more.** In the standard design every token is compared with every token
+  before it. So the work grows roughly with the square of the context length, which is another
+  reason "just paste in everything" is expensive.
+
+> 💡 **Maths refresher.** Vectors, dot products and softmax are explained step by step in
+> [Day 0C — Just enough maths](../week-00-start-here/day-00c-just-enough-maths.md).
+
 ---
 
 ## 4. Code — JavaScript
 
-We're using the **raw provider SDK**, not LangChain, so you see exactly what's happening.
+We're using the **raw provider SDK** (the provider's own client library), not LangChain, so you
+see exactly what's happening.
 
 ```bash
 npm install groq-sdk dotenv gpt-tokenizer
@@ -288,7 +465,7 @@ import Groq from "groq-sdk";
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const response = await groq.chat.completions.create({
-  model: "llama-3.3-70b-versatile",
+  model: "openai/gpt-oss-120b",
 
   // The conversation. Always an ARRAY of role/content objects.
   messages: [
@@ -298,7 +475,7 @@ const response = await groq.chat.completions.create({
 
   temperature: 0.7,          // 0 = deterministic-ish, 2 = chaotic
   top_p: 1,                  // 1 = no truncation (tune temperature OR this, not both)
-  max_tokens: 200,           // hard cap on OUTPUT tokens
+  max_tokens: 1024,          // hard cap on OUTPUT tokens — hidden reasoning counts too (§3.4)
   frequency_penalty: 0,      // >0 discourages repeating the same token
   presence_penalty: 0,       // >0 pushes toward new topics
   stop: null,                // e.g. ["\n\n"] to stop at a blank line
@@ -310,10 +487,27 @@ console.log(response.choices[0].message.content);
 console.log({
   finishReason: response.choices[0].finish_reason,  // "stop" | "length" | "tool_calls"
   inputTokens:  response.usage.prompt_tokens,
-  outputTokens: response.usage.completion_tokens,
+  outputTokens: response.usage.completion_tokens,   // includes the hidden reasoning tokens
+  reasoningTokens: response.usage.completion_tokens_details?.reasoning_tokens,
   totalTokens:  response.usage.total_tokens,
 });
 ```
+
+Our run printed a friendly answer about gravity (your wording will differ), then:
+
+```
+{
+  finishReason: 'stop',
+  inputTokens: 92,
+  outputTokens: 404,
+  reasoningTokens: 40,
+  totalTokens: 496
+}
+```
+
+Two numbers deserve a second look. `inputTokens: 92` is far more than the 20 or so words you
+sent; §4.3 explains the hidden extra. `reasoningTokens: 40` is the thinking you never see but
+still pay for, as output.
 
 ### 4.2 Proving the model has no memory
 
@@ -325,7 +519,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const ask = async (messages) => {
   const r = await groq.chat.completions.create({
-    model: "llama-3.3-70b-versatile",
+    model: "openai/gpt-oss-120b",
     messages,
   });
   return r.choices[0].message.content;
@@ -334,7 +528,7 @@ const ask = async (messages) => {
 // ❌ Two separate calls — the second knows nothing about the first
 console.log(await ask([{ role: "user", content: "My name is Wasif." }]));
 console.log(await ask([{ role: "user", content: "What is my name?" }]));
-// → "I don't have access to your name..."
+// → "I don’t actually know your name. If you’d like me to address you personally, …"
 
 // ✅ Send the whole history. THIS is what "memory" means.
 console.log(
@@ -346,6 +540,8 @@ console.log(
 );
 // → "Your name is Wasif."
 ```
+
+The `→` comments are from our run. Your wording will differ, but the pattern will not.
 
 > 🔑 There is no memory feature anywhere in any LLM API. "Memory" is always *your* code
 > deciding which past messages to re-send. LangChain and LangGraph automate that decision —
@@ -365,10 +561,16 @@ console.log("token ids:  ", tokens);
 console.log("pieces:     ", tokens.map((t) => JSON.stringify(decode([t]))).join(" | "));
 ```
 
+Real output (`gpt-tokenizer` 4.0.0, which uses OpenAI's `o200k_base` tokenizer by default):
+
 ```
-token count: 12
-pieces:      "The" | " un" | "bel" | "ie" | "vable" | " cat" | " sat" | " on" | " the" | " mat" | "." | " 🦄"
+token count: 11
+pieces:      "The" | " unbelievable" | " cat" | " sat" | " on" | " the" | " mat" | "." | " " | "" | "🦄"
 ```
+
+`" unbelievable"` is common enough to be one token. The unicorn emoji is **three** tokens: three
+pieces of raw bytes. Printed one at a time, the first two are broken halves of a character, so
+they show up as a space and an empty string.
 
 Try these and watch the count explode:
 
@@ -380,6 +582,37 @@ Try these and watch the count explode:
 ].forEach((s) => console.log(encode(s).length, "←", s.slice(0, 30)));
 ```
 
+**Your count is not the bill.** A local tokenizer counts only *your* text. The provider adds
+more before the model sees it: the chat template from §6 and, for some models, built-in
+instructions you never see. Compare the two numbers yourself:
+
+```js
+// day01-tokens-vs-api.js — your count vs the bill
+import "dotenv/config";
+import Groq from "groq-sdk";
+import { encode } from "gpt-tokenizer";
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+const r = await groq.chat.completions.create({
+  model: "openai/gpt-oss-120b",
+  messages: [{ role: "user", content: "Hi" }],
+});
+
+console.log("local count of 'Hi':", encode("Hi").length);
+console.log("API prompt_tokens:  ", r.usage.prompt_tokens);
+```
+
+Real output:
+
+```
+local count of 'Hi': 1
+API prompt_tokens:   72
+```
+
+One token of yours, 72 on the bill. The other 71 are the hidden wrapper. We can't see its text,
+only its size. So use local counts to **estimate** and to compare prompts with each other. Use
+`usage.prompt_tokens` from the response for what you actually pay.
+
 ### 4.4 Streaming — watching tokens arrive
 
 ```js
@@ -389,7 +622,7 @@ import Groq from "groq-sdk";
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const stream = await groq.chat.completions.create({
-  model: "llama-3.3-70b-versatile",
+  model: "openai/gpt-oss-120b",
   messages: [{ role: "user", content: "Count from 1 to 20 slowly." }],
   stream: true,                                   // ← the only change
 });
@@ -400,9 +633,9 @@ for await (const chunk of stream) {               // async iterator
 console.log();
 ```
 
-Streaming doesn't make generation faster. It makes **time-to-first-token** the thing the user
-perceives instead of time-to-last-token. A 12-second answer feels instant if the first word
-lands in 300 ms.
+Streaming doesn't make generation faster. It changes what the user notices: the wait for the
+**first token** instead of the wait for the last one (*time-to-first-token*). A 12-second answer
+feels instant if the first word arrives in 300 ms.
 
 ### 4.5 Seeing temperature with your own eyes
 
@@ -416,23 +649,105 @@ for (const temperature of [0, 0.7, 1.5]) {
   console.log(`\n─── temperature ${temperature} ───`);
   for (let i = 0; i < 3; i++) {
     const r = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       messages: [{ role: "user", content: "Write a 6-word story about the sea." }],
       temperature,
-      max_tokens: 30,
+      max_tokens: 1024,           // room for the hidden reasoning first (§3.4)
     });
     console.log(" ", r.choices[0].message.content.trim());
   }
 }
 ```
 
-At `0` the three runs will be near-identical. At `1.5` they'll barely be the same genre.
+Our run:
+
+```
+─── temperature 0 ───
+  Waves whispered secrets; sailors listened eternally.
+  Waves whispered secrets; sailors listened eternally.
+  Waves whispered secrets; sailors listened eternally.
+
+─── temperature 0.7 ───
+  Waves whispered secrets, shore kept listening.
+  Moonlit waves whispered secrets to sailors.
+  Moonlit waves whispered secrets to sailors.
+
+─── temperature 1.5 ───
+  Moonlit waves whispered secrets to shore.
+  Waves whispered secrets; sailors never listened.
+  Waves whispered secrets; ships vanished eternally.
+```
+
+At `0` the three runs were identical. Higher temperatures gave more variety, but even at `1.5`
+every story stayed sensible and on topic. This model's distribution is very *peaked* (one
+option is far more likely than the rest), so temperature has less to spread. Exercise 3
+measures the effect properly.
+
+### 4.6 Attention, computed by hand
+
+This one needs no API key and no packages. It runs one attention step from §3.7 for the token
+`"it"` in the text *"the cat sat … it"*. The vectors are tiny and hand-picked so you can follow
+the arithmetic. They are an illustration, not values from a real model. To keep it short, each
+token's one vector plays all three roles: query, key and value.
+
+```js
+// day01-attention.js — one attention step, by hand. No packages, no API key.
+// Toy 2-number vectors, hand-picked for illustration. Real models learn vectors with
+// thousands of numbers, and learn separate query/key/value versions of each one.
+const tokens = ["the", "cat", "sat", "it"];
+const vectors = [
+  [0.2, 0.1], // the
+  [3.0, 0.5], // cat
+  [0.5, 3.0], // sat
+  [2.5, 1.0], // it   ← points roughly the same way as "cat"
+];
+
+const dot = (a, b) => a.reduce((sum, x, i) => sum + x * b[i], 0);
+const softmax = (xs) => {
+  const exps = xs.map((x) => Math.exp(x - Math.max(...xs)));
+  const total = exps.reduce((a, b) => a + b, 0);
+  return exps.map((e) => e / total);
+};
+
+const query = vectors[3]; // "it" asks: which tokens matter to me?
+const scores = vectors.map((key) => dot(query, key) / Math.sqrt(query.length)); // 1. score
+const weights = softmax(scores); // 2. scores → weights that sum to 1
+const mixed = [0, 1].map((d) => weights.reduce((s, w, i) => s + w * vectors[i][d], 0)); // 3. mix
+
+tokens.forEach((t, i) =>
+  console.log(`${t.padEnd(4)} score ${scores[i].toFixed(2).padStart(5)}  weight ${weights[i].toFixed(2)}`)
+);
+console.log(`new vector for "it": [${mixed.map((x) => x.toFixed(2)).join(", ")}]`);
+```
+
+Real output (`node day01-attention.js`):
+
+```
+the  score  0.42  weight 0.00
+cat  score  5.66  weight 0.60
+sat  score  3.01  weight 0.04
+it   score  5.13  weight 0.35
+new vector for "it": [2.71, 0.78]
+```
+
+Read it from top to bottom:
+
+- `"it"` gives **60%** of its attention to `"cat"` — even more than to itself (35%). Its new
+  vector, `[2.71, 0.78]`, has moved towards `"cat"`'s `[3.0, 0.5]`.
+- `"the"` gets almost nothing. Its weight shows as `0.00` but is not exactly zero. The four
+  weights add up to 1; the printed ones sum to 0.99 only because of rounding.
+- The division by `Math.sqrt(query.length)` is the standard *scaling* step. It stops scores
+  from growing too large when vectors have thousands of numbers.
+- Subtracting the largest score inside `softmax` doesn't change the result. It only stops
+  `Math.exp` from overflowing on big scores.
+
+In a real model this happens for every token, in every head, in every layer.
 
 ---
 
 ## 5. Code — Python
 
-Same five programs, same outputs.
+Same six programs, same outputs.
 
 ```bash
 pip install groq python-dotenv tiktoken
@@ -450,7 +765,7 @@ load_dotenv()
 groq = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 response = groq.chat.completions.create(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-120b",
 
     # The conversation. Always a LIST of role/content dicts.
     messages=[
@@ -460,7 +775,7 @@ response = groq.chat.completions.create(
 
     temperature=0.7,          # 0 = deterministic-ish, 2 = chaotic
     top_p=1,                  # 1 = no truncation (tune temperature OR this, not both)
-    max_tokens=200,           # hard cap on OUTPUT tokens
+    max_tokens=1024,          # hard cap on OUTPUT tokens — hidden reasoning counts too (§3.4)
     frequency_penalty=0,      # >0 discourages repeating the same token
     presence_penalty=0,       # >0 pushes toward new topics
     stop=None,                # e.g. ["\n\n"] to stop at a blank line
@@ -468,12 +783,20 @@ response = groq.chat.completions.create(
 
 print(response.choices[0].message.content)
 
+details = response.usage.completion_tokens_details
 print({
     "finish_reason": response.choices[0].finish_reason,
     "input_tokens":  response.usage.prompt_tokens,
-    "output_tokens": response.usage.completion_tokens,
+    "output_tokens": response.usage.completion_tokens,   # includes the hidden reasoning tokens
+    "reasoning_tokens": details.reasoning_tokens if details else None,
     "total_tokens":  response.usage.total_tokens,
 })
+```
+
+Our run (after a shorter answer than the JS run got):
+
+```
+{'finish_reason': 'stop', 'input_tokens': 92, 'output_tokens': 248, 'reasoning_tokens': 94, 'total_tokens': 340}
 ```
 
 ### 5.2 Proving the model has no memory
@@ -489,7 +812,7 @@ groq = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 def ask(messages):
     r = groq.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=messages,
     )
     return r.choices[0].message.content
@@ -497,7 +820,7 @@ def ask(messages):
 # ❌ Two separate calls — the second knows nothing about the first
 print(ask([{"role": "user", "content": "My name is Wasif."}]))
 print(ask([{"role": "user", "content": "What is my name?"}]))
-# → "I don't have access to your name..."
+# → "I’m sorry, but I don’t have any information about your name. …"
 
 # ✅ Send the whole history. THIS is what "memory" means.
 print(ask([
@@ -524,12 +847,51 @@ print("token ids:  ", tokens)
 print("pieces:     ", " | ".join(repr(enc.decode([t])) for t in tokens))
 ```
 
+Real output (`tiktoken` 0.14.0 with `cl100k_base`, an older OpenAI tokenizer than the JS one):
+
+```
+token count: 11
+token ids:   [791, 52229, 8415, 7731, 389, 279, 5634, 13, 11410, 99, 226]
+pieces:      'The' | ' unbelievable' | ' cat' | ' sat' | ' on' | ' the' | ' mat' | '.' | ' �' | '�' | '�'
+```
+
+The same 11 tokens as JavaScript here, with different IDs. Python prints the broken emoji bytes
+as `�`, the "unknown character" sign.
+
 ```python
 for s in ["hello world",
           "नमस्ते दुनिया",              # Hindi — same meaning, ~4x the tokens
           "def f(x): return x**2",
           "a" * 100]:
     print(len(enc.encode(s)), "←", s[:30])
+```
+
+**Your count is not the bill** (see §4.3 for why):
+
+```python
+# day01_tokens_vs_api.py — your count vs the bill
+from dotenv import load_dotenv
+from groq import Groq
+import os, tiktoken
+
+load_dotenv()
+groq = Groq(api_key=os.environ["GROQ_API_KEY"])
+enc = tiktoken.get_encoding("cl100k_base")
+
+r = groq.chat.completions.create(
+    model="openai/gpt-oss-120b",
+    messages=[{"role": "user", "content": "Hi"}],
+)
+
+print("local count of 'Hi':", len(enc.encode("Hi")))
+print("API prompt_tokens:  ", r.usage.prompt_tokens)
+```
+
+Real output — the same as JavaScript:
+
+```
+local count of 'Hi': 1
+API prompt_tokens:   72
 ```
 
 ### 5.4 Streaming — watching tokens arrive
@@ -544,7 +906,7 @@ load_dotenv()
 groq = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 stream = groq.chat.completions.create(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-120b",
     messages=[{"role": "user", "content": "Count from 1 to 20 slowly."}],
     stream=True,                                  # ← the only change
 )
@@ -569,13 +931,65 @@ for temperature in [0, 0.7, 1.5]:
     print(f"\n─── temperature {temperature} ───")
     for _ in range(3):
         r = groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": "Write a 6-word story about the sea."}],
             temperature=temperature,
-            max_tokens=30,
+            max_tokens=1024,          # room for the hidden reasoning first (§3.4)
         )
         print(" ", r.choices[0].message.content.strip())
 ```
+
+Our Python run gave the same three identical stories at `0`, and three different ones at
+`0.7` and again at `1.5`. For example: "Stormy sea swallowed the lighthouse's hope."
+
+### 5.6 Attention, computed by hand
+
+The same toy attention step as §4.6, in plain Python with only the standard library. Same
+hand-picked vectors, same three steps: score, weigh, mix.
+
+```python
+# day01_attention.py — one attention step, by hand. No packages, no API key.
+# Toy 2-number vectors, hand-picked for illustration. Real models learn vectors with
+# thousands of numbers, and learn separate query/key/value versions of each one.
+import math
+
+tokens = ["the", "cat", "sat", "it"]
+vectors = [
+    [0.2, 0.1],  # the
+    [3.0, 0.5],  # cat
+    [0.5, 3.0],  # sat
+    [2.5, 1.0],  # it   ← points roughly the same way as "cat"
+]
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+def softmax(xs):
+    exps = [math.exp(x - max(xs)) for x in xs]
+    return [e / sum(exps) for e in exps]
+
+query = vectors[3]  # "it" asks: which tokens matter to me?
+scores = [dot(query, key) / math.sqrt(len(query)) for key in vectors]  # 1. score
+weights = softmax(scores)  # 2. scores → weights that sum to 1
+mixed = [sum(w * v[d] for w, v in zip(weights, vectors)) for d in range(2)]  # 3. mix
+
+for t, s, w in zip(tokens, scores, weights):
+    print(f"{t:<4} score {s:5.2f}  weight {w:.2f}")
+print(f'new vector for "it": [{", ".join(f"{x:.2f}" for x in mixed)}]')
+```
+
+Real output (`python day01_attention.py`) — identical to the JavaScript version:
+
+```
+the  score  0.42  weight 0.00
+cat  score  5.66  weight 0.60
+sat  score  3.01  weight 0.04
+it   score  5.13  weight 0.35
+new vector for "it": [2.71, 0.78]
+```
+
+> 💡 Real code uses a library such as NumPy or PyTorch for this, and works on whole matrices at
+> once. The arithmetic is the same.
 
 ### 🔁 JS ↔ Python differences you just saw
 
@@ -587,8 +1001,10 @@ for temperature in [0, 0.7, 1.5]:
 | Null-safe access | `chunk.choices[0]?.delta?.content ?? ""` | `chunk.choices[0].delta.content or ""` |
 | Naming | `camelCase` params in LangChain, `snake_case` in raw SDK | `snake_case` everywhere |
 | Tokenizer lib | `gpt-tokenizer` | `tiktoken` |
+| Reasoning tokens used | `usage.completion_tokens_details?.reasoning_tokens` | `usage.completion_tokens_details.reasoning_tokens` |
+| Dot product (attention) | `a.reduce((sum, x, i) => sum + x * b[i], 0)` | `sum(x * y for x, y in zip(a, b))` |
 
-> ⚠️ **Naming trap you'll hit all week.** The raw provider SDKs use `snake_case` in *both*
+> ⚠️ **Naming trap you'll meet all week.** The raw provider SDKs use `snake_case` in *both*
 > languages (`max_tokens`), because that's what the HTTP API uses. But **LangChain JS** uses
 > `camelCase` (`maxTokens`). So in JS you'll write `max_tokens` today and `maxTokens` on Day 04.
 > That's not a typo — it's two different layers.
@@ -632,18 +1048,28 @@ your JSON  →  HTTPS POST /v1/chat/completions
            detokenize → JSON response
 ```
 
-Two things worth internalising:
+The template in the diagram is Llama 3's. Each model family has its own, and GPT-OSS uses a
+different one. Whatever the format, the template and any built-in instructions are billed as
+input. That is where the 71 extra tokens in §4.3 come from.
+
+Two things to remember:
 
 1. **The `role` field is not magic.** It gets rendered into special text tokens
    (`<|start_header_id|>system<|end_header_id|>`). The "system" role is powerful because the
-   model was *trained* to weight text in that position heavily — not because it's a different code path.
-2. **The KV-cache** is why input tokens are ~4× cheaper than output tokens. Input is processed
-   in one parallel pass; output is a serial loop.
+   model was *trained* to give text in that position a lot of weight (§3.6). It is not a
+   different code path.
+2. **Input and output are processed differently.** Input is read in one parallel pass. Output is
+   a serial loop, one token after another — which is why providers usually charge more per
+   output token (check your provider's price page for the real ratio). **The KV-cache** makes
+   that loop affordable: it stores the attention keys and values of tokens already processed
+   (§3.7), so each new token doesn't recompute everything before it.
 
 ### Why the same prompt costs different amounts on different providers
 
 Every provider uses a different tokenizer. The same sentence might be 18 tokens on Llama and
-21 on GPT. Never hard-code token counts across providers — always count with the right tokenizer.
+21 on GPT (illustrative numbers). Never hard-code token counts across providers. Always count
+with the right tokenizer. And remember the hidden wrapper: on `openai/gpt-oss-120b` via Groq, a
+bare "Hi" is billed as 72 input tokens, and the same "Hi" after a short system message as 78.
 
 ---
 
@@ -660,6 +1086,22 @@ await groq.chat.completions.create({
 ```
 
 ✅ Count input tokens **before** sending, and truncate or retrieve instead.
+
+---
+
+**❌ Setting a small `max_tokens` on a reasoning model**
+
+```js
+await groq.chat.completions.create({
+  model: "openai/gpt-oss-120b",
+  messages: [{ role: "user", content: "Explain photosynthesis" }],
+  max_tokens: 50,
+});
+// → content: ""   finish_reason: "length"   (47 of the 50 tokens were hidden reasoning)
+```
+
+✅ Leave room for the thinking (`max_tokens: 1024`), or lower it with `reasoning_effort: "low"`.
+Always check `finish_reason` — an empty string is not an error, so nothing else will warn you.
 
 ---
 
@@ -778,9 +1220,10 @@ for s in samples:
     print(f"{len(s):>5} | {t:>6} | {len(s)/t:>5.2f} | {s[:40]}")
 ```
 
-**What you should notice:** plain English gets ~4 chars/token. URLs and code get ~2–3 because
-punctuation and slashes fragment. Non-English gets the worst ratio because those characters
-weren't common enough in training to earn their own tokens.
+**What you should notice:** plain English gets about 4 characters per token. URLs and code get
+about 2–3, because punctuation and slashes break text into small pieces. Non-English text gets
+the worst ratio, because its characters weren't common enough in training to earn their own
+tokens.
 </details>
 
 ---
@@ -801,7 +1244,7 @@ import Groq from "groq-sdk";
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const ask = async (messages) =>
-  (await groq.chat.completions.create({ model: "llama-3.3-70b-versatile", messages }))
+  (await groq.chat.completions.create({ model: "openai/gpt-oss-120b", messages }))
     .choices[0].message.content;
 
 function trimHistory(messages, n) {
@@ -810,7 +1253,7 @@ function trimHistory(messages, n) {
 }
 
 const history = [
-  { role: "system", content: "You are a helpful assistant." },
+  { role: "system", content: "You are a helpful assistant. Keep every answer under 60 words." },
   { role: "user",   content: "I'm planning a trip to Japan." },
 ];
 history.push({ role: "assistant", content: await ask(history) });
@@ -835,7 +1278,7 @@ groq = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 def ask(messages):
     return groq.chat.completions.create(
-        model="llama-3.3-70b-versatile", messages=messages
+        model="openai/gpt-oss-120b", messages=messages
     ).choices[0].message.content
 
 def trim_history(messages, n):
@@ -844,7 +1287,7 @@ def trim_history(messages, n):
     return messages[-n:]
 
 history = [
-    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "system", "content": "You are a helpful assistant. Keep every answer under 60 words."},
     {"role": "user",   "content": "I'm planning a trip to Japan."},
 ]
 history.append({"role": "assistant", "content": ask(history)})
@@ -858,8 +1301,22 @@ print("FULL   :", ask(history))
 print("TRIM(2):", ask(trim_history(history, 2)))
 ```
 
-`TRIM(2)` will have lost Japan and/or the 10 days. You've just discovered the exact problem
-that Day 14 (memory) and Day 20 (checkpointers) solve properly.
+Why "under 60 words"? Without it, `openai/gpt-oss-120b` wrote a long travel plan for each turn.
+By the last call the history was so big that Groq's free tier refused it. The error was
+`413 Request too large for model openai/gpt-oss-120b … on tokens per minute (TPM): Limit 8000,
+Requested 8774`. That is §3.2's "cost scales with context" in one error message.
+
+Our run (JavaScript and Python gave the same pattern):
+
+```
+FULL   : You said you’ll be in Japan for **10 days** during **April**.
+TRIM(2): You planned a 10‑day trip, all in Japan—starting in Tokyo, then Hakone, Kyoto, Nara, Osaka and finishing in Kobe (or back to Tokyo).
+```
+
+Look closely. `TRIM(2)` still knew "Japan" and "10 days", but only because the last assistant
+reply happened to repeat them. It lost "April", and it presented the assistant's own suggested
+route as *your* plan. Trimming kept some facts by luck and lost others silently. That is the
+exact problem Day 14 (memory) and Day 20 (checkpointers) solve properly.
 </details>
 
 ---
@@ -886,10 +1343,11 @@ async function uniqueness(prompt, temperature, runs = 5) {
   const outs = [];
   for (let i = 0; i < runs; i++) {
     const r = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       messages: [{ role: "user", content: prompt }],
       temperature,
-      max_tokens: 30,
+      max_tokens: 512,
+      reasoning_effort: "low",   // less hidden thinking: cheaper and faster (§3.4)
     });
     outs.push(r.choices[0].message.content.trim());
   }
@@ -919,10 +1377,11 @@ def uniqueness(prompt, temperature, runs=5):
     outs = []
     for _ in range(runs):
         r = groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=30,
+            max_tokens=512,
+            reasoning_effort="low",   # less hidden thinking: cheaper and faster (§3.4)
         )
         outs.append(r.choices[0].message.content.strip())
     return len(set(outs))
@@ -935,9 +1394,29 @@ for prompt in ["What is the capital of Japan?",
         print(f"  t={t:.1f}  {'█' * n} {n}/5 unique")
 ```
 
-**Expected shape:** the factual prompt stays at 1–2 unique answers even at high temperature —
-the probability mass on `" Tokyo"` is so dominant that temperature can't easily dislodge it.
-The creative prompt goes 1 → 3 → 5 → 5.
+Our JavaScript run:
+
+```
+What is the capital of Japan?
+  t=0.0  █ 1/5 unique
+  t=0.5  █ 1/5 unique
+  t=1.0  █ 1/5 unique
+  t=1.5  █ 1/5 unique
+
+Invent a name for a coffee shop. Name only.
+  t=0.0  █ 1/5 unique
+  t=0.5  ████ 4/5 unique
+  t=1.0  ████ 4/5 unique
+  t=1.5  █████ 5/5 unique
+```
+
+Our Python run gave the same factual line and `1 → 3 → 4 → 4` for the coffee shop. Your counts
+will differ a little. The shape won't: the factual prompt stays at one answer at every
+temperature, because nearly all the probability sits on `" Tokyo"`. The creative prompt
+spreads out as soon as temperature rises above 0.
+
+Why `reasoning_effort: "low"`? This grid makes 40 calls. Less hidden thinking per call keeps
+you inside the free tier's tokens-per-minute limit.
 
 **The lesson:** temperature's effect depends on how *peaked* the distribution already is.
 That's why "use 0.7 for everything" is bad advice — pick per task.
@@ -1077,8 +1556,10 @@ and what every production RAG pipeline needs.
 1. Ask the model to explain a method that doesn't exist, e.g.
    *"How do I use the `parseWithFallback()` method in Zod?"*
 2. Observe the confident, invented answer.
-3. Now fix it **three ways** and compare: (a) add "If you're not certain this exists, say so"
-   to the system prompt, (b) drop temperature to 0, (c) paste real Zod docs into the prompt.
+3. Now fix it **three ways** and compare:
+   - (a) add "If you're not certain this exists, say so" to the system prompt;
+   - (b) drop temperature to 0;
+   - (c) paste real Zod docs into the prompt.
 
 Which fix worked best? (This is the argument for RAG, in one exercise.)
 
@@ -1095,7 +1576,7 @@ const Q = "How do I use the parseWithFallback() method in Zod? Show code.";
 
 const run = async (label, messages, temperature = 0.7) => {
   const r = await groq.chat.completions.create({
-    model: "llama-3.3-70b-versatile", messages, temperature, max_tokens: 200,
+    model: "openai/gpt-oss-120b", messages, temperature, max_tokens: 1024,
   });
   console.log(`\n═══ ${label} ═══\n${r.choices[0].message.content}`);
 };
@@ -1136,8 +1617,8 @@ Q = "How do I use the parse_with_fallback() method in Pydantic? Show code."
 
 def run(label, messages, temperature=0.7):
     r = groq.chat.completions.create(
-        model="llama-3.3-70b-versatile", messages=messages,
-        temperature=temperature, max_tokens=200,
+        model="openai/gpt-oss-120b", messages=messages,
+        temperature=temperature, max_tokens=1024,
     )
     print(f"\n═══ {label} ═══\n{r.choices[0].message.content}")
 
@@ -1164,10 +1645,15 @@ run("FIX C — give it the facts (RAG, manually)", [
 ])
 ```
 
-**Typical result ranking:** C ≫ A > B.
-Temperature barely helps — the wrong answer is the *most likely* answer, so making the model
+**Our run, in both languages:** the baseline invented the method with full confidence, down to
+example code and a made-up table of return types. Fix B (temperature 0) invented it too, and
+even claimed it was "added in Zod v3.22". Fix A refused: "I’m not certain that a
+`parseWithFallback()` method exists in Zod", then pointed to the real `.catch()` and
+`.safeParse()`. Fix C answered exactly "Not in the provided docs."
+
+So the ranking is C, then A, with B no better than the baseline. Temperature barely helps. The wrong answer is the *most likely* answer, so making the model
 more confident doesn't make it more correct. Permission-to-fail helps meaningfully. Giving it
-the actual facts basically eliminates the problem. **That ordering is the entire reason Week 2
+the actual facts almost removes the problem. **That ordering is the entire reason Week 2
 exists.**
 </details>
 
@@ -1227,7 +1713,8 @@ for deciding *what* to re-send within the context budget.
 
 Input tokens are processed in a single parallel forward pass. Output tokens are generated
 serially — one full forward pass per token, each conditioned on all previous ones. Serial GPU
-time is more expensive than parallel, so providers price output at roughly 2–5× input.
+time is more expensive than parallel, so providers price output tokens higher than input —
+often several times higher; check your provider's price page for the actual ratio.
 </details>
 
 <details>
@@ -1252,9 +1739,10 @@ retrieving 5 highly relevant chunks over dumping 100 mediocre ones.
 <details>
 <summary><b>Q: Why doesn't `temperature: 0` give byte-identical results?</b></summary>
 
-`temperature: 0` means greedy decoding — pick the argmax. But the logits themselves vary
-slightly run-to-run due to non-deterministic floating-point reduction order on GPUs, variable
-batch composition on the server, and mixed-precision arithmetic. When two tokens are nearly
+`temperature: 0` means greedy decoding — pick the argmax (the single highest-scoring token). But
+the logits themselves vary slightly from run to run. Three causes: the order of floating-point
+additions on GPUs is not fixed, the server batches your request with different requests each
+time, and mixed-precision arithmetic rounds differently. When two tokens are nearly
 tied, tiny differences flip the argmax. Providers also silently update model weights. Never
 assert exact string equality on model output.
 </details>
@@ -1263,8 +1751,9 @@ assert exact string equality on model output.
 <summary><b>Q: A user says your chatbot "gets slower and more expensive over a long conversation." Why?</b></summary>
 
 Because the app re-sends the entire history on every turn. Turn *n* sends O(n) tokens, so total
-cost across a conversation is O(n²). Fixes: sliding window, summarising older turns, or
-retrieving only relevant past messages. Prompt caching (where supported) reduces the cost but
+cost across a conversation is O(n²) — it grows with the square of the number of turns. Fixes:
+a sliding window (keep only the last few turns), summarising older turns, or retrieving only
+relevant past messages. Prompt caching (where supported) reduces the cost but
 not the token count.
 </details>
 
@@ -1300,19 +1789,23 @@ cost/conversation ≈ Σ over turns [ (system + history_so_far + retrieved) × i
 Key drivers: average turns per conversation (this is the quadratic term), whether you do RAG
 (retrieved chunks dominate input), and the history strategy. Then multiply by conversations/month
 and add a 30–50% buffer for retries, evals and non-English users (worse token ratios).
-Measure with real traffic ASAP — estimates are usually 2× off.
+Measure with real traffic as soon as you can — pre-launch estimates are often off by a wide
+margin, and only measured usage tells you by how much.
 </details>
 
 <details>
 <summary><b>Q: What is a KV-cache and why does it matter to you as an application developer?</b></summary>
 
-During generation, the attention keys and values for already-processed tokens are cached so
-each new token only computes attention against the cache rather than recomputing everything.
-Application-level consequences: (a) long *inputs* are relatively cheap and fast, long *outputs*
-are not; (b) **prompt caching** exposes this to you — if you keep a long, stable prefix (system
-prompt + few-shot examples + documents) *byte-identical* across calls, providers can reuse the
-cache and charge much less. This is why you put the stable parts first and the variable parts
-last in your prompt.
+During generation, the attention keys and values for already-processed tokens are cached. So
+each new token only computes attention against the cache rather than recomputing everything
+(§3.7). Two consequences for your application:
+
+- (a) Long *inputs* are relatively cheap and fast; long *outputs* are not.
+- (b) **Prompt caching** exposes this to you. Keep a long, stable prefix (system prompt +
+  few-shot examples + documents) *byte-identical* across calls. Then providers can reuse the
+  cache and charge much less.
+
+This is why you put the stable parts first and the variable parts last in your prompt.
 </details>
 
 <details>
@@ -1334,13 +1827,18 @@ Notice all five are today's concepts, not model quality.
 
 You can now explain:
 
-- ✅ A token is ~4 characters; models see token IDs, never letters
-- ✅ The context window covers input **+** output, and is a hard limit
+- ✅ A token is about 4 characters; models see token IDs, never letters
+- ✅ The context window covers input **and** output, and is a hard limit
 - ✅ Generation is a loop: one token → append → run again
 - ✅ Temperature rescales the distribution; top_p truncates it
-- ✅ `max_tokens` truncates, it does not summarise
+- ✅ `max_tokens` truncates, it does not summarise — and on a reasoning model the hidden
+  thinking counts towards it, so a small limit can leave the answer empty
+- ✅ Your local token count is an estimate; the API's `prompt_tokens` is the bill
 - ✅ LLMs are stateless — "memory" is your app re-sending history
 - ✅ Hallucination is a property of next-token prediction, and retrieval is the strongest fix
+- ✅ A chat model is pre-trained, instruction-tuned, then preference-tuned — and frozen when you
+  call it
+- ✅ Attention lets each token weigh the tokens before it; the KV-cache stores their keys and values
 
 **You also hand-built** a token counter, a history trimmer and a context budgeter. Those three
 utilities are, in miniature, what a large chunk of LangChain does for you.
@@ -1364,6 +1862,16 @@ Answer without scrolling up:
 <summary>Answers</summary>
 
 1. ~500 tokens (≈375 words) — and the API may error or truncate rather than warn you.
-2. **False.** Greedy ≠ deterministic; GPU float non-determinism and provider-side batching flip near-ties.
-3. You're re-sending the whole history every turn. Cost per conversation is O(n²) in turns.
+2. **False.** Greedy is not the same as deterministic. Tiny GPU rounding differences and
+   provider-side batching can flip near-ties.
+3. You're re-sending the whole history every turn. Cost per conversation is O(n²) in turns: it
+   grows with the square of the number of turns.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 0C — Just-Enough Maths](../week-00-start-here/day-00c-just-enough-maths.md)** · **[Week 1 index](README.md)** · **[Day 02 — Prompt Engineering & Talking to Models With No Framework →](day-02-prompt-engineering-and-raw-apis.md)**
+
+</div>

@@ -7,3 +7,6 @@ chroma_db/
 JS/
 Python/
 langchain-practice/
+# Local assistant config (not part of the course)
+CLAUDE.md
+.claude/

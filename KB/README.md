@@ -11,14 +11,15 @@ you need.
 | [04-versions-and-environment.md](04-versions-and-environment.md) | Exact package versions the book was verified against, and how to rebuild the sandbox |
 | [05-verification-playbook.md](05-verification-playbook.md) | The scripts in `tools/`, what they check, and how to verify a new claim |
 | [06-maintenance-backlog.md](06-maintenance-backlog.md) | Known gaps, deliberate omissions, and the upgrade watchlist |
+| [07-course-expansion-plan.md](07-course-expansion-plan.md) | The approved plan that turned the book into a full AI Engineering course, with progress |
 
-**Current state:** 28 days complete · 60,084 lines across the day files (69,417 in the repo,
-50 markdown files) · 0 broken links · 378 interview questions · 8 reference files. Verified
-against the versions in [04](04-versions-and-environment.md) during September–October 2026.
+**Current state (October 2026):** a **43-day AI Engineering course** — Week 0 (Days 0A–0C) plus
+Days 1–40 · 100,070 lines across the day files (114,018 in the repo, 69 markdown files) · 0 broken
+links · 587 interview questions · 308 glossary terms · mean reading ease (Flesch) 70, every day ≥ 61.
+How it grew from the 28-day book, and why, is in [07-course-expansion-plan.md](07-course-expansion-plan.md).
 
-`python tools/verify.py .` prints these numbers and ends with `no problems found`. The only
-thing it flags in the table is Day 17 `E2:no-PY`, a known false positive (see
-[05](05-verification-playbook.md)).
+`python tools/verify.py .` prints these numbers and ends with `no problems found`. Day 17 used to
+show `E2:no-PY`, a known false positive (see [05](05-verification-playbook.md)).
 
 ---
 
@@ -42,7 +43,7 @@ thing it flags in the table is Day 17 `E2:no-PY`, a known false positive (see
 2. Verify every API you intend to show (recipe A, steps 2–3). Keep the real outputs — the book
    quotes them.
 3. Write the day in two passes: sections 1–6, then 7–10 appended. Large single writes are
-   fine with the Write tool; heredocs are not (see CLAUDE.md).
+   fine with the Write tool; heredocs are not (see CONTRIBUTING.md).
 4. Wire it up: week README row and through-line, master README calendar row, the previous day's
    "Tomorrow" link, glossary terms, and `tools/gen_resources.py`.
 5. Verify (recipe A, steps 5–6).
@@ -79,7 +80,8 @@ the entry count doesn't change).
 
 ## Invariants a change must not break
 
-- Every day: 10 numbered sections, both languages, 5 exercises, bilingual solutions.
+- Every day: words box, 10 numbered sections, both languages, 5 exercises, bilingual solutions, footer nav.
+- Prose edits never change code (`tools/check_code_unchanged.py`); reading ease stays ≥ 60 (`tools/readability.py`).
 - Every technical claim traceable to something that was run (03 is the ledger).
 - 0 broken relative links; no `*coming next*` left in the master README.
 - Generated files never hand-edited.

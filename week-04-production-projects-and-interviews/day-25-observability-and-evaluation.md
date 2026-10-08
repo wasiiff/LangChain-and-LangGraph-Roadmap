@@ -2,11 +2,23 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 24](day-24-reliability.md) · 🧩 **Difficulty:** ●●●●○
 
-**Today you learn:** how to see inside every run (traces, callbacks, token accounting), and
-how to answer the question every AI team eventually argues about — *"is the new version
-better?"* — with data instead of vibes. Datasets, deterministic evaluators, LLM-as-judge,
-agent trajectory evaluation, RAG metrics, LangSmith experiments, and a regression gate for
-CI. Every evaluator in this chapter was run, with scripted models, in both languages.
+**Today you learn:** StudyBuddy is live, but you can't see why it gave a bad answer, and you
+can't prove that a new prompt is *better* rather than just different. Today you record every
+run as a **trace**, so you can read what happened inside it. Then you build an **evaluation**
+suite: a **dataset**, code checks, an **LLM-as-judge**, **trajectory** checks for the agent and
+a CI gate that fails the build when quality drops. Every evaluator in this chapter was run,
+with scripted models, in both languages.
+
+> 📖 **Words you'll meet today**
+>
+> - **Observability** — being able to see what happened inside one specific run.
+> - **Trace** — the record of one request: a tree of every model call, tool call and step.
+> - **Callback** — a hook the library calls at each step (start, end, error) of a run.
+> - **Evaluation (eval)** — measuring how good the system is, the same way each time.
+> - **Dataset** — a fixed set of example questions with the answers or facts you expect.
+> - **Evaluator** — a function that scores one output, for example "contains the right facts".
+> - **LLM-as-judge** — using a second model to grade answers against written rules (a rubric).
+> - **Trajectory** — the sequence of tool calls an agent made on its way to the answer.
 
 ---
 
@@ -48,7 +60,8 @@ Aviation again, because it solved this decades ago:
                        → you know whether training worked                           EVALS
 ```
 
-A pilot who says "I feel like I'm flying better" doesn't get certified. Neither should a prompt.
+A pilot who says "I feel like I'm flying better" doesn't get certified. A prompt
+shouldn't either.
 
 ---
 
@@ -75,9 +88,9 @@ A pilot who says "I feel like I'm flying better" doesn't get certified. Neither 
    └───────────────────────────────────────────┘
 ```
 
-Production feeds the dataset; the dataset gates the next change. That loop is the whole
-discipline, and it's why teams that have it improve steadily while teams without it
-oscillate between "better" and "worse" and can't tell which is which.
+Production feeds the dataset, and the dataset decides whether the next change may ship. That
+loop is the whole discipline. Teams that have it improve steadily. Teams without it swing
+between "better" and "worse" and can't tell which is which.
 
 ### Four kinds of evaluator
 
@@ -88,7 +101,7 @@ oscillate between "better" and "worse" and can't tell which is which.
 | **LLM-as-judge** | correctness, groundedness, helpfulness, tone — against a rubric | a model call | qualities code can't check |
 | **Human** | anything; the ground truth your judges are calibrated against | slow, expensive | calibration and the hardest cases |
 
-And two axes that decide which you can use:
+Two more questions decide which evaluators you can use:
 
 ```
    REFERENCE-BASED   compares to a known good answer      offline, on a dataset
@@ -101,12 +114,15 @@ And two axes that decide which you can use:
 
 ### 3.1 A trace is a tree of runs
 
-Every LangChain and LangGraph operation reports lifecycle events through **callbacks**: a
-chain starts, a chat model starts, a tool starts, each ends. A tracer is simply a callback
-handler that records those events as a tree.
+> 💬 **In plain words:** the library tells you about every step as it happens. A tracer
+> listens to those messages and draws them as a tree you can read later.
 
-Counted on the same agent run — one tool call, two model calls — with a handler that tallies
-every event (both languages):
+Every LangChain and LangGraph operation reports **lifecycle events** (start, end, error)
+through **callbacks**. A chain starts, a chat model starts, a tool starts, and each one ends. A
+**tracer** is simply a callback handler that records those events as a tree.
+
+We ran one agent run (one tool call, two model calls) with a handler that counts every event.
+Here are the counts in both languages:
 
 ```
                           JavaScript      Python
@@ -118,7 +134,7 @@ every event (both languages):
    llm start                 0              0    ← chat models don't fire it
 ```
 
-Two things fall out of that table:
+The table shows two things:
 
 - **Chat models fire `handleChatModelStart` / `on_chat_model_start`, not `handleLLMStart` /
   `on_llm_start`.** A handler that only listens for "LLM start" silently records nothing for
@@ -128,9 +144,12 @@ Two things fall out of that table:
 
 ### 3.2 Tokens and cost
 
+> 💬 **In plain words:** every answer reports how many tokens it used. Add them up per model,
+> and you know what each request cost.
+
 Every `AIMessage` carries `usage_metadata` (`input_tokens`, `output_tokens`,
-`total_tokens`). There are three equivalent ways to total it, and all three agreed on our
-test run (250 input + 50 output = 300):
+`total_tokens`). There are three equivalent ways to total it. All three agreed on our test
+run (250 input + 50 output = 300):
 
 ```
    1. sum usage_metadata over the result's messages
@@ -139,10 +158,13 @@ test run (250 input + 50 output = 300):
       PER MODEL NAME:  {'scripted-1': {'input_tokens': 250, 'output_tokens': 50, 'total_tokens': 300}}
 ```
 
-Per-model totals matter once you use more than one model (Day 22's specialists, Day 24's
-fallbacks): cost is tokens × *that model's* price.
+Per-model totals matter once you use more than one model, such as Day 22's specialists or
+Day 24's fallbacks. Cost is tokens multiplied by *that model's* price.
 
 ### 3.3 Label your runs
+
+> 💬 **In plain words:** give every run a name, some tags and some details, so you can find it
+> later and compare "before" with "after".
 
 A trace you can't find is useless. Every invocation accepts three labels, and you should
 always set them:
@@ -165,8 +187,11 @@ after Friday's prompt change". Without them, you can see that quality changed bu
 
 ### 3.4 LangSmith, and tracing without it
 
-LangSmith is LangChain's hosted tracing and evaluation platform. Tracing is turned on by
-environment variables — no code changes:
+> 💬 **In plain words:** LangSmith is a website that stores and shows your traces. It is
+> useful, but everything today also works without it.
+
+LangSmith is LangChain's hosted tracing and evaluation platform. You turn tracing on with
+environment variables. No code changes are needed:
 
 ```bash
 LANGSMITH_TRACING=true
@@ -174,8 +199,9 @@ LANGSMITH_API_KEY=lsv2_...
 LANGSMITH_PROJECT=studybuddy-prod
 ```
 
-For code that isn't a LangChain runnable — your own retrieval function, a post-processing
-step — wrap it with `traceable` so it appears as a node in the same trace tree:
+Some of your code isn't a LangChain runnable, such as your own retrieval function or a
+post-processing step (work done on the answer after the model). Wrap it with `traceable` so
+it appears as a node in the same trace tree:
 
 ```
    JS       import { traceable } from "langsmith/traceable"
@@ -183,14 +209,18 @@ step — wrap it with `traceable` so it appears as a node in the same trace tree
 ```
 
 Verified: with `LANGSMITH_TRACING` unset, a `traceable` function runs normally and nothing is
-sent — so you can leave the decorators in place and turn tracing on per environment.
+sent. So you can leave the decorators in place and turn tracing on per environment.
 
-You don't *need* LangSmith to do any of today's chapter. Callbacks give you the raw events
-for any backend (OpenTelemetry, your logging stack), and evaluation is ordinary code. What a
-platform adds is storage, a UI for reading trace trees, dataset management and experiment
-comparison. Build the habits first; choose the tooling second.
+You don't *need* LangSmith for any of today's chapter. Callbacks give you the raw events for
+any backend, such as OpenTelemetry (an open standard for traces and metrics) or your logging
+stack. Evaluation is ordinary code. What a platform adds is storage, a UI for reading trace
+trees, dataset management and side-by-side comparison of experiments. Build the habits first.
+Choose the tooling second.
 
 ### 3.5 Datasets: the part that decides everything
+
+> 💬 **In plain words:** your test questions matter more than your scoring code. Real
+> questions and past failures make the best tests.
 
 An evaluator is only as good as the questions it's run on. Where good examples come from,
 best first:
@@ -204,15 +234,19 @@ best first:
 ```
 
 Start small: **20–50 real examples** beat 1,000 synthetic ones. Each example is
-`{ inputs, reference outputs }` — and the reference can be a full answer, a list of facts that
-must appear, or the tool trajectory an agent should take.
+`{ inputs, reference outputs }`. The reference can be a full answer, a list of facts that must
+appear, or the tool trajectory an agent should take.
 
 ### 3.6 LLM-as-judge
 
-Some qualities can't be checked with code: is the explanation *correct*? *grounded* in the
-retrieved notes? *helpful*? For those, you ask a model to grade against a rubric.
+> 💬 **In plain words:** when code can't check an answer, ask another model to grade it
+> against clear rules. Then check the grader against human grades.
 
-The `openevals` package ships tested rubrics. Verified in both languages with a scripted
+Some qualities can't be checked with code: is the explanation *correct*? *grounded* in the
+retrieved notes? *helpful*? For those, you ask a model to grade against a **rubric** (a
+written list of what counts as a good answer).
+
+The `openevals` package ships tested rubrics. We verified it in both languages with a scripted
 judge model:
 
 ```
@@ -233,10 +267,14 @@ Each prompt declares which fields it needs (read from the templates):
    RAG_GROUNDEDNESS_PROMPT     context, outputs                   ← reference-free: works online
 ```
 
-The catalogue in the version tested also includes answer relevance, conciseness,
-hallucination, RAG helpfulness, RAG retrieval relevance, tool selection, trajectory accuracy,
-toxicity, PII leakage, prompt injection and more. Read a prompt before using it — it *is*
-your definition of quality.
+In the version we tested, the catalogue also includes these prompts:
+
+- answer relevance, conciseness, hallucination
+- RAG helpfulness, RAG retrieval relevance
+- tool selection, trajectory accuracy
+- toxicity, PII leakage, prompt injection, and more.
+
+Read a prompt before using it. It *is* your definition of quality.
 
 **Judges are models, so they have biases.** They favour longer answers, answers in the first
 position, and answers written in their own style. Defences:
@@ -254,11 +292,14 @@ what you think.
 
 ### 3.7 Evaluating agents: the path, not just the destination
 
-An agent can reach the right answer the wrong way — six tool calls instead of one, or the
-right number from a guess instead of the database. Trajectory evaluators compare the tool
-calls an agent actually made to a reference.
+> 💬 **In plain words:** for an agent, check *how* it got the answer — which tools it called —
+> not only the final answer.
 
-Verified with `agentevals` in both languages, on a "weather in Lahore" trajectory:
+An agent can reach the right answer the wrong way. It might make six tool calls instead of
+one, or guess the right number instead of reading it from the database. **Trajectory
+evaluators** compare the tool calls an agent actually made to a reference.
+
+We verified this with `agentevals` in both languages, on a "weather in Lahore" trajectory:
 
 ```
    mode          same trajectory    different tool used
@@ -272,14 +313,23 @@ Verified with `agentevals` in both languages, on a "weather in Lahore" trajector
    tool_args_match_mode "ignore" + a different city  → true
 ```
 
-Choose the mode by what matters: `strict` for regulated workflows, `superset` for "must have
-checked the database at least", `ignore` args when the arguments vary legitimately.
+Choose the mode by what matters:
+
+- `strict` for regulated workflows (where rules fix the exact steps).
+- `superset` for "must at least have checked the database".
+- `ignore` args when the arguments can legitimately vary.
 
 ### 3.8 RAG evaluation: two failure points, two sets of metrics
 
+> 💬 **In plain words:** a bad RAG answer comes either from finding the wrong notes or from
+> using good notes badly. Measure the two parts separately.
+
 [Day 12](../week-02-data-embeddings-and-rag/day-12-naive-rag.md)'s central lesson applies
-directly: a wrong RAG answer is either a **retrieval** failure (the right chunk wasn't
-retrieved) or a **generation** failure (it was, and the model ignored or misused it).
+directly. A wrong RAG answer is one of two failures:
+
+- a **retrieval** failure: the right chunk wasn't retrieved, or
+- a **generation** failure: it was retrieved, but the model ignored or misused it.
+
 Measure them separately:
 
 ```
@@ -293,11 +343,14 @@ Measure them separately:
      correctness             does it match the reference answer?
 ```
 
-If recall@4 is 60%, no prompt change will fix the answers; fix chunking, embeddings or
-retrieval (Days 9–13). If recall is 95% and groundedness is poor, the retrieval is fine and
-the prompt or model is the problem. One end-to-end score can't tell you which.
+If recall@4 is 60%, no prompt change will fix the answers. Fix chunking, embeddings or
+retrieval instead (Days 9–13). If recall is 95% and groundedness is poor, the retrieval is
+fine and the prompt or model is the problem. One end-to-end score can't tell you which.
 
 ### 3.9 Offline vs online
+
+> 💬 **In plain words:** test on a fixed dataset before you ship, and keep watching real
+> traffic after you ship. Each catches problems the other misses.
 
 ```
    OFFLINE  — before you ship                    ONLINE — after you ship
@@ -308,9 +361,9 @@ the prompt or model is the problem. One end-to-end score can't tell you which.
    answers "is B better than A?"                 answers "is it still working?"
 ```
 
-You need both. Offline evals stop regressions from shipping; online evals catch the drift
-offline evals can't see — new kinds of questions, a provider silently changing a model,
-a data source going stale.
+You need both. Offline evals stop **regressions** (things that used to work and now don't)
+from shipping. Online evals catch the slow changes offline evals can't see: new kinds of
+questions, a provider silently changing a model, or a data source going out of date.
 
 ---
 
@@ -344,7 +397,7 @@ const out = await studybuddy.invoke(
     callbacks: [handler],
     runName: "studybuddy-chat",
     tags: ["prod", "prompt-v7"],
-    metadata: { userId: "u42", promptVersion: "v7", model: "llama-3.3-70b-versatile" },
+    metadata: { userId: "u42", promptVersion: "v7", model: "openai/gpt-oss-120b" },
   }
 );
 console.log({ ...metrics, ms: Date.now() - metrics.startedAt });
@@ -475,9 +528,9 @@ await groundedness({ context: retrievedChunks.join("\n\n"), outputs: answer });
 
 ```js
 import { ChatGroq } from "@langchain/groq";
-// if StudyBuddy runs on Llama via Groq, judge with a different family — e.g. Gemini's free tier
+// if StudyBuddy runs on GPT-OSS via Groq, judge with a different family — e.g. Gemini's free tier
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-const judgeModel = new ChatGoogleGenerativeAI({ model: "gemini-2.0-flash", temperature: 0 });
+const judgeModel = new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash", temperature: 0 });
 ```
 
 Judging a model with a model from the same family inflates scores (self-preference). Mixing
@@ -543,8 +596,9 @@ Run this before touching prompts. If retrieval is the problem, no prompt will fi
 
 ### 4.8 Experiments in LangSmith
 
-With an API key, `evaluate` runs a target over a stored dataset, applies evaluators, and
-records an **experiment** you can compare side by side with others in the UI:
+With an API key, `evaluate` runs a target over a stored dataset and applies evaluators. It
+records the result as an **experiment** that you can compare side by side with others in the
+UI:
 
 ```js
 import { evaluate } from "langsmith/evaluation";
@@ -564,9 +618,9 @@ await evaluate(
 );
 ```
 
-> 📦 In our tests the JS `evaluate` needed valid LangSmith credentials: without them it failed
-> creating the experiment's project (`Received status [401]: Unauthorized`). For fully offline
-> runs in JS, use your own harness (§4.4). Python's `evaluate` can run locally with
+> 📦 In our tests the JS `evaluate` needed valid LangSmith credentials. Without them, it failed
+> while creating the experiment's project (`Received status [401]: Unauthorized`). For fully
+> offline runs in JS, use your own harness (§4.4). Python's `evaluate` can run locally with
 > `upload_results=False` (§5.8).
 
 ### 4.9 A regression gate for CI
@@ -590,9 +644,9 @@ if (process.argv.includes("--update-baseline")) fs.writeFileSync("eval-baseline.
 process.exit(failed ? 1 : 0);
 ```
 
-Run the code evaluators on every pull request (cheap); run the judge-based suite nightly or
-before a release (costs money). Update the baseline deliberately, in its own commit, when an
-improvement is confirmed.
+Run the code evaluators on every pull request, because they are cheap. Run the judge-based
+suite nightly or before a release, because it costs money. Update the **baseline** (the saved
+scores you compare against) on purpose, in its own commit, once an improvement is confirmed.
 
 ---
 
@@ -629,7 +683,7 @@ m = MetricsHandler()
 out = studybuddy.invoke(
     {"messages": [HumanMessage("Explain HTTPS")]},
     {"callbacks": [m], "run_name": "studybuddy-chat", "tags": ["prod", "prompt-v7"],
-     "metadata": {"user_id": "u42", "prompt_version": "v7", "model": "llama-3.3-70b-versatile"}},
+     "metadata": {"user_id": "u42", "prompt_version": "v7", "model": "openai/gpt-oss-120b"}},
 )
 print(m.model_calls, m.tool_calls, m.tokens, f"{time.monotonic() - m.started:.2f}s")
 ```
@@ -643,11 +697,16 @@ with get_usage_metadata_callback() as usage:
     studybuddy.invoke({"messages": [HumanMessage("Explain HTTPS")]})
 
 print(usage.usage_metadata)
-# {'llama-3.3-70b-versatile': {'input_tokens': 250, 'output_tokens': 50, 'total_tokens': 300}}
+# {'openai/gpt-oss-120b': {'input_tokens': 77, 'output_tokens': 68, 'total_tokens': 145,
+#                          'output_token_details': {'reasoning': 24}}}
 ```
 
-Verified: totals are keyed by the model name each response reports, so a supervisor and its
-specialists on different models get separate lines — exactly what you need to compute cost.
+Verified: totals are keyed by the model name each response reports. So a supervisor and its
+specialists on different models get separate lines, which is exactly what you need to
+compute cost. The output above is from one live call to `ChatGroq(model="openai/gpt-oss-120b")`
+with "Explain HTTPS in one sentence." (your numbers will differ). Note `reasoning`: GPT-OSS is
+a reasoning model. Its hidden reasoning tokens are counted inside `output_tokens` (24 of the 68
+here), so a ledger that prices `output_tokens` already includes them.
 
 ### 5.3 Tracing with LangSmith
 
@@ -702,8 +761,9 @@ for r in rows:
         print("FAIL:", r["question"], "→", r["answer"][:120])
 ```
 
-Verified pattern with a stubbed target: 3 examples, one wrong answer ("Lyon" for the capital
-of France), pass rate 2/3, and the failure listed with its answer.
+We verified this pattern with a stubbed target (a fake that returns fixed answers). There were
+3 examples and one wrong answer ("Lyon" for the capital of France). The pass rate was 2/3,
+and the failure was listed with its answer.
 
 ### 5.5 LLM-as-judge
 
@@ -798,9 +858,9 @@ for row in results:
     print([(r.key, r.score) for r in row["evaluation_results"]["results"]])
 ```
 
-`upload_results=False` is marked beta (it logs a warning), but it lets you use the same
+`upload_results=False` is marked beta (it logs a warning). Still, it lets you use the same
 evaluator functions locally and in LangSmith. The evaluator signature is just the argument
-names you need — `outputs`, `reference_outputs`, `inputs`.
+names you need: `outputs`, `reference_outputs`, `inputs`.
 
 ### 5.9 A regression gate for CI
 
@@ -857,7 +917,7 @@ sys.exit(1 if failed else 0)
 ```
 
 Each node has inputs, outputs, timing, errors and its parent. That's enough to answer
-"why did it say that?" for any run: you read what the model was actually given.
+"why did it say that?" for any run, because you can read what the model was actually given.
 
 ### 6.2 Traces are production data
 
@@ -876,10 +936,10 @@ said. Treat it with the same care as your database:
 
 ### 6.3 Why evaluation beats "looks better"
 
-Model outputs vary run to run, and people remember the last few examples they read. A
+Model outputs vary from run to run, and people remember the last few examples they read. A
 change that improves 10 answers and breaks 3 feels like a win if you happened to look at the
-10. A dataset with fixed questions, scored the same way every time, removes both problems —
-and the discipline of reading every failure keeps you honest about what the numbers mean.
+10. A dataset with fixed questions, scored the same way every time, removes both problems.
+And the habit of reading every failure keeps you honest about what the numbers mean.
 
 ### 6.4 Eval-driven development
 
@@ -892,9 +952,9 @@ and the discipline of reading every failure keeps you honest about what the numb
    6. ship; the case guards against that failure forever
 ```
 
-That's test-driven development for non-deterministic systems. The dataset becomes the
-institutional memory of every mistake StudyBuddy has made — and the reason it doesn't make
-them twice.
+That's test-driven development for **non-deterministic** systems (systems that can give a
+different output for the same input). The dataset becomes the team's memory of every mistake
+StudyBuddy has made. It is also the reason StudyBuddy doesn't make them twice.
 
 ---
 
@@ -974,7 +1034,7 @@ The tracer records user input. Redact at the edge, restrict access, and set rete
 ### ❌ 11. Assuming JS `evaluate` runs offline
 
 In our tests it needed a valid LangSmith key (401 without one). Keep a local harness for
-offline and CI runs; use `evaluate` when you want the hosted experiment view.
+offline and CI runs. Use `evaluate` when you want the hosted experiment view.
 
 ### ❌ 12. Evaluating once
 
@@ -1092,10 +1152,14 @@ print("per model:", per_model.usage_metadata)             # {'scripted-1': {... 
 print("from messages:", sum((getattr(m, "usage_metadata", None) or {}).get("total_tokens", 0) for m in out["messages"]))
 ```
 
-**Checks to notice:** the model-call count comes from the *chat-model* start hook; the three
-token totals agree (300); and Python's per-model breakdown is keyed by the `model_name` each
-response reports. In production, emit `summary()` as a structured log line per request and
-you have a cost-and-latency dashboard with no platform at all.
+**Checks to notice:**
+
+- The model-call count comes from the *chat-model* start hook.
+- The three token totals agree (300).
+- Python's per-model breakdown is keyed by the `model_name` each response reports.
+
+In production, emit `summary()` as a structured log line per request. Then you have a
+cost-and-latency dashboard with no platform at all.
 </details>
 
 ---
@@ -1219,11 +1283,11 @@ FAILURES:
   [containsFacts] Capital of France? → "Lyon."
 ```
 
-**Two lessons in eight examples.** First, one failure can trip several evaluators — the
-refusal fails both "contains facts" and "no apology", which tells you *what kind* of wrong it
-is (an over-refusal, not a hallucination). Second, `notTooLong` passing 8/8 tells you nothing
-useful yet; an evaluator that never fails on your dataset is either checking something that
-never goes wrong, or your dataset lacks the cases that would break it.
+**Two lessons in eight examples.** First, one failure can trip several evaluators. The
+refusal fails both "contains facts" and "no apology". That tells you *what kind* of wrong it
+is: an over-refusal, not a hallucination. Second, `notTooLong` passing 8/8 tells you nothing
+useful yet. An evaluator that never fails on your dataset has one of two causes. Either it
+checks something that never goes wrong, or your dataset lacks the cases that would break it.
 </details>
 
 ---
@@ -1232,8 +1296,8 @@ never goes wrong, or your dataset lacks the cases that would break it.
 
 You have 10 answers you've labelled by hand (`true` = correct). Run an LLM-as-judge over the
 same 10 and compute agreement, plus the judge's false-positive and false-negative counts. Use
-a scripted judge so the exercise is deterministic, but write the code so a real judge can be
-swapped in.
+a scripted judge so the exercise gives the same result every run. But write the code so a
+real judge can be swapped in.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1352,12 +1416,13 @@ agreement 8/10 = 80%
 false positives 1 · false negatives 1
 ```
 
-**How to read it.** 80% agreement sounds fine until you look at the false positive: the judge
-passed "90°C" for the boiling point of water — a factual error. For a tutoring product, a
-false positive (a wrong answer marked correct) is worse than a false negative, so you'd
-tighten the rubric ("any numeric error makes the answer incorrect"), add few-shot examples of
-numeric mistakes, and re-measure. The false negative — "300,000 km/s" vs "3×10⁸ m/s" — is the
-judge failing at unit equivalence, which an explicit rubric line also fixes.
+**How to read it.** 80% agreement sounds fine until you look at the false positive. The judge
+passed "90°C" for the boiling point of water, which is a factual error. For a tutoring
+product, a false positive (a wrong answer marked correct) is worse than a false negative. So
+you'd tighten the rubric ("any numeric error makes the answer incorrect"). You'd also add
+few-shot examples of numeric mistakes, and re-measure. The false negative is "300,000 km/s" vs
+"3×10⁸ m/s". Here the judge fails to see that two units mean the same value. An explicit
+rubric line fixes that too.
 
 Real calibration sets are 30–50 examples, labelled by the people who own the quality bar.
 Re-run calibration whenever you change the judge model or the rubric.
@@ -1483,12 +1548,12 @@ no unapproved writes               good → true   bad → false
 explanation uses notes once        good → true   bad → false
 ```
 
-**Why these modes.** *Superset* says "at least these tools" — the agent may consult more, but
-it must not skip the data. *Subset* says "nothing outside this set" — a natural way to express
-"never call a write tool" as a test. *Strict* says "exactly this", which catches wasteful
-repeat calls. In practice, **subset against a read-only reference is one of the most valuable
-safety tests you can write for an agent** — it turns "the agent must never write without
-approval" into a failing CI check the day someone breaks it.
+**Why these modes.** *Superset* says "at least these tools". The agent may consult more, but
+it must not skip the data. *Subset* says "nothing outside this set". It is a natural way to
+express "never call a write tool" as a test. *Strict* says "exactly this", which catches
+wasteful repeat calls. In practice, **subset against a read-only reference is one of the most
+valuable safety tests you can write for an agent.** It turns "the agent must never write
+without approval" into a CI check that fails the day someone breaks it.
 </details>
 
 ---
@@ -1618,10 +1683,10 @@ jobs:
 ```
 
 **Why both halves.** The gate stops *known* failures from coming back. The online plan finds
-*new* ones — questions nobody thought to write, a provider quietly changing a model, notes
-going stale — and feeds them into the dataset, which makes the gate stronger every week. A team
-with only the first half is surprised in production; with only the second, it keeps
-re-breaking things it already fixed.
+*new* ones: questions nobody thought to write, a provider quietly changing a model, notes going
+out of date. It feeds them into the dataset, which makes the gate stronger every week. A team
+with only the first half gets surprised in production. A team with only the second keeps
+breaking things it already fixed.
 </details>
 
 ---
@@ -1632,7 +1697,7 @@ re-breaking things it already fixed.
 
 **Q1. What's the difference between observability and evaluation?**
 
-Observability is seeing what happened inside a specific run — the trace of model calls, tool
+Observability is seeing what happened inside a specific run: the trace of model calls, tool
 calls, inputs and outputs. Evaluation is measuring how good the system is, repeatably, on a
 set of examples. You use observability to debug one bad answer, and evaluation to decide
 whether a change made things better overall.
@@ -1641,33 +1706,38 @@ whether a change made things better overall.
 
 **Q2. What is a trace?**
 
-A tree of runs for one request: the top-level agent or chain, and nested model calls, tool
-calls and custom steps, each with inputs, outputs, timing and errors. LangChain produces the
-events through callbacks; a tracer (LangSmith, OpenTelemetry, your own handler) records them.
+A tree of runs for one request. At the top is the agent or chain. Inside it are nested model
+calls, tool calls and custom steps, each with inputs, outputs, timing and errors. LangChain
+produces the events through callbacks. A tracer (LangSmith, OpenTelemetry, your own handler)
+records them.
 
 ---
 
 **Q3. What kinds of evaluators are there?**
 
-Code evaluators (exact match, contains, schema, regex — free and deterministic), trajectory
-evaluators (did an agent call the right tools), LLM-as-judge (a model grades against a rubric
-— for qualities code can't check), and human review (the ground truth that calibrates the
-others).
+Four kinds:
+
+- **Code evaluators** — exact match, contains, schema, regex. Free and deterministic (same
+  result every time).
+- **Trajectory evaluators** — did an agent call the right tools?
+- **LLM-as-judge** — a model grades against a rubric, for qualities code can't check.
+- **Human review** — the ground truth that calibrates the others.
 
 ---
 
 **Q4. How do you track token usage and cost?**
 
 Every `AIMessage` has `usage_metadata`. Sum it over a run's messages, or record it in a callback
-handler's model-end hook; in Python, `get_usage_metadata_callback()` totals it per model name.
-Cost is tokens × each model's price, so per-model totals matter when you use several models.
+handler's model-end hook. In Python, `get_usage_metadata_callback()` totals it per model name.
+Cost is tokens multiplied by each model's price. So per-model totals matter when you use
+several models.
 
 ---
 
 **Q5. How do you turn on LangSmith tracing?**
 
 Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY` and optionally `LANGSMITH_PROJECT`. LangChain
-and LangGraph runs are traced automatically; wrap your own functions with `traceable` to
+and LangGraph runs are traced automatically. Wrap your own functions with `traceable` to
 include them. With tracing off, `traceable` is a transparent wrapper.
 
 ---
@@ -1677,29 +1747,34 @@ include them. With tracing off, `traceable` is a transparent wrapper.
 **Q6. How do you build a good evaluation dataset?**
 
 Start from production: every reported failure, plus a sample of real questions in real
-proportions. Add expert-written edge cases. Use synthetic examples for coverage but never
-alone — models generate questions models find easy. Start with 20–50 real examples, give each
-a reference (an answer, required facts, or an expected trajectory), and grow it every time
-something breaks.
+proportions. Add expert-written edge cases. Use synthetic examples for coverage, but never
+alone, because models generate questions that models find easy. Start with 20–50 real
+examples. Give each a reference (an answer, required facts, or an expected trajectory). Grow
+the dataset every time something breaks.
 
 ---
 
 **Q7. How do you know an LLM-as-judge is trustworthy?**
 
 Calibrate it: label 30–50 outputs yourself, run the judge on the same ones, and measure
-agreement — including false positives and false negatives separately, since they rarely
-cost the same. Use binary judgments with reasoning, an explicit rubric, few-shot examples, and
-a different model family from the one being judged. Re-calibrate whenever the judge model or
+agreement. Count false positives and false negatives separately, since they rarely cost the
+same. Use binary judgments with reasoning, an explicit rubric, few-shot examples, and a
+different model family from the one being judged. Re-calibrate whenever the judge model or
 rubric changes.
 
 ---
 
 **Q8. How do you evaluate an agent, beyond its final answer?**
 
-Evaluate its trajectory: compare the tool calls it made to a reference, with a mode that
-matches the requirement — strict (exact sequence), unordered, subset ("never call anything
-outside this set", which makes a good safety check for write tools) or superset ("must at
-least call these"). Combine with final-answer evaluators and cost/step counts.
+Evaluate its trajectory: compare the tool calls it made to a reference. Pick the mode that
+matches the requirement:
+
+- **strict** — the exact sequence.
+- **unordered** — the same tools, in any order.
+- **subset** — "never call anything outside this set". A good safety check for write tools.
+- **superset** — "must at least call these".
+
+Combine this with final-answer evaluators and counts of cost and steps.
 
 ---
 
@@ -1707,16 +1782,16 @@ least call these"). Combine with final-answer evaluators and cost/step counts.
 
 Separately at its two failure points. Retrieval, with labelled relevant chunks: hit rate,
 recall@k, MRR. Generation, with judges: groundedness (claims supported by context), answer
-relevance, and correctness against references. If recall is low, fix retrieval; if recall is
+relevance, and correctness against references. If recall is low, fix retrieval. If recall is
 high but groundedness is low, fix the prompt or model. One end-to-end score hides which.
 
 ---
 
 **Q10. Offline vs online evaluation?**
 
-Offline runs a fixed dataset with references before shipping — it answers "is B better than
+Offline runs a fixed dataset with references before shipping. It answers "is B better than
 A?" and gates changes in CI. Online samples live traffic with reference-free evaluators,
-user feedback and operational metrics — it answers "is it still working?" and finds new
+user feedback and operational metrics. It answers "is it still working?" and finds new
 failure types. Online findings feed the offline dataset.
 
 ---
@@ -1724,9 +1799,9 @@ failure types. Online findings feed the offline dataset.
 **Q11. Why do callbacks matter if you use LangSmith?**
 
 LangSmith's tracer *is* a callback handler. Knowing the callback model lets you add your own
-metrics and logs, send events to other backends, and avoid the classic mistake of listening
-for `handleLLMStart` / `on_llm_start` — chat models fire `handleChatModelStart` /
-`on_chat_model_start` instead, so the naive handler records nothing.
+metrics and logs, and send events to other backends. It also helps you avoid the classic
+mistake of listening for `handleLLMStart` / `on_llm_start`. Chat models fire
+`handleChatModelStart` / `on_chat_model_start` instead, so the naive handler records nothing.
 
 ---
 
@@ -1734,8 +1809,8 @@ for `handleLLMStart` / `on_llm_start` — chat models fire `handleChatModelStart
 
 **Q12. Your teammate says the new prompt is better. How do you decide?**
 
-Run both versions on the same dataset — ideally 50+ real examples including past failures —
-with the same evaluators: code checks first, then a calibrated judge, then trajectory checks
+Run both versions on the same dataset, ideally 50+ real examples including past failures.
+Use the same evaluators: code checks first, then a calibrated judge, then trajectory checks
 for agent behaviour. Compare per metric, and read every example whose result changed in
 either direction. Check cost and latency too. If the dataset is small, look at the size of
 the difference relative to run-to-run noise (run each version twice). Then ship behind a flag
@@ -1765,20 +1840,29 @@ dataset, the offline suite slowly stops representing reality.
 
 **Q14. What are the known biases of LLM judges and how do you mitigate them?**
 
-Verbosity bias (longer answers score higher), position bias (in pairwise comparisons, the
-first or second answer is favoured), self-preference (a model rates its own family's style
-higher), and leniency (models tend to pass borderline answers). Mitigations: binary
-judgments with a reasoning step, explicit rubrics that penalise padding, swapping positions
-in pairwise comparisons and averaging, a different model family as judge, few-shot examples
-of hard negatives, and — the only real proof — calibration against human labels.
+The known biases:
+
+- **Verbosity bias** — longer answers score higher.
+- **Position bias** — in pairwise comparisons, the first or second answer is favoured.
+- **Self-preference** — a model rates its own family's style higher.
+- **Leniency** — models tend to pass borderline answers.
+
+Mitigations:
+
+- binary judgments with a reasoning step
+- explicit rubrics that penalise padding
+- swapping positions in pairwise comparisons and averaging
+- a different model family as judge
+- few-shot examples of hard negatives
+- and, the only real proof, calibration against human labels.
 
 ---
 
 **Q15. How do you handle PII and privacy in traces?**
 
-Traces contain user input, retrieved documents and model output — treat them as production
-data. Redact at the edge, before content reaches the model and the tracer (the PII middleware
-changes what the model sees, but the top-level run still records the original input).
+Traces contain user input, retrieved documents and model output. Treat them as production
+data. Redact at the edge, before content reaches the model and the tracer. The PII middleware
+changes what the model sees, but the top-level run still records the original input.
 Restrict who can read production traces, set a retention period, and sample normal traffic
 rather than tracing everything forever. For the most sensitive routes, record only metadata
 and scores, not content.
@@ -1796,9 +1880,9 @@ and scores, not content.
 - ✅ Label every run with **run name, tags, and metadata** (prompt version, model)
 - ✅ LangSmith turns on with **env vars**; `traceable` covers your own code, and is a no-op when off
 - ✅ Datasets come from **production failures first**; start with 20–50 real examples
-- ✅ Evaluator order: **code → trajectory → LLM-as-judge → humans**
+- ✅ Evaluator order: **code, then trajectory, then LLM-as-judge, then humans**
 - ✅ `openevals` judges return **`{ key, score, comment }`**; calibrate them against human labels
-- ✅ `agentevals` trajectory modes: **strict · unordered · subset · superset**
+- ✅ `agentevals` trajectory modes: **strict, unordered, subset and superset**
 - ✅ RAG: measure **retrieval and generation separately**
 - ✅ Offline evals gate changes; online evals find new failures; the loop connects them
 - ✅ Python's `evaluate` runs locally with `upload_results=False`; JS needed credentials in our tests
@@ -1814,10 +1898,10 @@ and scores, not content.
 ### Tomorrow
 
 **[Day 26 — MCP & the Vercel AI SDK](day-26-mcp-and-ai-sdk.md)**: your tools so far have lived
-inside your codebase. Tomorrow you'll expose them over the Model Context Protocol — so any MCP
-client can use StudyBuddy's notes — consume other people's MCP servers from a LangChain agent,
-and meet the Vercel AI SDK: what it does differently from LangChain, and when to reach for
-which.
+inside your codebase. Tomorrow you'll expose them over the Model Context Protocol, so any MCP
+client can use StudyBuddy's notes. You'll also use other people's MCP servers from a LangChain
+agent. Then you'll meet the Vercel AI SDK: what it does differently from LangChain, and when
+to choose which.
 
 ### Quick self-check
 
@@ -1836,10 +1920,10 @@ which.
    still arrives as `handleLLMEnd` / `on_llm_end`.
 
 2. How well the judge agrees with human labels on the same kind of examples, and what its
-   false-positive rate is — a judge that passes wrong answers inflates scores. Also: was it
-   run on a representative dataset (not synthetic easy questions), is the judge a different
-   model family, and how does 94% compare to the old prompt on the *same* dataset with the
-   same judge?
+   false-positive rate is. A judge that passes wrong answers inflates scores. Also ask:
+   - Was it run on a representative dataset (not synthetic easy questions)?
+   - Is the judge a different model family?
+   - How does 94% compare to the old prompt on the *same* dataset with the same judge?
 
 3. Measure them separately. Run retrieval metrics (hit rate, recall@k, MRR) on labelled
    questions: if recall dropped, the problem is chunking, embeddings or retrieval. If recall

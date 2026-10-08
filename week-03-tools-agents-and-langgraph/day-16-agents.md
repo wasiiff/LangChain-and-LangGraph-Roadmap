@@ -2,9 +2,22 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 15](day-15-tools.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** what an agent actually is, by building one from nothing. The ReAct loop,
-the agent lifecycle, why the reasoning trace matters, the failure modes that kill agents in
-production — and only then, the prebuilt `createAgent` / `create_agent`, so it's never a black box.
+**Today you learn:** yesterday's tool loop cannot plan when the next step depends on the last
+result. Today you build an **agent** that can, using the **ReAct** loop, written by hand. You add
+**guards** against the ways agents fail in production. Only then do you use the prebuilt
+`createAgent` / `create_agent`, so it's never a black box (something you use without knowing how
+it works).
+
+> 📖 **Words you'll meet today**
+>
+> - **Agent** — a model in a loop that decides which tool to call next, and when to stop.
+> - **Control flow** — the order in which steps run. In an agent, the model chooses it.
+> - **ReAct** — "Reason + Act": think, call a tool, read the result, and repeat.
+> - **Reasoning trace** — the record of what the agent thought, called and saw at each step.
+> - **Stop sequence** — text that makes the model stop writing as soon as it produces it.
+> - **Guard** — a code check that stops or redirects the loop, such as a step limit.
+> - **Repeat detection** — a guard that spots the exact same tool call made twice.
+> - **Super-linear cost** — cost that grows faster than the step count, because history is re-sent.
 
 ---
 
@@ -110,8 +123,8 @@ The model is the *planner*. Your code is the *runtime*. Confusing the two is whe
    ✅ works with ANY model               ❌ needs tool-calling support
 ```
 
-Both are ReAct. Today you build both — the text version because it makes the *mechanism* visible,
-the native version because it's what you'll ship.
+Both are ReAct, and today you build both. The text version makes the *mechanism* visible. The
+native version is what you'll ship.
 
 ### The failure modes
 
@@ -131,6 +144,9 @@ Every one has a specific mitigation, and you'll implement all five.
 
 ### 3.1 What makes it an agent
 
+> 💬 **In plain words:** an agent is just a loop where the model picks the next step. No special
+> framework or prompt is needed.
+
 Not the framework. Not the prompt. **The loop with model-chosen control flow.**
 
 ```js
@@ -147,6 +163,9 @@ Add a step limit and error handling and you have a production agent. Everything 
 LangGraph, multi-agent systems, human-in-the-loop — is structure *around* this loop.
 
 ### 3.2 The agent lifecycle
+
+> 💬 **In plain words:** every agent run goes through the same seven stages. Planning and
+> reflecting happen inside the same model call.
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
@@ -165,8 +184,11 @@ the reasoning trace matters: it's the only window into step 5.
 
 ### 3.3 Why the reasoning trace helps
 
-In text ReAct, the model writes its thinking. That isn't decoration — it's Day 02's
-chain-of-thought applied to tool selection:
+> 💬 **In plain words:** when the model writes down its thinking before acting, it picks better
+> tools and better arguments.
+
+In text ReAct, the model writes its thinking. That isn't decoration. It's Day 02's
+chain-of-thought (reasoning step by step in writing) applied to tool selection:
 
 ```
    ❌ straight to action
@@ -186,7 +208,10 @@ for one, and modern agent implementations often do.
 
 ### 3.4 The system prompt for an agent
 
-An agent's system prompt has jobs a chat prompt doesn't:
+> 💬 **In plain words:** an agent's instructions must tell it how to work, not just how to talk:
+> don't guess, don't repeat failures, don't invent results.
+
+An agent's system prompt has jobs a chat prompt doesn't have.
 
 ```
 You are a research assistant with access to tools.
@@ -203,11 +228,16 @@ CONSTRAINTS:
 - Never claim a tool result you did not receive.
 ```
 
-Three things earn their place: **"never guess at data a tool can provide"** (stops premature
-answers), **"do not repeat a failing call"** (stops loops), and **"never claim a result you did
-not receive"** (stops hallucinated observations).
+Three lines do the most work:
+
+- **"never guess at data a tool can provide"** stops answers given too early;
+- **"do not repeat a failing call"** stops loops;
+- **"never claim a result you did not receive"** stops hallucinated (invented) observations.
 
 ### 3.5 Bounding the loop, properly
+
+> 💬 **In plain words:** a step limit alone is not enough. Add checks for repeats, tokens, time
+> and per-tool use, and tell the model when one fires.
 
 A step limit is the minimum. Production agents need more:
 
@@ -232,6 +262,9 @@ if (seen.has(signature)) {
 That single message resolves most loops.
 
 ### 3.6 The prebuilt agents
+
+> 💬 **In plain words:** LangChain ships the same loop ready-made. Use it once you understand it,
+> and pass your instructions as `systemPrompt` / `system_prompt`.
 
 Once you understand the loop, use the prebuilt:
 
@@ -358,12 +391,22 @@ export const TOOLS = [queryOrders, getWeather, calculator];
 
 This makes the mechanism visible. It's how ReAct worked before native tool calling.
 
+> ⚠️ **This section uses a different model: `qwen/qwen3.8-27b`.** The course default,
+> `openai/gpt-oss-120b`, is a *reasoning model*: it thinks in hidden tokens and was trained for
+> native tool calling. It does not follow a hand-written Thought/Action text format. With
+> `stop: ["Observation:"]`, GPT-OSS 120B ignored the format and answered directly, and
+> GPT-OSS 20B returned an empty string (both checked 7 October 2026). Qwen follows the format
+> and stops at the right place. Qwen is a **preview** model on Groq, which Groq says is not for
+> production, so it may disappear. If it 404s, open console.groq.com/docs/models and pick a
+> current non-reasoning chat model. Native tool calling (§4.3) uses GPT-OSS 120B again.
+
 ```js
 // day16-react-text.js
 import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+// a non-reasoning model — it follows the text format (see the ⚠️ note above)
+const model = new ChatGroq({ model: "qwen/qwen3.8-27b", temperature: 0 });
 
 // Plain functions — no tool wrapper, to show there's no magic
 const ACTIONS = {
@@ -455,9 +498,36 @@ console.log("\n🏁 " + await reactText(
 ));
 ```
 
-**Read the trace.** You'll see the model reason its way to `query_orders[totals]`, discover
-globex, realise it needs globex's city, query again, then check London's weather. **Nobody
-programmed that sequence.**
+**Read the trace.** Here is a real run (`qwen/qwen3.8-27b`, 7 October 2026 — your wording will
+differ):
+
+```
+── step 1 ──
+Thought: I need to find out which customer spent the most. I will query the orders for totals.
+Action: query_orders[totals]
+Observation: [{"customer":"globex","total":1200},{"customer":"acme","total":360},{"customer":"initech","total":450}]
+
+── step 2 ──
+Thought: The customer who spent the most is "globex" with a total of 1200. Now I need to find out where they are located to check the weather. I will query the order details for "globex".
+Action: query_orders[globex]
+Observation: {"customer":"globex","city":"London"}
+
+── step 3 ──
+Thought: The customer "globex" is located in London. Now I need to get the current weather for London.
+Action: get_weather[London]
+Observation: London: 12°C light rain
+
+── step 4 ──
+Thought: I now know the final answer. The customer who spent the most is Globex, and the weather in their city (London) is 12°C with light rain.
+Final Answer: Globex spent the most, and the weather in London is 12°C with light rain.
+
+🏁 Globex spent the most, and the weather in London is 12°C with light rain.
+```
+
+The model reasons its way to `query_orders[totals]`, discovers globex, realises it needs
+globex's city, queries again, then checks London's weather. **Nobody programmed that
+sequence.** Every `Observation:` line was written by your code, not the model — the stop
+sequence cut the model off each time.
 
 ### 4.3 ReAct with native tool calling — what you'll actually ship
 
@@ -469,7 +539,7 @@ import { HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messag
 import { TOOLS } from "./day16-tools.js";
 
 const BY_NAME = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 })
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 })
   .bindTools(TOOLS);
 
 const SYSTEM = new SystemMessage(
@@ -550,6 +620,42 @@ for (const q of [
 }
 ```
 
+A real run (`openai/gpt-oss-120b`, 7 October 2026 — wording and token counts will differ):
+
+```
+❓ Which customer spent the most, and what's the weather where they are?
+  [1] 🔧 query_orders({"customer":null,"queryName":"totals_by_customer"})
+      → [{"customer":"globex","total":1200},{"customer":"initec
+  [2] 🔧 query_orders({"customer":"globex","queryName":"customer_details"})
+      → {"customer":"globex","city":"London","orders":2}
+  [3] 🔧 get_weather({"city":"London"})
+      → {"city":"London","tempC":12,"condition":"light rain"}
+
+  💬 The customer who spent the most is **globex**. They are located in **London**, where the current weather is **12 °C with light rain**.
+  (4 model calls · 2040 tokens)
+
+❓ What's the total revenue across all customers, and what is 20% of that?
+  [1] 🔧 query_orders({"customer":null,"queryName":"totals_by_customer"})
+      → [{"customer":"globex","total":1200},{"customer":"initec
+  [2] 🔧 calculator({"expression":"1200+450+360"})
+      → 1200+450+360 = 2010
+  [3] 🔧 calculator({"expression":"2010*0.20"})
+      → 2010*0.20 = 402
+
+  💬 The total revenue across all customers is **$2,010**, and 20 % of that amount is **$402**.
+  (4 model calls · 2058 tokens)
+
+❓ What's the weather on Mars?
+
+  💬 I’m sorry, but I don’t have the ability to retrieve weather information for Mars.
+  (1 model calls · 451 tokens)
+```
+
+Three things to notice. The first question needed **four model calls** for three tool calls,
+and nobody wrote that order. The model obeyed "ALWAYS use the calculator", even for an
+addition it could do in its head. And on Mars it called no tool at all — it decided from the
+tool descriptions that no tool could help.
+
 ### 4.4 The prebuilt agent
 
 ```js
@@ -559,7 +665,7 @@ import { ChatGroq } from "@langchain/groq";
 import { createAgent } from "langchain";
 import { TOOLS } from "./day16-tools.js";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const agent = createAgent({
   model,
@@ -707,7 +813,8 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+# a non-reasoning model — it follows the text format (see the ⚠️ note in §4.2)
+model = ChatGroq(model="qwen/qwen3.8-27b", temperature=0)
 
 # Plain functions — no tool wrapper, to show there's no magic
 def _query_orders(inp):
@@ -800,6 +907,9 @@ print("\n🏁 " + react_text(
     "Which customer spent the most, and what's the weather where they are?"))
 ```
 
+Run on the same day, the Python version took the same four steps and ended with
+`🏁 The customer who spent the most is globex, and the weather in London is 12°C with light rain.`
+
 ### 5.3 ReAct with native tool calling
 
 ```python
@@ -813,7 +923,7 @@ from day16_tools import TOOLS
 load_dotenv()
 
 BY_NAME = {t.name: t for t in TOOLS}
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0).bind_tools(TOOLS)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0).bind_tools(TOOLS)
 
 SYSTEM = SystemMessage(
     "You are a data assistant with tools.\n\n"
@@ -884,6 +994,10 @@ for q in [
     print(f"  ({r['steps']} model calls · {r['tokens']} tokens)")
 ```
 
+Run on the same day, the Python version made the same tool calls in the same order. It used 4
+model calls (2,203 tokens) for the first question, 4 for the second, and 1 for Mars. Your
+numbers will differ a little from run to run.
+
 ### 5.4 The prebuilt agent
 
 ```python
@@ -894,7 +1008,7 @@ from langchain.agents import create_agent
 from day16_tools import TOOLS
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 agent = create_agent(
     model,
@@ -987,14 +1101,19 @@ createAgent({ model, tools, systemPrompt })
 exact graph tomorrow, by hand, in about 20 lines — and then everything the prebuilt does will be
 visible.
 
-The reason it's a graph rather than a `while` loop is what the graph gives you *for free*:
-checkpointing between steps, streaming of intermediate state, interrupts before tool execution,
-and time travel. Those are Days 17–21.
+Why a graph rather than a `while` loop? Because of what the graph gives you *for free*:
+
+- checkpointing (saving state) between steps;
+- streaming of intermediate state;
+- interrupts (pauses) before tool execution;
+- time travel (going back to an earlier saved step).
+
+Those are Days 17–21.
 
 ### Why the stop sequence is essential in text ReAct
 
 The model has seen thousands of complete ReAct traces in training. After writing an `Action:`
-line, it will cheerfully continue:
+line, it may simply keep writing:
 
 ```
 Action: query_orders[totals]
@@ -1005,7 +1124,7 @@ Thought: So globex is the top customer...
 It's just continuing a pattern. `stop: ["Observation:"]` forcibly hands control back to your code
 at the right moment.
 
-**Native tool calling solves this structurally** — the model was fine-tuned to emit an end-of-turn
+**Native tool calling solves this structurally.** The model was fine-tuned to emit an end-of-turn
 token after a tool call, so generation stops on its own. That's the single biggest practical
 argument for native tool calling over text ReAct.
 
@@ -1023,8 +1142,8 @@ argument for native tool calling over text ReAct.
 ```
 
 Each call re-sends the entire growing history (Day 01). So an agent's cost is
-**super-linear in steps** — not just 4× a single call, because call 4's input includes
-everything from calls 1–3.
+**super-linear in steps**: it grows faster than the number of steps. It is not just 4 times a
+single call, because call 4's input includes everything from calls 1–3.
 
 **Practical consequences:**
 
@@ -1044,9 +1163,9 @@ everything from calls 1–3.
 | 💸 Step explosion | No feedback on efficiency | Step limit + trace review + tool consolidation |
 | 👻 Hallucinated result | Model fabricates an observation | Stop sequence (text) or native tool calling |
 
-**Repeat detection deserves emphasis.** In practice it's the most common runaway, and the fix is
-three lines: hash `(name, args)`, and when you see a repeat, return a message telling the model
-so rather than the same result again.
+**Repeat detection deserves emphasis.** In practice a repeated call is the most common runaway,
+and the fix is three lines. Hash `(name, args)`. When you see a repeat, return a message telling
+the model so, rather than the same result again.
 
 <details>
 <summary>📜 Legacy note: agent APIs you'll meet in old code</summary>
@@ -1091,7 +1210,8 @@ The model calls `search("X")` five times identically and never notices.
 **❌ Text ReAct without a stop sequence**
 
 The model writes its own `Observation:` and reasons from invented data.
-✅ `stop: ["Observation:"]` — or use native tool calling.
+✅ `stop: ["Observation:"]`, with a model that follows the text format (§4.2) — or use native
+tool calling.
 
 ---
 
@@ -1149,7 +1269,7 @@ import { HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messag
 import { TOOLS } from "./day16-tools.js";
 
 const BY_NAME = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 })
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 })
   .bindTools(TOOLS);
 
 const SYSTEM = new SystemMessage(
@@ -1222,7 +1342,7 @@ from day16_tools import TOOLS
 
 load_dotenv()
 BY_NAME = {t.name: t for t in TOOLS}
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0).bind_tools(TOOLS)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0).bind_tools(TOOLS)
 
 SYSTEM = SystemMessage(
     "You are a data assistant. Use tools for all facts and arithmetic. "
@@ -1281,7 +1401,7 @@ for label, q in QUESTIONS:
     print(f"  💬 {r['answer'][:90]}")
 ```
 
-**Typical output:**
+**Illustrative output** (the shape, not a measured run — your numbers will differ):
 
 ```
 ═══ 3+ tools: Which customer spent the most, what's the weather there… ═══
@@ -1302,7 +1422,8 @@ re-sent on the next call. So:
    total input tokens ≈ Σ (base + accumulated history at step n)
 ```
 
-That's the O(n²) pattern from Day 01, now applied to agent steps rather than chat turns.
+That's the O(n²) pattern from Day 01 (total cost grows with the square of the number of steps),
+now applied to agent steps rather than chat turns.
 
 **Three practical consequences:**
 
@@ -1320,10 +1441,15 @@ This is why "average steps per query" belongs on your dashboard.
 
 ### Exercise 2 — Break the agent five ways ●●●○○
 
-Deliberately induce each failure mode and observe it: (1) remove the step limit and give an
-unanswerable question, (2) remove repeat detection, (3) use vague tool descriptions, (4) remove
-"never guess" from the prompt, (5) run text ReAct without a stop sequence. Record what each
-produces.
+Deliberately cause each failure mode and observe it:
+
+1. Remove the step limit and give an unanswerable question.
+2. Remove repeat detection.
+3. Use vague tool descriptions.
+4. Remove "never guess" from the prompt.
+5. Run text ReAct without a stop sequence.
+
+Record what each produces.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1339,7 +1465,9 @@ from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+# Break 5 is TEXT ReAct, so it needs a model that follows a text format (see §4.2's ⚠️ note)
+text_model = ChatGroq(model="qwen/qwen3.8-27b", temperature=0)
 
 # ── tools with switchable descriptions ───────────────────────────────────
 class SearchArgs(BaseModel):
@@ -1449,15 +1577,18 @@ Observation: <the system fills this in>
 ...
 Final Answer: <answer>"""
 
-res = model.invoke([{"role": "system", "content": SYS},
-                    {"role": "user", "content": "Question: What is our refund policy?"}])
+res = text_model.invoke([{"role": "system", "content": SYS},
+                         {"role": "user", "content": "Question: What is our refund policy?"}])
 print(res.content[:400])
-print("\n  ⚠️  Notice: the model wrote its OWN Observation — that data is invented.")
+if "Observation:" in res.content:
+    print("\n  ⚠️  The model wrote its OWN Observation — that data is invented.")
+else:
+    print("\n  ℹ️  This run stopped by itself. Nothing GUARANTEED that — see the table below.")
 
 rule("FIXED — with stop=['Observation:']")
-res = model.invoke([{"role": "system", "content": SYS},
-                    {"role": "user", "content": "Question: What is our refund policy?"}],
-                   stop=["Observation:"])
+res = text_model.invoke([{"role": "system", "content": SYS},
+                         {"role": "user", "content": "Question: What is our refund policy?"}],
+                        stop=["Observation:"])
 print(res.content[:400])
 print("\n  ✅ Generation stopped before the Observation. Your code fills it in.")
 ```
@@ -1469,12 +1600,12 @@ const content = (repeatDetection && seen.has(sig))
   ? "You already made this exact call and got the same result. Try something different."
   : String(await byName[c.name].invoke(c.args));
 
-// BREAK 5: stop sequence present vs absent
-await model.invoke(messages);                          // ❌ invents Observations
-await model.invoke(messages, { stop: ["Observation:"] }); // ✅ stops correctly
+// BREAK 5: stop sequence present vs absent (textModel = qwen/qwen3.8-27b, see §4.2)
+await textModel.invoke(messages);                             // ❌ may invent Observations
+await textModel.invoke(messages, { stop: ["Observation:"] }); // ✅ stops correctly
 ```
 
-**What each break produces:**
+**What each break typically produces** (illustrative, except Break 5, which was re-run):
 
 | Break | Symptom |
 |---|---|
@@ -1484,12 +1615,14 @@ await model.invoke(messages, { stop: ["Observation:"] }); // ✅ stops correctly
 | **3** *fixed* | Goes straight to `calculator` |
 | **4** loose prompt | **Zero tool calls** — confidently invents an order count |
 | **4** *fixed* | Calls the tool, finds nothing, says so |
-| **5** no stop sequence | Model writes `Observation: Our refund policy is 30 days...` — **entirely fabricated** |
-| **5** *fixed* | Output ends after the `Action:` line |
+| **5** no stop sequence | Measured with `qwen/qwen3.8-27b` (7 October 2026): the model wrote one `Thought:` and `Action: search[general refund policy template]`, then **stopped by itself** — no invented `Observation:` that run. Other models and other prompts do continue, writing an `Observation:` with made-up data |
+| **5** *fixed* | Output ends after the `Action:` line — this time guaranteed, not lucky |
 
-**Break 5 is the one to sit with.** The model produces a complete, plausible ReAct trace with
-invented observations, and every downstream step reasons from fabricated data. Nothing errors.
-The output looks *more* convincing than a correct trace, because it's uninterrupted.
+**Break 5 is the one to think hardest about**, and the measured run shows why. Without a stop
+sequence, whether the model stops in time is up to the model. When it does not, it produces a
+complete, plausible ReAct trace with invented observations, and every later step reasons from
+fabricated data. Nothing errors. A run that happens to stop cleanly proves nothing about the
+next one — the stop sequence turns "usually" into "always".
 
 That's precisely why native tool calling replaced text ReAct: generation stops structurally,
 not because you remembered a parameter.
@@ -1524,7 +1657,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from day16_tools import TOOLS, query_orders, get_weather
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 BY_NAME = {t.name: t for t in TOOLS}
 bound = model.bind_tools(TOOLS)
 
@@ -1653,7 +1786,7 @@ const answer  = await model.invoke(`Question: ...\nData: ${totals} ${details} ${
 const answer = await agent(QUESTION_B);   // the loop from §4.3
 ```
 
-**Typical results:**
+**Illustrative results** (not a measured run — your numbers will differ):
 
 ```
 TASK A — FIXED SEQUENCE (summarise → translate)
@@ -1721,7 +1854,7 @@ from day16_tools import TOOLS
 
 load_dotenv()
 BY_NAME = {t.name: t for t in TOOLS}
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0).bind_tools(TOOLS)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0).bind_tools(TOOLS)
 
 @dataclass
 class Guards:
@@ -1878,7 +2011,7 @@ for (let step = 1; step <= GUARDS.maxSteps; step++) {
 return finish("step limit");
 ```
 
-**Expected output pattern:**
+**Expected output pattern** (illustrative — not a measured run):
 
 ```
 NORMAL — completes naturally
@@ -1928,10 +2061,16 @@ That's tomorrow's argument for graphs.
 
 ### Exercise 5 — 🏆 A self-correcting research agent ●●●●●
 
-Build an agent that: uses a knowledge base and a calculator, **grades its own answer** for
-groundedness before returning it, retries with a different approach if the answer is unsupported,
-tracks the full trace and cost, and degrades gracefully when it can't answer. Compare its output
-against an ungraded agent.
+Build an agent that:
+
+- uses a knowledge base and a calculator;
+- **grades its own answer** for groundedness (is every claim backed by a tool result?) before
+  returning it;
+- retries with a different approach if the answer is unsupported;
+- tracks the full trace and cost;
+- degrades gracefully (still gives a useful partial reply) when it can't answer.
+
+Compare its output against an ungraded agent.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1951,8 +2090,8 @@ from langchain_groq import ChatGroq
 
 load_dotenv()
 
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)      # grading
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)  # reasoning
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)      # grading
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0)  # reasoning
 
 # ══════════════════ TOOLS ════════════════════════════════════════════════
 KB = {
@@ -2014,7 +2153,8 @@ class Grade(BaseModel):
         description="Claims not found in the tool results. Empty if fully grounded.")
     answers_question: bool = Field(description="Does it actually answer what was asked?")
 
-grader = fast.with_structured_output(Grade)
+# JSON-schema mode: with GPT-OSS on Groq the default tool-calling mode can fail (Day 06)
+grader = fast.with_structured_output(Grade, method="json_schema", strict=True)
 
 # ══════════════════ THE AGENT ════════════════════════════════════════════
 @dataclass
@@ -2178,7 +2318,7 @@ async function selfCorrectingAgent(question, maxAttempts = 2) {
 }
 ```
 
-**Typical output on the third question:**
+**Illustrative output on the third question** (not a measured run):
 
 ```
 ❓ What is the market share of LangGraph versus CrewAI?
@@ -2216,12 +2356,12 @@ async function selfCorrectingAgent(question, maxAttempts = 2) {
 4. **Failure degrades to a partial answer, not an error.** "I couldn't produce a grounded answer.
    What I did find: …" is more useful than either a fabrication or a stack trace.
 
-5. **The cheap model grades.** Grading is a simple classification; paying 70B rates for it on
+5. **The cheap model grades.** Grading is a simple classification; paying 120B-model rates for it on
    every attempt would double the cost of the whole loop.
 
-6. **Both grades are kept.** Seeing that attempt 1 failed on *groundedness* and attempt 2 failed
-   on *availability* tells you the knowledge base has a gap — which is a content problem, not a
-   model problem. That distinction only exists because the grades are recorded.
+6. **Both grades are kept.** Suppose attempt 1 failed on *groundedness* and attempt 2 failed on
+   *availability*. That tells you the knowledge base has a gap — a content problem, not a model
+   problem. That distinction only exists because the grades are recorded.
 
 **And now the friction that motivates the rest of Week 3.**
 
@@ -2250,8 +2390,12 @@ state machine — this is the fourth time across this book — and the structure
 <summary><b>Q: What is an agent?</b></summary>
 
 An LLM in a loop where the **model decides the control flow**: which tool to call, with what
-arguments, and when to stop. The loop is: model reasons → emits a tool call → your code executes
-it → the result is appended → repeat until the model returns a final answer instead of a tool call.
+arguments, and when to stop. The loop is:
+
+1. the model reasons and emits a tool call;
+2. your code executes it;
+3. the result is appended to the history;
+4. repeat until the model returns a final answer instead of a tool call.
 
 That's the whole mechanism. Everything else — LangGraph, multi-agent systems, human-in-the-loop —
 is structure around that loop.
@@ -2283,8 +2427,8 @@ regex parsing.
 <details>
 <summary><b>Q: Why does text-based ReAct need a stop sequence?</b></summary>
 
-The model has seen complete ReAct traces in training, so after writing an `Action:` line it will
-continue by writing its own `Observation:` — with entirely fabricated data — and then reason from
+The model has seen complete ReAct traces in training. So after writing an `Action:` line it will
+continue by writing its own `Observation:`, with entirely fabricated data, and then reason from
 it. Nothing errors, and the output looks convincing.
 
 `stop: ["Observation:"]` forces generation to end so your code can insert the real result. Native
@@ -2299,15 +2443,18 @@ token after a tool call.
 
 A step limit is necessary but not sufficient — it caps the damage without addressing the cause.
 
-The most effective addition is **repeat detection**: hash `(tool_name, arguments)`, and when you
-see a repeat, instead of returning the same result again, return a message saying *"you already
+The most effective addition is **repeat detection**. Hash `(tool_name, arguments)`. When you see a
+repeat, don't return the same result again. Instead, return a message saying *"you already
 made this exact call and got the same result; try something different or answer with what you
-have."* That single message resolves most real loops, because the model genuinely can't tell it's
+have"*. That single message resolves most real loops, because the model genuinely can't tell it's
 repeating otherwise.
 
-Beyond that: per-tool call caps (which catch a different pattern — the same tool called with
-*varying* arguments in a hunt, which evades a signature check), a token budget, and a wall-clock
-timeout checked *before* each model call rather than after.
+Beyond that:
+
+- **per-tool call caps** — these catch a different pattern: the same tool called with *varying*
+  arguments in a hunt, which slips past a signature check;
+- **a token budget**;
+- **a wall-clock timeout**, checked *before* each model call rather than after.
 
 And the prompt should say "do not repeat a failing call" explicitly.
 </details>
@@ -2319,10 +2466,12 @@ Every step re-sends the entire accumulated history — the original question, ev
 every tool result. So step 4's input includes everything from steps 1–3. Summed across steps,
 total input tokens grow roughly quadratically, not linearly.
 
-This has practical consequences: a 4-step agent typically costs 5–6× a single call rather than
-4×; large tool outputs are expensive twice over, because they're re-sent in every subsequent
-step; and reducing step count (by consolidating tools, or improving descriptions so the model
-chooses correctly first time) saves more than it appears to.
+This has practical consequences:
+
+- A 4-step agent typically costs 5–6× a single call, rather than 4×.
+- Large tool outputs are expensive twice over, because they're re-sent in every later step.
+- Reducing step count saves more than it appears to. You can do it by consolidating tools, or by
+  improving descriptions so the model chooses correctly first time.
 
 Mitigations: trim or summarise older tool results, truncate large outputs at the tool boundary,
 and treat average step count as a monitored health metric.
@@ -2336,9 +2485,9 @@ your tools, and a **tools** node (a `ToolNode`) that executes any requested call
 edge after the agent node routes to `tools` if there are tool calls and to `END` otherwise, and
 the tools node always loops back to the agent.
 
-That's the hand-written loop expressed as a graph. The reason it's a graph rather than a `while`
-loop is what the graph provides: checkpointing between steps, streaming of intermediate state,
-interrupts before tool execution, and time travel — none of which you get for free from a loop.
+That's the hand-written loop expressed as a graph. Why a graph rather than a `while` loop?
+Because of what the graph provides: checkpointing between steps, streaming of intermediate state,
+interrupts before tool execution, and time travel. A loop gives you none of these for free.
 </details>
 
 <details>
@@ -2348,9 +2497,11 @@ When the sequence is known in advance. If every request follows retrieve → pro
 agent adds a decision step with only one possible answer — costing latency, tokens and
 predictability for nothing. This is the most common architectural mistake with agents.
 
-Also avoid them when cost or latency budgets are tight (agents multiply model calls), when you
-need deterministic, testable behaviour, or when the "agent" is really just one tool call that a
-chain could make unconditionally.
+Also avoid them:
+
+- when cost or latency budgets are tight (agents multiply model calls);
+- when you need deterministic, testable behaviour;
+- when the "agent" is really just one tool call that a chain could always make.
 
 The useful middle ground: a chain that *contains* an agent — a fixed pipeline where one step is
 adaptive. It's rarely an all-or-nothing choice for the whole application.
@@ -2361,8 +2512,8 @@ adaptive. It's rarely an all-or-nothing choice for the whole application.
 <details>
 <summary><b>Q: Your agent takes 12 steps for questions that should take 3. Diagnose it.</b></summary>
 
-Step explosion is usually a tool-design problem wearing an agent-behaviour costume, so I'd read
-traces before changing any prompt.
+Step explosion is usually a tool-design problem that only looks like an agent-behaviour problem.
+So I'd read traces before changing any prompt.
 
 **Look at what the extra steps actually are:**
 
@@ -2383,9 +2534,8 @@ traces before changing any prompt.
 **Then check the prompt** for "answer once you have enough information" — without it, some models
 keep gathering.
 
-**Then check the model.** Step efficiency varies a lot; a smaller model may genuinely need more
-steps for the same task, in which case the cost comparison isn't as favourable as the per-token
-price suggests.
+**Then check the model.** Step efficiency varies a lot. A smaller model may genuinely need more
+steps for the same task. If so, it is not as cheap as its per-token price suggests.
 
 Throughout: instrument average steps per query segmented by question type, so you can tell
 whether a change actually helped rather than relying on a few anecdotes.
@@ -2396,11 +2546,12 @@ whether a change actually helped rather than relying on a few anecdotes.
 
 The refund capability dominates the design — this is an agent that can move money.
 
-**Tier the tools by blast radius.** Read-only tools (order lookup, policy search, shipping
-status) run freely. Write tools that are reversible (add a note, tag a ticket) run with logging.
-Irreversible tools (issue refund, cancel subscription) require **human approval via an interrupt**
-— which is a hard code boundary, not a prompt instruction, because tool arguments are influenced
-by untrusted user text and prompt injection is not solvable at the prompt layer.
+**Tier the tools by blast radius** (how much damage a wrong call can do). Read-only tools (order
+lookup, policy search, shipping status) run freely. Write tools that are reversible (add a note,
+tag a ticket) run with logging. Irreversible tools (issue refund, cancel subscription) require
+**human approval via an interrupt**. That is a hard code boundary, not a prompt instruction.
+Tool arguments are influenced by untrusted user text, and prompt injection is not solvable at the
+prompt layer.
 
 **Constrain the refund tool itself.** It takes an order ID and a reason from an enum — not an
 arbitrary amount. The amount is looked up server-side from the order. That way even a fully
@@ -2412,7 +2563,7 @@ the model's judgement, and the agent must cite the clause it relied on. That giv
 auditable decision trail and makes policy changes a content update rather than a prompt change.
 
 **Guardrails**: step limit, repeat detection, per-tool caps, and a check that the customer being
-acted on matches the authenticated session — the agent must never be able to act on an account
+acted on matches the authenticated session. The agent must never be able to act on an account
 the user doesn't own.
 
 **Escalation as a first-class path.** Low confidence, an angry customer, an unusual amount, or a
@@ -2440,8 +2591,14 @@ questions the agent *should refuse*, since over-answering is a common failure th
 metrics otherwise miss.
 
 **Trajectory level** — was the path sensible? Not "did it match a reference path", but weaker,
-more robust properties: did it call the necessary tools at least once; did it avoid tools it
-shouldn't have used; did it stay within a step budget; did it repeat calls. These catch
+more robust properties:
+
+- Did it call the necessary tools at least once?
+- Did it avoid tools it shouldn't have used?
+- Did it stay within a step budget?
+- Did it repeat calls?
+
+These catch
 regressions that outcome metrics miss — an agent taking 12 steps to reach the right answer is
 degrading even though accuracy is unchanged.
 
@@ -2454,16 +2611,16 @@ repeat / timeout) as a health signal. Log full traces so failures can be inspect
 guessed at.
 
 **And the organisational part:** every production failure becomes a permanent eval case. Agent
-quality regresses easily — a tool description change can shift behaviour globally — so the suite
-has to run in CI on every prompt, tool or model change, or you'll rediscover the same bugs.
+quality regresses easily: one changed tool description can shift behaviour everywhere. So the
+suite has to run in CI on every prompt, tool or model change, or you'll rediscover the same bugs.
 </details>
 
 ---
 
 ## 10. Recap
 
-- ✅ An agent = a loop where **the model chooses the control flow**
-- ✅ ReAct = Reason → Act → Observe, repeated until a final answer
+- ✅ An agent is a loop where **the model chooses the control flow**
+- ✅ ReAct is Reason, then Act, then Observe, repeated until a final answer
 - ✅ Text ReAct needs a **stop sequence** or the model invents observations
 - ✅ Native tool calling solves that structurally — use it
 - ✅ Agent cost is **super-linear in steps** — history is re-sent every time
@@ -2471,7 +2628,13 @@ has to run in CI on every prompt, tool or model change, or you'll rediscover the
 - ✅ **Repeat detection** is the most valuable guard after a step limit
 - ✅ Guards should return *messages* to the model, not throw
 - ✅ Track `stopped_by` — the distribution of stop reasons is a health metric
-- ✅ `createAgent` builds a two-node graph: agent ⇄ tools. That's tomorrow.
+- ✅ `createAgent` builds a two-node graph: agent and tools, looping. That's tomorrow.
+
+> 📏 **Measure it:** Day 25 evaluates agent trajectories properly; for now, try three tasks: one
+> needing no tool, one needing one tool, and one that must hit a guard. Use the
+> `agent()` from §4.3 / §5.3 for the first two, and Exercise 4's `Guards(max_steps=2)` case for
+> the third. A pass means the right answer *and* sensible steps: about one model call with no
+> tool, two with one tool, and a clean `stopped_by` reason instead of a runaway loop.
 
 ### Tomorrow
 
@@ -2489,9 +2652,9 @@ loop you just built becomes about 20 lines of graph.
 <details>
 <summary>Answers</summary>
 
-1. **Repeat detection.** Hash `(tool_name, arguments)`; on a repeat, return a *message* — "you
-   already made this exact call and got the same result, try something different or answer with
-   what you have" — rather than the same result again. A step limit alone caps the damage but
+1. **Repeat detection.** Hash `(tool_name, arguments)`. On a repeat, return a *message* rather
+   than the same result again. For example: "you already made this exact call and got the same
+   result, try something different or answer with what you have". A step limit alone caps the damage but
    doesn't break the loop.
 2. Because each step re-sends the **entire accumulated history**. Step 5's input includes the
    question plus all four previous AI messages and tool results, so total input tokens grow
@@ -2501,3 +2664,11 @@ loop you just built becomes about 20 lines of graph.
    testable. Also when cost or latency budgets are tight, or when you need deterministic
    behaviour. Use an agent only when the next step genuinely depends on the previous result.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 15 — Tools](day-15-tools.md)** · **[Week 3 index](README.md)** · **[Day 17 — LangGraph Basics →](day-17-langgraph-basics.md)**
+
+</div>

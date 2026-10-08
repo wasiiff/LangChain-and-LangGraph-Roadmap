@@ -2,11 +2,30 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 21](../week-03-tools-agents-and-langgraph/day-21-human-in-the-loop.md) · 🧩 **Difficulty:** ●●●●○
 
-**Today you learn:** why one agent eventually stops scaling, the four multi-agent
-architectures, and how to build the one the LangChain team now recommends — a **supervisor
-that calls specialist agents as tools**. Then handoffs (the "swarm" style), hierarchies, and
-the part most tutorials skip: **measuring whether multi-agent is making things worse.**
+**Today you learn:** One agent with too many tools starts picking the wrong tool, mixing up
+its instructions, and costing more on every turn. Today you split the work between specialist
+agents, led by a **supervisor that calls each specialist as a tool** — the design the
+LangChain team now recommends. You also meet **handoffs** (the "swarm" style), hierarchies,
+and the part most tutorials skip: **measuring whether multi-agent is making things worse.**
+
 Every number in this chapter was measured, not estimated.
+
+> 📖 **Words you'll meet today**
+>
+> - **Multi-agent system** — several agents, each with its own prompt, tools and context,
+>   working on parts of one task.
+> - **Supervisor** — a coordinating agent that hands jobs to specialist agents and answers the
+>   user itself.
+> - **Agent-as-a-tool** — a specialist agent wrapped inside a tool, so the supervisor calls it
+>   like any other tool.
+> - **Brief and report** — the brief is what the supervisor sends a specialist; the report is
+>   the answer that comes back.
+> - **Handoff** — a tool call that passes control of the conversation to another agent.
+> - **Swarm** — a group of agents that hand off to each other; whichever is active talks to the
+>   user.
+> - **Workflow graph** — a graph whose steps your code decides in advance, not the model.
+> - **Context engineering** — deciding everything that goes into the model's context window:
+>   instructions, history, retrieved documents, tool results and memory.
 
 ---
 
@@ -20,7 +39,7 @@ StudyBuddy v4 finished Week 3 with four tools. Then the roadmap arrives:
    exam timetables · group study rooms · parent reports · ...
 ```
 
-Fourteen tools later, the single agent starts failing in ways that are hard to pin down:
+Fourteen tools later, the single agent starts failing in ways that are hard to trace:
 
 | Symptom | What's actually happening |
 |---|---|
@@ -32,8 +51,9 @@ Fourteen tools later, the single agent starts failing in ways that are hard to p
 
 ### The real-life version
 
-A small clinic with one person who is receptionist, doctor, pharmacist and billing clerk.
-It works — until it doesn't.
+Picture a small clinic where one person is the receptionist, doctor, pharmacist and billing
+clerk. It works — until it doesn't. A better clinic has a GP (a general family doctor) who
+sends patients on to specialists.
 
 ```
    ❌ ONE PERSON DOES EVERYTHING          ✅ A GP WHO REFERS TO SPECIALISTS
@@ -106,7 +126,13 @@ supervisor, wrapped as a tool of the top-level supervisor.
 Here's the insight that turns "multi-agent" from a buzzword into an engineering decision:
 **it's mostly a way of controlling what each model sees.**
 
-Measured with scripted models, same question, same tool:
+That job has a name: **context engineering**. It means deciding everything that goes into the
+model's context window — the instructions, the conversation history, retrieved documents,
+tool results and memory. You first met the term on Day 14, and Day 36 covers it in depth.
+Today it is the main reason to split one agent into several.
+
+Measured with scripted models (fake models that return pre-written replies, so no API key is
+needed), same question, same tool:
 
 ```
    AGENT-AS-TOOL                          SUPERVISOR LIBRARY
@@ -129,6 +155,9 @@ collaborating" — is what you're buying.
 ## 3. First principles
 
 ### 3.1 Why one agent degrades
+
+> 💬 **In plain words:** one agent with many tools and jobs gets worse over time. It picks the
+> wrong tool, its instructions clash, and old results clutter what it sees.
 
 ```
    1. TOOL SELECTION IS CLASSIFICATION
@@ -155,6 +184,9 @@ you measure.
 
 ### 3.2 What agent-as-a-tool physically is
 
+> 💬 **In plain words:** it is a specialist agent hidden inside a tool. It gets only the tool's
+> arguments and sends back only its final answer.
+
 Nothing framework-specific. A tool whose body runs another agent:
 
 ```
@@ -179,6 +211,9 @@ Three consequences worth stating plainly:
   and you can cap, validate, or restructure the report before it crosses back.
 
 ### 3.3 What a handoff physically is
+
+> 💬 **In plain words:** a handoff gives the conversation to another agent for good. You don't
+> borrow its answer and carry on — it takes over.
 
 Handoffs are different: control **moves**, rather than being lent and returned. Here's the
 actual body of `createHandoffTool` from `@langchain/langgraph-swarm`, lightly trimmed:
@@ -208,8 +243,11 @@ agent in the parent graph** — and records who's now in charge. There is no oth
 
 ### 3.4 The cost model — measured
 
-Same question, same `lookup` tool, scripted models in both JavaScript and Python (identical
-results in both languages):
+> 💬 **In plain words:** every multi-agent design doubled the model calls for a simple
+> question. Split an agent only when the gain is worth that cost.
+
+Same question, same `lookup` tool, scripted models in both JavaScript and Python. The results
+were identical in both languages:
 
 | Architecture | Total model calls | Top model's 2nd call saw | Worker's calls saw |
 |---|---|---|---|
@@ -222,8 +260,8 @@ Read it three ways:
 
 1. **Any delegation doubled the calls** for a question one agent could answer in one tool hop.
    Multi-agent pays off when specialists do *multiple* steps, when their contexts would
-   otherwise pollute each other, or when they can run in parallel — not on single-hop
-   questions.
+   otherwise pollute each other, or when they can run in parallel. It does not pay off on
+   single-hop questions.
 2. **The library supervisor inflates both contexts.** The worker receives the whole
    conversation, and each round trip adds two synthetic messages
    (`"Transferring back to supervisor"` + its tool result) to the supervisor's history.
@@ -232,19 +270,25 @@ Read it three ways:
 
 ### 3.5 Parallel delegation is real
 
+> 💬 **In plain words:** if the supervisor asks two specialists in the same turn, they work at
+> the same time. You wait for one job, not for both in a row.
+
 When the supervisor emits two subagent tool calls in **one** AI message, the tool node runs
-them concurrently. Measured with two subagent tools that each take 400 ms:
+them concurrently (at the same time). Measured with two subagent tools that each take 400 ms:
 
 ```
    JavaScript:  411 ms        Python:  414 ms        (sequential would be ~800 ms)
 ```
 
-That's the single biggest *latency* argument for the supervisor pattern: independent
-research + quiz generation happen at the same time, and the supervisor doesn't have to do
-anything special to get it. It only has to ask for both in the same turn — which a good
-system prompt encourages ("when tasks are independent, delegate them in one step").
+That's the strongest *latency* (waiting time) argument for the supervisor pattern.
+Independent research and quiz generation happen at the same time, and the supervisor needs
+nothing special to get it. It only has to ask for both in the same turn. A good system prompt
+encourages that ("when tasks are independent, delegate them in one step").
 
 ### 3.6 Swarm state: who's active
+
+> 💬 **In plain words:** a swarm must remember which agent the user was talking to. Without
+> saved state, the next turn goes back to the default agent.
 
 A swarm keeps an `activeAgent` (JS) / `active_agent` (Python) channel. Verified behaviour,
 both languages:
@@ -258,11 +302,15 @@ both languages:
      turn 2:  ALICE answers — the default agent             active agent was forgotten
 ```
 
-The second case is a real production bug in "stateless" APIs that re-send history on every
-request: the user was talking to billing, and suddenly the front-desk agent answers. Either
-persist the thread (Day 20) or carry `activeAgent` along with the messages.
+The second case is a real production bug in "stateless" APIs (APIs that save nothing between
+requests and re-send the history every time). The user was talking to billing, and suddenly
+the front-desk agent answers. Either persist the thread (Day 20) or carry `activeAgent` along
+with the messages.
 
 ### 3.7 The status of the prebuilt libraries
+
+> 💬 **In plain words:** the ready-made supervisor and swarm libraries still work. For new code,
+> though, build the supervisor yourself from tools.
 
 As of the versions tested here (`@langchain/langgraph-supervisor` 1.1.1,
 `@langchain/langgraph-swarm` 1.0.2, `langgraph-supervisor` 0.0.31, `langgraph-swarm` 0.1.0):
@@ -291,8 +339,8 @@ the supervisor from tools; reach for the swarm library when you genuinely need h
 
 ### 4.1 Three specialists, least privilege
 
-Each specialist gets **only** the tools its job needs. That's a quality decision (short tool
-list → better selection) *and* a security decision ([Day 15](../week-03-tools-agents-and-langgraph/day-15-tools.md)):
+Each specialist gets **only** the tools its job needs — the rule called *least privilege*.
+That's a quality decision (a short tool list leads to better selection) *and* a security decision ([Day 15](../week-03-tools-agents-and-langgraph/day-15-tools.md)):
 the quiz writer has no business touching the progress database.
 
 ```js
@@ -301,7 +349,7 @@ import { ChatGroq } from "@langchain/groq";
 import { HumanMessage } from "@langchain/core/messages";
 import { z } from "zod";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 // ── stub tools — swap for real search / DB calls ─────────────────────────
 const NOTES = {
@@ -461,7 +509,7 @@ shows the case where it shouldn't.
 ### 4.4 Parallel delegation
 
 If the student asks for two independent things, a well-prompted supervisor emits both tool
-calls in one message, and they run concurrently (measured: two 400 ms delegations took
+calls in one message. They then run at the same time (measured: two 400 ms delegations took
 411 ms, not ~800 ms):
 
 ```js
@@ -511,14 +559,17 @@ const askResearchTeam = asTool(researchLead, {
                                └─ ask_fact_checker ─► fact_checker
 ```
 
-Each level multiplies calls. A three-level hierarchy answering one question can easily make
-10+ model calls. Use it when a sub-team is genuinely complex *and* independently useful — not
+Each level multiplies calls. One level of delegation already took a single-hop question from
+2 model calls to 4 (measured; see §7), so a three-level hierarchy answering one question can
+plausibly need around ten model calls (an estimate, not a measurement — count them in your
+traces). Use it when a sub-team is genuinely complex *and* independently useful — not
 to make an org chart.
 
 ### 4.6 A shared "brief" for every level: pass IDs, not prose
 
-The telephone game is the failure mode of hierarchies: every summary is lossy, and a fact
-that survives three summaries is often not the fact you started with. Two habits help:
+Hierarchies suffer from the *telephone game* — the children's game where a message is
+whispered down a line and changes on the way. Every summary is lossy (it drops detail). A
+fact that survives three summaries is often not the fact you started with. Two habits help:
 
 ```js
 // ❌ "the student is weak at networking stuff"
@@ -526,8 +577,8 @@ that survives three summaries is often not the fact you started with. Two habits
 context: "student_id: s-42 · weakest topic: https · score: 62 · attempts: 3"
 ```
 
-Ask specialists to repeat **identifiers and numbers verbatim** in their reports, and have the
-supervisor pass structured `context` rather than paraphrase. Numbers don't compress well.
+Ask specialists to repeat **identifiers and numbers verbatim** (word for word) in their
+reports. Have the supervisor pass structured `context` rather than paraphrase. Numbers don't compress well.
 
 ### 4.7 The prebuilt supervisor library
 
@@ -572,10 +623,14 @@ And the messages it produces for one delegation (verified, 7 messages with `last
    ai(supervisor):                 "Final: ..."
 ```
 
-Two things to notice: the worker's reply is followed by **two synthetic "transfer back"
-messages** that every later supervisor call re-reads, and with `outputMode: "full_history"`
-the worker's own tool calls are added too (9 messages instead of 7 when the worker used one
-tool). Both are context the tool-based pattern doesn't pay for.
+Two things to notice:
+
+- The worker's reply is followed by **two synthetic "transfer back" messages** — messages the
+  library writes itself. Every later supervisor call re-reads them.
+- With `outputMode: "full_history"`, the worker's own tool calls are added too: 9 messages
+  instead of 7 when the worker used one tool.
+
+Both are context the tool-based pattern doesn't pay for.
 
 > ⚠️ Passing `researcher` instead of `researcher.graph` throws
 > `Please specify a name when you create your agent...` — even though you did. The wrapper
@@ -583,9 +638,9 @@ tool). Both are context the tool-based pattern doesn't pay for.
 
 ### 4.8 Handoffs — the swarm
 
-Use handoffs when the **user should end up talking to the specialist directly** — support
-triage is the classic case: the front desk transfers you to billing, and billing handles the
-rest of the conversation.
+Use handoffs when the **user should end up talking to the specialist directly**. Support
+triage (sending each request to the right team) is the classic case. The front desk
+transfers you to billing, and billing handles the rest of the conversation.
 
 ```js
 import { createSwarm, createHandoffTool } from "@langchain/langgraph-swarm";
@@ -702,11 +757,16 @@ const say = (text) => () => new AIMessage({ content: text });
 const boss = new Scripted([callTool("ask_researcher", { task: "How does HTTPS work?" }), say("final")]);
 ```
 
-Two rules make it reliable: return a **fresh** message object each call (message ids are
-assigned on first use, so reusing an object can make `addMessages` upsert instead of append),
-and give every tool call a **unique id**. With that, you can assert the exact delegation
-sequence, the number of model calls, and how much context each specialist received — for
-free, deterministically, in CI.
+Two rules make it reliable:
+
+- Return a **fresh** message object on each call. Message ids are assigned on first use, so
+  reusing an object can make `addMessages` upsert (overwrite the old message) instead of
+  append.
+- Give every tool call a **unique id**.
+
+With that, you can assert the exact delegation sequence, the number of model calls, and how
+much context each specialist received. It costs nothing, gives the same result every run,
+and works in CI (your automated test pipeline).
 
 ---
 
@@ -724,7 +784,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langchain_groq import ChatGroq
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 # ── stub tools — swap for real search / DB calls ─────────────────────────
 NOTES = {
@@ -1009,7 +1069,7 @@ boss_model = Scripted(messages=iter([call_tool("ask_researcher", {"task": "How d
 ```
 
 `GenericFakeChatModel` takes an **iterator** of messages. Build each message fresh (as
-`call_tool` does) so ids stay unique; for an endless script — to test a loop guard — pass a
+`call_tool` does) so ids stay unique. For an endless script — to test a loop guard — pass a
 generator such as `(call_tool("transfer_to_bob") for _ in itertools.count())`.
 
 ### 5.11 The JS ↔ Python translation for today
@@ -1050,9 +1110,9 @@ generator such as `(call_tool("transfer_to_bob") for _ in itertools.count())`.
 ```
 
 The first and last are "graphs calling graphs". The middle two are "agents as nodes sharing
-state" — which is exactly the Day 19 subgraph-sharing situation, and why those libraries have
-to manage message bookkeeping (the synthetic transfer-back messages) that the tool-based
-pattern simply doesn't need.
+state" — exactly the Day 19 subgraph-sharing situation. That is why those libraries must
+manage message bookkeeping (the synthetic transfer-back messages). The tool-based pattern
+doesn't need it.
 
 ### 6.2 Why the tool-based supervisor is the recommended default
 
@@ -1106,21 +1166,21 @@ Every report is a lossy summary. In a hierarchy, a fact passes through several s
    supervisor:      "you're struggling with networking"
 ```
 
-Nothing was hallucinated, and the student still got a worse answer. Mitigations:
-identifiers and numbers verbatim, shallow hierarchies, and — for anything that matters — have
-the final answer cite the raw value rather than a summary of it.
+Nothing was hallucinated (made up), and the student still got a worse answer. To reduce it,
+keep identifiers and numbers verbatim and keep hierarchies shallow. For anything that
+matters, have the final answer cite the raw value rather than a summary of it.
 
 ### 6.5 Where persistence and HITL live
 
-Put the checkpointer on the **top-level** graph (Day 20); that's the conversation. A
-specialist invoked inside a tool is a separate graph with its own fresh message list: it's
-stateless across calls unless you deliberately give it a checkpointer and a thread of its own.
-Usually that's what you want — specialists do a job and forget it, and anything worth
-remembering goes back to the supervisor in the report.
+Put the checkpointer on the **top-level** graph (Day 20), because that's the conversation. A
+specialist invoked inside a tool is a separate graph with its own fresh message list. It's
+stateless across calls (it remembers nothing between them) unless you deliberately give it a
+checkpointer and a thread of its own. Usually that's what you want. Specialists do a job and
+forget it, and anything worth remembering goes back to the supervisor in the report.
 
-For approvals (Day 21), gate at the level where the consequence happens: if the analyst could
-write to the database, the `interrupt()` belongs in the analyst's tool path, not in the
-supervisor's prompt.
+For human approvals — human-in-the-loop, or HITL (Day 21) — put the check at the level where
+the consequence happens. If the analyst could write to the database, the `interrupt()`
+belongs in the analyst's tool path, not in the supervisor's prompt.
 
 ---
 
@@ -1135,7 +1195,7 @@ supervisor's prompt.
 
 Measured: the same single-hop question went from **2 model calls to 4** as soon as any
 supervisor was involved. Multi-agent pays off on multi-step, context-heavy, or parallel work.
-On everything else it's a tax.
+On everything else it's an extra cost with no benefit.
 
 ### ❌ 2. Unnamed agents
 
@@ -1158,7 +1218,7 @@ raises `ValueError` with the same message.
 
 `createAgent` returns a `ReactAgent` whose `.name` is `undefined`; the named graph is on
 `.graph`. The error message tells you to add a name you already added, which is why this one
-wastes an afternoon.
+can waste hours.
 
 ### ❌ 4. Vague briefs
 
@@ -1212,9 +1272,12 @@ Alice, even though turn 1 ended with Bob.
 ❌ alice: "that's a billing question" → bob: "that's an account question" → alice → bob → ...
 ```
 
-Verified: two agents that always hand off to each other end in `GraphRecursionError`. With
-`recursionLimit: 12` that took 12 model calls; with the default limit, **37 model calls** (JS)
-before the error. Fixes: non-overlapping agent descriptions, a handoff counter in state, and a
+Verified: two agents that always hand off to each other (ping-pong) end in
+`GraphRecursionError`. With
+`recursionLimit: 12` that took 12 model calls; with the JS default limit (25), **25 model
+calls** before the error. Python is worse: LangGraph 1.2.14's default limit is 10,007 (read from
+its source). Our scripted Python swarm had still not hit it after 280 seconds. With a real
+model, that is thousands of paid calls — always set `recursion_limit` yourself. Fixes: non-overlapping agent descriptions, a handoff counter in state, and a
 rule in each prompt — "never transfer back to the agent that just transferred to you without
 new information."
 
@@ -1235,8 +1298,9 @@ can't either. Routing mistakes in multi-agent systems are usually description bu
 ✅ // researcher: [lookupNotes] · analyst: [getProgress] · nobody: [runWrite] without a gate
 ```
 
-Least privilege (Day 15) matters more with more agents, not less: more prompts means more
-surface for prompt injection, and a quiz writer that can send email is a liability.
+Least privilege (Day 15) matters more with more agents, not less. More prompts means more
+places for prompt injection (hidden instructions inside input) to land. And a quiz writer that
+can send email is a risk.
 
 ### ❌ 11. The telephone game
 
@@ -1254,10 +1318,14 @@ quote exact values, and pass structured `context`.
 
 ### Exercise 1 — Measure before you split ●●○○○
 
-Using scripted models (no API key), reproduce the §3.4 cost table: for the same question and
-the same `lookup` tool, count **total model calls** and **messages seen per call** for:
-(a) a single agent, (b) agent-as-tool, (c) the supervisor library with `last_message`,
-(d) the same with `full_history`.
+Using scripted models (no API key), reproduce the §3.4 cost table. Use the same question and
+the same `lookup` tool each time. Count **total model calls** and **messages seen per call**
+for:
+
+- (a) a single agent
+- (b) agent-as-tool
+- (c) the supervisor library with `last_message`
+- (d) the same with `full_history`.
 
 Then answer: which architecture would you pick for a single-hop question, and why?
 
@@ -1401,13 +1469,16 @@ for label, mode in [("(c)", "last_message"), ("(d)", "full_history")]:
 ```
 
 **Which to pick for a single-hop question: (a).** It's half the calls and the smallest
-context. Delegation only earns its keep when the specialist does several steps (so its
-context isolation saves the supervisor real tokens), when specialists can run in parallel, or
-when one job's context would pollute another's.
+context. Delegation is only worth it when:
 
-**Between the multi-agent options, (b) is the cheapest in context**: the researcher saw only
-its brief (1 then 3 messages vs 3 then 5), and the boss's second call saw 3 messages vs 6 or
-8. That's the "context engineering" argument in numbers — and it's why the tool-based pattern
+- the specialist does several steps (so keeping its context separate saves the supervisor
+  real tokens);
+- specialists can run in parallel; or
+- one job's context would pollute another's.
+
+**Between the multi-agent options, (b) is the cheapest in context.** The researcher saw only
+its brief (1 then 3 messages, against 3 then 5). The boss's second call saw 3 messages,
+against 6 or 8. That's the "context engineering" argument in numbers — and it's why the tool-based pattern
 is the recommended default.
 
 **Why this exercise matters more than it looks.** Real model calls vary; scripted ones don't.
@@ -1478,7 +1549,7 @@ Predict, then run (scripted models are fine).
 | 2 | The **same** "please specify a name" error — even though you passed `name` | `createAgent` returns a `ReactAgent` wrapper with no `.name`; the named graph is on `.graph`. |
 | 3 | `last_message`: 7 messages · `full_history`: 9 messages; the supervisor's 2nd call saw 6 vs 8 | `full_history` copies the worker's tool call and tool result into the shared history. |
 | 4 | **Alice** answers turn 2 (`"ALICE answered turn 2"`) | Without a checkpointer the `activeAgent` value was lost; passing history alone doesn't restore it. Passing `activeAgent: t1.activeAgent` / `"active_agent": ...` made Bob answer. |
-| 5 | `GraphRecursionError`. With a limit of 12: 6 calls each (12 total). JS at the default limit: 37 calls before the error. | Nothing ever ends the loop. The recursion limit is a smoke alarm, not a fix. |
+| 5 | `GraphRecursionError`. With a limit of 12: 6 calls each (12 total). JS at the default limit (25): 25 calls before the error. Python's default (10,007 in LangGraph 1.2.14) is far higher. | Nothing ever ends the loop. The recursion limit is a smoke alarm, not a fix. |
 
 **Repro for #4 and #5 — JavaScript**
 
@@ -1590,7 +1661,7 @@ except Exception as e:
 
 **Ranking.** #1 and #2 are loud (though #2's message is misleading). #3 is silent and costs
 tokens forever. #4 is silent and user-visible — "why is the front desk answering my billing
-question?" #5 is loud but expensive: dozens of calls before the error. The two habits that
+question?" #5 is loud but expensive: 25 calls in JS before the error. The two habits that
 cover the quiet ones: **default to `last_message`**, and **persist swarm threads**.
 </details>
 
@@ -1622,7 +1693,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 // ══ tools (stubs) ════════════════════════════════════════════════════════
 const NOTES = {
@@ -1735,7 +1806,7 @@ from langchain_core.tools import tool
 from langchain_groq import ChatGroq
 from langgraph.checkpoint.memory import InMemorySaver
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 # ══ tools (stubs) ════════════════════════════════════════════════════════
 NOTES = {
@@ -1869,10 +1940,10 @@ for e in delegation_log.get("student-42", []):
 1. **The checkpointer is on the supervisor only.** The conversation is the supervisor's.
    Specialists are stateless workers: they get a brief, return a report, and forget. Anything
    worth remembering is in the supervisor's history as a tool result.
-2. **The log and cache live outside graph state.** They're operational telemetry. Putting
-   reports into a state channel would store them twice — once as tool messages, once in the
-   channel — and every checkpoint would carry the duplicate (Day 18's cost model). In
-   production the log goes to your tracing system (Day 25).
+2. **The log and cache live outside graph state.** They're operational telemetry (data about
+   how the system runs). Putting reports into a state channel would store them twice: once as
+   tool messages, once in the channel. Every checkpoint would then carry the duplicate
+   (Day 18's cost model). In production the log goes to your tracing system (Day 25).
 3. **The repeat guard is keyed by thread, specialist, task *and* context.** Different context
    is a different request. Caching on `task` alone would return stale answers when the facts
    changed.
@@ -1900,7 +1971,8 @@ A team proposes this for an internal "policy Q&A" assistant:
    safety_agent → checks the answer for policy violations
 ```
 
-Every request goes through all seven, in that order. p50 latency is 14 seconds and it costs
+Every request goes through all seven, in that order. p50 latency (the median response time)
+is 14 seconds and it costs
 9 model calls per question. Redesign it.
 
 <details>
@@ -2015,25 +2087,27 @@ each concern a model call instead of a prompt section or a node.
 **Q1. What is a multi-agent system?**
 
 A system where more than one model-driven agent handles parts of a task, each with its own
-prompt, tools and context. The point isn't the number of agents — it's that each specialist
-works with a **short tool list, a single-purpose prompt and a clean context**, which a single
-agent with everything loses as it grows.
+prompt, tools and context. The point isn't the number of agents. It's that each specialist
+works with a **short tool list, a single-purpose prompt and a clean context**. A single agent
+that does everything loses these as it grows.
 
 ---
 
 **Q2. Name the main multi-agent architectures.**
 
-Supervisor (a coordinator delegates to specialists and speaks to the user), handoffs/swarm
-(agents transfer control and the active one speaks to the user), hierarchical (supervisors of
-supervisors), and workflow graphs (the code routes; agents work inside the nodes). Plus the
-baseline everyone should start from: a single agent.
+- **Supervisor** — a coordinator delegates to specialists and speaks to the user.
+- **Handoffs / swarm** — agents transfer control, and the active one speaks to the user.
+- **Hierarchical** — supervisors of supervisors.
+- **Workflow graphs** — the code routes, and agents work inside the nodes.
+
+Plus the baseline everyone should start from: a single agent.
 
 ---
 
 **Q3. What is "agent-as-a-tool"?**
 
-Wrapping a specialist agent in a tool function: the tool's arguments are the brief, the tool
-calls `specialist.invoke(...)` on a fresh conversation, and returns only the final answer. The
+Wrapping a specialist agent in a tool function. The tool's arguments are the brief. The tool
+calls `specialist.invoke(...)` on a fresh conversation and returns only the final answer. The
 supervisor calls it like any other tool. It's the pattern the LangChain team now recommends
 for most supervisor use cases.
 
@@ -2042,9 +2116,9 @@ for most supervisor use cases.
 **Q4. What's a handoff?**
 
 A tool whose result transfers control to another agent. In LangGraph it returns a
-`Command({ goto: otherAgent, graph: Command.PARENT, update: {...} })` — jumping to a sibling
-node in the parent graph — and records the new active agent so the next turn goes straight to
-it.
+`Command({ goto: otherAgent, graph: Command.PARENT, update: {...} })`, which jumps to a
+sibling node in the parent graph. It also records the new active agent, so the next turn goes
+straight to it.
 
 ---
 
@@ -2064,7 +2138,7 @@ conversation — combining specialists' work into one answer — use a superviso
 should be handed over and keep talking to the specialist (support triage: front desk →
 billing), use handoffs.
 
-Cost-wise, a supervisor stays in the loop on every turn; a swarm lets the active specialist
+On cost, a supervisor stays in the loop on every turn. A swarm lets the active specialist
 answer directly, which can be cheaper for long specialist conversations. Swarms need a
 checkpointer (or you must carry `activeAgent`), or the next turn goes back to the default
 agent.
@@ -2087,9 +2161,10 @@ time out, retry, cap and secure than a node sharing state.
 **Q8. What does `output_mode` control in the supervisor library?**
 
 What the worker adds to the shared history when it returns. `last_message` adds only its final
-answer; `full_history` adds everything it did, including its tool calls and results. Measured:
-9 vs 7 messages when the worker used one tool. Default to `last_message` — `full_history`
-leaks the worker's scratch work into the supervisor's context for every later turn.
+answer. `full_history` adds everything it did, including its tool calls and results. Measured:
+9 vs 7 messages when the worker used one tool. Default to `last_message`, because
+`full_history` leaks the worker's scratch work into the supervisor's context for every later
+turn.
 
 ---
 
@@ -2105,7 +2180,7 @@ independent tasks in the same step." For fixed fan-out, use `Send` in a workflow
 **Q10. What goes wrong with vague delegation?**
 
 The specialist sees only the brief. "Look into what we discussed" gives it nothing: no
-history, no user details, no earlier results. The fix is structural — make the tool schema
+history, no user details, no earlier results. The fix is structural. Make the tool schema
 say "the specialist sees NOTHING else", provide a separate `context` argument, and pass
 identifiers and numbers verbatim.
 
@@ -2113,11 +2188,17 @@ identifiers and numbers verbatim.
 
 **Q11. How do you prevent agents handing off to each other forever?**
 
-Non-overlapping descriptions (most ping-pong is two agents both thinking "that's not mine"), a
-handoff counter in state with a cap, a prompt rule against transferring back without new
-information, and the recursion limit as a backstop. Measured: two agents that always hand off
-hit `GraphRecursionError` — after 37 model calls at the JS default limit — so the backstop
-alone is expensive.
+Use several layers:
+
+- **Non-overlapping descriptions** — most ping-pong is two agents both thinking "that's not
+  mine".
+- **A handoff counter** in state, with a cap.
+- **A prompt rule** against transferring back without new information.
+- **The recursion limit** as a backstop (the last safety net).
+
+Measured: two agents that always hand off hit `GraphRecursionError` after 25 model calls at
+the JS default limit of 25. Python's default (10,007 in LangGraph 1.2.14) is far higher. So the
+backstop alone is expensive.
 
 ---
 
@@ -2125,15 +2206,23 @@ alone is expensive.
 
 **Q12. When is multi-agent worse than a single agent?**
 
-When the task is single-hop (measured: 2 calls became 4), when the steps are fixed (that's a
-workflow), when specialists need the same context anyway (you pay to copy it into briefs), and
-when you can't measure the single agent's accuracy yet (you'll add complexity without knowing
-whether it helped). Also when latency matters and delegations are sequential — every hop is at
-least one more model round trip.
+It's worse when:
 
-It's better when a single agent's tool list or prompt has become a source of errors, when one
-job's context pollutes another's, when independent work can run in parallel, when roles want
-different models, or when a dangerous capability should be isolated.
+- the task is single-hop (measured: 2 calls became 4);
+- the steps are fixed (that's a workflow);
+- specialists need the same context anyway (you pay to copy it into briefs);
+- you can't measure the single agent's accuracy yet (you'll add complexity without knowing
+  whether it helped);
+- latency matters and delegations are sequential — every hop is at least one more model
+  round trip.
+
+It's better when:
+
+- a single agent's tool list or prompt has become a source of errors;
+- one job's context pollutes another's;
+- independent work can run in parallel;
+- roles want different models; or
+- a dangerous capability should be isolated.
 
 ---
 
@@ -2152,7 +2241,7 @@ Evaluate the parts and the whole separately:
 ```
 
 Most regressions in multi-agent systems are routing or briefing failures, not specialist
-failures — so layer 2 is where the leverage is. Scripted models make layers 2 and 4
+failures — so layer 2 is where you gain the most. Scripted models make layers 2 and 4
 deterministic in CI.
 
 ---
@@ -2182,8 +2271,8 @@ human."
 **Q15. What's context engineering, and how does multi-agent relate to it?**
 
 Context engineering is deciding exactly what each model call sees: instructions, tools,
-history, retrieved data. Most multi-agent benefits are context-engineering benefits: a
-specialist gets a single-purpose prompt, a short tool list and a clean history; the
+history, retrieved data. Most multi-agent benefits are context-engineering benefits. A
+specialist gets a single-purpose prompt, a short tool list and a clean history. The
 coordinator gets reports instead of raw tool noise. Seen that way, the questions become
 concrete — what's in each brief, what's in each report, who sees the history — rather than
 "how many agents should we have?"
@@ -2194,7 +2283,7 @@ concrete — what's in each brief, what's in each report, who sees the history �
 
 The checkpointer belongs on the top-level graph: that's the conversation. Specialists invoked
 as tools are stateless workers unless you deliberately give them their own checkpointer and
-thread — which is rarely needed, since anything durable should come back in the report.
+thread. That is rarely needed, since anything durable should come back in the report.
 
 Put `interrupt()` where the consequence happens — in the tool path of the specialist that
 performs the action — not in a prompt asking the supervisor to "check first". And keep
@@ -2208,11 +2297,13 @@ dangerous tools in exactly one specialist, so the gate has one place to live.
 
 - ✅ One agent degrades as tools and jobs grow: **selection errors, conflicting instructions,
   polluted context**
-- ✅ Four architectures: **single · supervisor · handoffs · workflow** (+ hierarchical = nested supervisors)
+- ✅ Four architectures: **single, supervisor, handoffs and workflow** (plus hierarchical, which
+  is nested supervisors)
 - ✅ Multi-agent is mostly **context engineering** — controlling what each model sees
 - ✅ **Agent-as-a-tool** is the recommended supervisor: brief in, report out, nothing else crosses
 - ✅ Measured: delegation turned **2 calls into 4** — split for a reason
-- ✅ The library supervisor shares history: worker saw **3→5** messages vs **1→3**; `full_history` adds more
+- ✅ The library supervisor shares history: the worker saw **3 then 5** messages, against
+  **1 then 3**; `full_history` adds more
 - ✅ Two subagent calls in one turn run **in parallel** (~410 ms, not ~800 ms)
 - ✅ A handoff is a tool returning **`Command({ goto, graph: Command.PARENT })`**
 - ✅ Swarms remember the active agent **only with a checkpointer** (or if you carry it)
@@ -2249,7 +2340,7 @@ and send it to a browser over Server-Sent Events.
 <summary>Answers</summary>
 
 1. **The brief.** Log the tool arguments the supervisor sent. The specialist sees nothing but
-   `task` and `context`, so a vague or incomplete brief is the usual cause — "look into it"
+   `task` and `context`. So a vague or incomplete brief is the usual cause: "look into it"
    instead of a self-contained instruction with the facts it needs. Fix the tool schema's
    descriptions ("the specialist sees NOTHING else") and the supervisor prompt before touching
    the specialist.

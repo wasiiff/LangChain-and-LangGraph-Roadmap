@@ -2,15 +2,34 @@
 
 > ⏱ **Time:** ~2 hours · 🎯 **Prereqs:** [Day 04](day-04-langchain-models.md) · 🧩 **Difficulty:** ●●○○○
 
-**Today you learn:** `PromptTemplate`, `ChatPromptTemplate`, `MessagesPlaceholder`, few-shot
-templates, partials and prompt composition — and why every one of them is a `Runnable`, which
-sets up tomorrow's LCEL.
+**Today you learn:** prompts built by gluing strings together break quietly. A typo puts
+`undefined` into the prompt, roles get lost, and copies of the same prompt drift apart. Today you
+replace them with `PromptTemplate` and `ChatPromptTemplate`, add history with
+`MessagesPlaceholder`, and use few-shot templates, partials and combined templates. You also see
+why every template is a `Runnable`, which sets up the chains you build on Day 07.
+
+> 📖 **Words you'll meet today**
+>
+> - **Prompt template** — a reusable prompt with named blanks, like `{topic}`, that you fill in
+>   later.
+> - **Render** — fill in a template's blanks to produce the final text or messages.
+> - **ChatPromptTemplate** — a template that renders to a list of messages with roles, not one
+>   string.
+> - **MessagesPlaceholder** — a slot in a chat template where a whole list of messages, such as
+>   history, goes.
+> - **Few-shot examples** — sample inputs with correct answers, placed in the prompt so the model
+>   copies the pattern.
+> - **Partial** — a template with some blanks already filled in, leaving the rest for later.
+> - **Runnable** — LangChain's shared interface (`invoke`, `stream`, `batch`, `pipe`) that lets
+>   parts join into chains.
+> - **Preamble** — filler text before the real answer, such as "Here's a summary:".
 
 ---
 
 ## 1. The problem
 
-Your prompts are currently string concatenation. Here's how that dies.
+Your prompts are currently built by string concatenation (gluing strings together). Here's how
+that goes wrong.
 
 ```js
 // Week 1 of the project — fine.
@@ -85,6 +104,9 @@ The key distinction to hold onto:
 
 ### 3.1 `PromptTemplate` — a single string
 
+> 💬 **In plain words:** a `PromptTemplate` turns a few values into one finished string. Every
+> `{` starts a variable, so literal braces must be doubled.
+
 ```js
 import { PromptTemplate } from "@langchain/core/prompts";
 
@@ -101,12 +123,15 @@ await t.invoke({ style: "3 bullets", text: "..." });   // → a StringPromptValu
 > "Respond like: {"name": "x"}"     ❌ error: missing variable "name"
 > "Respond like: {{"name": "x"}}"   ✅
 > ```
-> This is the single most common template error. Templates are literally the reason we prefer
-> structured output (Day 06) over writing JSON examples in prompts.
+> This is the single most common template error. This trap is exactly why we prefer structured
+> output (Day 06) to writing JSON examples in prompts.
 
 You'll mostly meet `PromptTemplate` inside document chains (Day 08). For chat models, use:
 
 ### 3.2 `ChatPromptTemplate` — a list of messages
+
+> 💬 **In plain words:** a `ChatPromptTemplate` turns values into a list of real messages, each
+> with a role. This is the template you'll use most.
 
 ```js
 import { ChatPromptTemplate } from "@langchain/core/prompts";
@@ -144,6 +169,9 @@ ChatPromptTemplate.fromMessages([
 
 ### 3.3 `MessagesPlaceholder` — the hole for history
 
+> 💬 **In plain words:** a placeholder is a slot for a whole list of messages. It's how
+> conversation history gets into a template with its roles intact.
+
 This is the piece that makes chatbots clean.
 
 ```js
@@ -171,11 +199,14 @@ Optional placeholders (so the first turn doesn't crash):
 new MessagesPlaceholder({ variableName: "history", optional: true })
 ```
 
-**Why this matters:** without it, you'd concatenate history into a string and lose the role
-structure — which measurably degrades quality, because the model was trained on role-formatted
-conversations.
+**Why this matters:** without it, you'd join history into one string and lose the role
+structure. That tends to lower quality, because the model was trained on conversations
+formatted with roles (we haven't benchmarked the size of the drop — test it on your own eval set).
 
 ### 3.4 Few-shot templates
+
+> 💬 **In plain words:** few-shot templates turn your examples into real back-and-forth turns.
+> Models copy those more reliably than examples pasted into one string.
 
 Day 02 taught few-shot by hand-writing examples into a string. Templates make examples **data**:
 
@@ -206,12 +237,16 @@ const prompt = ChatPromptTemplate.fromMessages([
 This renders the examples as **real alternating Human/AI turns**, which models follow more
 reliably than the same examples flattened into one string.
 
-> 💡 **The upgrade path:** swap `examples` for an `exampleSelector` that retrieves the *k most
-> similar* examples from a vector store per input. Same template, dynamic examples. That's a
-> Week 2 technique (`SemanticSimilarityExampleSelector`) and a great interview answer to
-> "how would you improve a few-shot classifier?"
+> 💡 **The upgrade path:** swap `examples` for an `exampleSelector`. For each input, it
+> retrieves the *k most similar* examples from a vector store (a database that finds text by
+> meaning). Same template, dynamic examples. That's a Week 2 technique
+> (`SemanticSimilarityExampleSelector`) and a great interview answer to "how would you improve
+> a few-shot classifier?"
 
 ### 3.5 Partials — fill in some variables now, the rest later
+
+> 💬 **In plain words:** a partial fills in some variables now and leaves the rest for later.
+> One base template can then become several ready-made prompts.
 
 ```js
 const base = ChatPromptTemplate.fromMessages([
@@ -227,10 +262,13 @@ await tutorPrompt.invoke({ date: "2026-08-04", question: "..." });   // only 2 v
 const dated = await base.partial({ date: () => new Date().toISOString().slice(0, 10) });
 ```
 
-Function partials are how you inject "now", a request ID, or a feature flag without threading
-it through every call site.
+Function partials are how you inject "now", a request ID, or a feature flag without passing it
+through every place that calls the template.
 
 ### 3.6 Composition
+
+> 💬 **In plain words:** small templates can be joined into a bigger one. In practice, most teams
+> do this with partials and plain strings rather than special classes.
 
 Templates compose with `+` (JS: `.concat`, or the `+` operator on prompt objects in Python):
 
@@ -241,10 +279,13 @@ prompt = system + task
 ```
 
 For bigger structures there's `PipelinePromptTemplate`, which builds a final prompt out of
-named sub-prompts. In practice, most teams compose with partials and plain string building —
-`PipelinePromptTemplate` is worth *recognising* more than reaching for.
+named sub-prompts. In practice, most teams compose with partials and plain string building.
+`PipelinePromptTemplate` is worth *recognising*, but you'll rarely need to use it.
 
 ### 3.7 Templates are Runnables
+
+> 💬 **In plain words:** templates have the same `invoke` method as models. So you can pipe a
+> template straight into a model to make a chain.
 
 ```js
 await prompt.invoke({ ... })                    // → ChatPromptValue
@@ -252,7 +293,7 @@ prompt.pipe(model)                              // → a Runnable chain
 await prompt.pipe(model).invoke({ ... })        // → AIMessage
 ```
 
-That last line is tomorrow's entire lesson in one expression. A `ChatPromptValue` knows how to
+That last line is Day 07's entire lesson (LCEL) in one expression. A `ChatPromptValue` knows how to
 become `BaseMessage[]` (`.toChatMessages()`) or a plain string (`.toString()`), which is why the
 same template works with both chat models and old completion models.
 
@@ -268,7 +309,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { PromptTemplate, ChatPromptTemplate } from "@langchain/core/prompts";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 // ── PromptTemplate: one string ───────────────────────────────────────────
 const single = PromptTemplate.fromTemplate(
@@ -308,7 +349,7 @@ import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
 import { HumanMessage } from "@langchain/core/messages";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.5 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.5 });
 
 const prompt = ChatPromptTemplate.fromMessages([
   ["system", "You are StudyBuddy, a {level}-level tutor. Answer in 2 sentences."],
@@ -343,7 +384,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate, FewShotChatMessagePromptTemplate } from "@langchain/core/prompts";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const examples = [
   { input: "I was charged twice this month.",   output: "BILLING" },
@@ -443,7 +484,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { TUTOR, SUMMARISER, CLASSIFIER } from "./prompts.js";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 console.log((await TUTOR.pipe(model).invoke({
   level: "beginner", maxSentences: 3, history: [], question: "What is an API?",
@@ -467,7 +508,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 # ── PromptTemplate: one string ───────────────────────────────────────────
 single = PromptTemplate.from_template(
@@ -499,7 +540,7 @@ print(with_json.invoke({"ticket": "App crashes"}).to_messages()[0].content)
 ```
 
 > 🔑 Look at `chat | model`. Python's `|` operator is LCEL's pipe. JS uses `.pipe()`.
-> That's the whole syntactic difference — tomorrow's topic.
+> That's the whole syntactic difference. LCEL is Day 07's topic.
 
 ### 5.2 MessagesPlaceholder — a clean chatbot
 
@@ -511,7 +552,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.5)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.5)
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", "You are StudyBuddy, a {level}-level tutor. Answer in 2 sentences."),
@@ -544,7 +585,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 examples = [
     {"input": "I was charged twice this month.",      "output": "BILLING"},
@@ -642,7 +683,7 @@ from langchain_groq import ChatGroq
 from prompts import TUTOR, CLASSIFIER
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 print((TUTOR | model).invoke({
     "level": "beginner", "max_sentences": 3, "history": [], "question": "What is an API?",
@@ -699,18 +740,18 @@ prompt.invoke({ level: "beginner", question: "What is RAG?" })
     .toString()       → "System: ...\nHuman: ..."  (what an old LLM wants)
 ```
 
-**Step 1 is the underrated one.** String concatenation fails silently — a typo gives you the
-literal text `"undefined"` in your prompt and a subtly worse answer that you'll debug for an
-hour. A template throws immediately, with the variable name.
+**Step 1 is the underrated one.** String concatenation fails silently. A typo gives you the
+literal text `"undefined"` in your prompt, and a slightly worse answer that you'll debug for an
+hour. A template throws an error immediately, with the variable name.
 
-**Step 4 is why the same template works with both model types.** `ChatPromptValue` is a
-two-faced object: chat models call `toChatMessages()`, completion models call `toString()`.
+**Step 4 is why the same template works with both model types.** `ChatPromptValue` can present
+itself in two ways: chat models call `toChatMessages()`, completion models call `toString()`.
 
 ### Why `{` needs escaping
 
-The formatter is (by default) f-string-style: it scans for `{...}` and substitutes. It has no
-way to know your `{"label": "BUG"}` is JSON rather than a variable named `"label": "BUG"`.
-Doubling (`{{`) is the standard escape.
+By default the formatter works like a Python f-string: it scans for `{...}` and substitutes a
+value. It has no way to know your `{"label": "BUG"}` is JSON rather than a variable named
+`"label": "BUG"`. Doubling (`{{`) is the standard escape.
 
 If you have a lot of literal braces, use mustache templating instead:
 
@@ -730,12 +771,14 @@ Because `ChatPromptTemplate` implements `invoke`/`stream`/`batch`, `prompt.pipe(
 you a chain where:
 
 - `chain.invoke({vars})` renders then calls the model
-- `chain.stream({vars})` renders then **streams** the model — stream propagation is free
+- `chain.stream({vars})` renders then **streams** the model — streaming passes through the
+  chain at no extra cost
 - `chain.batch([{vars}, {vars}])` renders and calls in parallel
-- callbacks fire for *both* steps, so tracing shows the rendered prompt
+- callbacks (hooks that fire at each step) run for *both* steps, so tracing shows the rendered
+  prompt
 
-You get all of that without writing a line of glue. That's the payoff of yesterday's interface
-discussion, and it's tomorrow's whole topic.
+You get all of that without writing a single line of connecting code. That's the payoff of yesterday's interface
+discussion, and it's the whole topic of Day 07.
 
 <details>
 <summary>📜 Legacy note: prompt patterns in old tutorials</summary>
@@ -748,9 +791,9 @@ discussion, and it's tomorrow's whole topic.
 | `ConversationChain` + memory object | `MessagesPlaceholder` + LangGraph checkpointer |
 | `FewShotPromptTemplate` (string-based) | `FewShotChatMessagePromptTemplate` (message-based) |
 
-If an interviewer asks "what replaced `LLMChain`?" the answer is: **LCEL composition**. It's not
-a renamed class — it's the realisation that a chain is just `prompt | model | parser`, and you
-don't need a class for that.
+If an interviewer asks "what replaced `LLMChain`?" the answer is: **LCEL composition** (joining
+Runnables with `|`, Day 07). It's not a renamed class. It's the realisation that a chain is just
+`prompt | model | parser`, and you don't need a class for that.
 </details>
 
 ---
@@ -791,7 +834,7 @@ await prompt.invoke({ question: "hi" });   // ❌ Missing value for `history`
 ```js
 ChatPromptTemplate.fromMessages([["human", userInput]]);   // ❌
 ```
-If `userInput` contains `{` you get a template error — and worse, the user now controls your
+If `userInput` contains `{` you get a template error. Worse, the user now controls your
 template. ✅ Always `["human", "{question}"]` with the value passed to `invoke`.
 
 ---
@@ -812,8 +855,10 @@ app.post("/chat", async (req) => {
 ```js
 ["system", `You are a tutor. Answer this: ${question}`]
 ```
-✅ System = stable instructions, human = the question. It's better for quality, better for
-prompt caching (a stable prefix caches; a changing one doesn't), and safer against injection.
+✅ Put stable instructions in the system message and the question in the human message. It's
+better for quality. It's better for prompt caching, where the provider reuses work for a prompt
+that starts the same way (a stable prefix caches; a changing one doesn't). And it's safer
+against prompt injection (user text that tries to give the model new instructions).
 
 ---
 
@@ -828,8 +873,8 @@ prompt caching (a stable prefix caches; a changing one doesn't), and safer again
 
 ### Exercise 1 — Template a Day 02 prompt ●○○○○
 
-Take the sentiment+aspect classifier you wrote on Day 02 (a giant template string) and convert
-it to a `ChatPromptTemplate` with a `FewShotChatMessagePromptTemplate`. Print the rendered
+Take the sentiment-and-aspect classifier you wrote on Day 02 (a giant template string) and
+convert it to a `ChatPromptTemplate` with a `FewShotChatMessagePromptTemplate`. Print the rendered
 messages to confirm the examples become real Human/AI turns.
 
 <details>
@@ -841,7 +886,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate, FewShotChatMessagePromptTemplate } from "@langchain/core/prompts";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const examples = [
   { review: "Screen is gorgeous but it's overpriced.", sentiment: "mixed",    aspect: "price" },
@@ -890,7 +935,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 examples = [
     {"review": "Screen is gorgeous but it's overpriced.", "sentiment": "mixed",    "aspect": "price"},
@@ -931,7 +976,8 @@ for r in ["Battery lasts two days but the camera is mediocre.",
 
 **What the preview shows:** the four examples became **eight messages** — alternating human/ai
 turns. The model now sees a conversation it should continue, not a wall of text it should
-imitate. That structural difference is measurably more reliable, and it's free.
+imitate. That structural difference generally makes the model follow the examples more
+reliably, and it's free.
 
 Notice the aspect list is now a *variable* (`{aspects}`), so adding a new category is a
 one-line config change instead of a prompt edit.
@@ -942,8 +988,8 @@ one-line config change instead of a prompt edit.
 ### Exercise 2 — A prompt with a dynamic system message ●●○○○
 
 Build a template where the system message adapts to a `mode` variable (`"explain"`, `"quiz"`,
-`"debug"`), using partials so each mode is a separate reusable prompt object built from one
-base. Test all three modes on the same question.
+`"debug"`). Use partials, so each mode is a separate reusable prompt object built from one base.
+Test all three modes on the same question.
 
 <details>
 <summary>✅ Solution</summary>
@@ -954,7 +1000,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.4 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.4 });
 
 const MODES = {
   explain: "Explain the concept clearly with one everyday analogy. Max 4 sentences.",
@@ -996,7 +1042,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.4)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.4)
 
 MODES = {
     "explain": "Explain the concept clearly with one everyday analogy. Max 4 sentences.",
@@ -1023,21 +1069,22 @@ for mode, prompt in PROMPTS.items():
     print(f"\n═══ {mode.upper()} ═══\n{res.content.strip()}")
 ```
 
-**Why partials rather than an `if`:** each specialised prompt is a real object you can export,
-test, trace and version independently — while the shared structure (persona, history, rules)
+**Why partials rather than an `if`:** each specialised prompt is a real object. You can export,
+test, trace and version it on its own. Meanwhile the shared structure (persona, history, rules)
 lives in exactly one place. Change the persona once and all three modes update.
 
-This pattern scales directly to production: mode-per-partial for a handful, and a router chain
-picking between them for many (Day 08).
+This pattern scales directly to production. Use one partial per mode when you have a handful of
+modes, and a router chain that picks between them when you have many (Day 08).
 </details>
 
 ---
 
 ### Exercise 3 — Template validator ●●●○○
 
-Write `validateTemplate(template, sampleVars)` that: lists declared variables, reports which
-sample vars are missing/extra, attempts a render, and catches unescaped-brace errors with a
-helpful message. Test it against a deliberately broken template containing raw JSON.
+Write `validateTemplate(template, sampleVars)`. It should list the declared variables, report
+which sample variables are missing or extra, and attempt a render. It should also catch
+unescaped-brace errors with a helpful message. Test it against a deliberately broken template
+containing raw JSON.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1166,19 +1213,20 @@ validate_template(
 parses the template, while JS tends to raise at *render* time. Hence the extra `try` around
 construction in the Python version.
 
-**Why write this at all:** in a real codebase this becomes a unit test that runs in CI —
-"every prompt in `prompts.py` renders with its sample variables." That catches the entire class
-of template bugs before deploy, which is exactly the kind of thing that separates a prompt
-*library* from prompt *strings*.
+**Why write this at all:** in a real codebase this becomes a unit test that runs in CI
+(continuous integration — tests that run automatically on every change). The test says:
+"every prompt in `prompts.py` renders with its sample variables." That catches this whole type
+of template bug before deploy. It's exactly what separates a prompt *library* from prompt
+*strings*.
 </details>
 
 ---
 
 ### Exercise 4 — Prompt A/B test with templates ●●●○○
 
-Build two versions of a summarisation prompt (v1: minimal, v2: detailed with constraints and a
-few-shot example). Run both over 5 texts, and score outputs on: bullet count correctness,
-average length, and whether any preamble ("Here's a summary:") leaked in. Report which wins.
+Build two versions of a summarisation prompt: v1 is minimal, and v2 is detailed, with rules and
+a few-shot example. Run both over 5 texts. Score the outputs on correct bullet count, average
+length, and whether any preamble ("Here's a summary:") leaked in. Report which wins.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1189,7 +1237,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate, FewShotChatMessagePromptTemplate } from "@langchain/core/prompts";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const TEXTS = [
   "LangChain is a framework for building applications with LLMs. It provides abstractions for models, prompts, and retrieval, plus LCEL for composing them into pipelines.",
@@ -1261,7 +1309,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 TEXTS = [
     "LangChain is a framework for building applications with LLMs. It provides abstractions for models, prompts, and retrieval, plus LCEL for composing them into pipelines.",
@@ -1322,23 +1370,31 @@ v2 = score("V2", V2)
 print(f"\nwinner: {'V2' if v2 >= v1 else 'V1'}")
 ```
 
-**Typical result:** V1 gets the bullet count right maybe 3/5 and leaks a preamble 2–3 times.
-V2 gets 5/5 with no preamble, at the cost of ~150 extra input tokens per call.
+**Typical result** (illustrative — not a measured run; your scores will differ): V1 gets the
+bullet count right only some of the time (say 3/5) and sometimes leaks a preamble. V2 usually
+gets all five right with no preamble, at the cost of the extra input tokens the few-shot
+example adds to every call (read the response's usage metadata to see exactly how many).
 
-**The generalisable lesson:** the single most effective anti-preamble technique is the few-shot
-example — showing one output that starts directly with `- ` beats any amount of "do not include
-a preamble" instruction. Models imitate examples more faithfully than they obey prohibitions.
+**The general lesson:** the single most effective way to stop preambles is a few-shot example.
+Showing one output that starts directly with `- ` beats any amount of "do not include a
+preamble" instruction. Models copy examples more faithfully than they obey "don't" rules.
 </details>
 
 ---
 
 ### Exercise 5 — StudyBuddy v1 prompt system ●●●●○
 
-Build a proper prompt module for StudyBuddy with: a shared persona partial, three modes
-(explain/quiz/review), a level variable, an optional history placeholder, a few-shot block for
-the quiz mode only, and a `renderPreview(mode, vars)` debug helper that prints exactly what will
-be sent. Then wire it to a CLI where `/mode` switches templates mid-conversation with history
-intact.
+Build a proper prompt module for StudyBuddy with:
+
+- a shared persona partial;
+- three modes (explain/quiz/review);
+- a level variable;
+- an optional history placeholder;
+- a few-shot block for the quiz mode only;
+- a `renderPreview(mode, vars)` debug helper that prints exactly what will be sent.
+
+Then connect it to a CLI where `/mode` switches templates in the middle of a conversation,
+keeping the history.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1410,7 +1466,7 @@ import { ChatGroq } from "@langchain/groq";
 import { HumanMessage } from "@langchain/core/messages";
 import { PROMPTS, renderPreview } from "./studybuddy-prompts.js";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.5 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.5 });
 
 let mode = "explain";
 let level = "beginner";
@@ -1527,7 +1583,7 @@ from langchain_core.messages import HumanMessage
 from studybuddy_prompts import PROMPTS, render_preview
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.5)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.5)
 
 mode, level, history = "explain", "beginner", []
 
@@ -1598,7 +1654,8 @@ while True:
 3. **Few-shot only where it's needed.** The quiz mode gets examples; explain and review don't
    pay for tokens they don't need.
 4. **The prompt module is importable and testable.** You can unit-test `renderPreview` output in
-   CI without calling a model at all — free, fast, deterministic prompt tests.
+   CI without calling a model at all. These prompt tests are free, fast and deterministic (the
+   same result every run).
 </details>
 
 ---
@@ -1621,8 +1678,8 @@ gives you validation, reuse, and composability.
 
 `PromptTemplate` renders to a **single string** — the format old completion models expect.
 `ChatPromptTemplate` renders to a **list of messages** with roles (system/human/ai), which is
-what modern chat models expect. Use `ChatPromptTemplate` for essentially all new work; roles
-carry real signal that a flattened string loses.
+what modern chat models expect. Use `ChatPromptTemplate` for nearly all new work. Roles carry
+useful information that a flattened string loses.
 </details>
 
 <details>
@@ -1637,9 +1694,10 @@ placeholder inserts zero or many real message objects, preserving their roles. M
 <details>
 <summary><b>Q: How do you include a literal `{` in a prompt template?</b></summary>
 
-Double it: `{{` and `}}`. This trips people up constantly when a prompt contains a JSON example.
-Alternatively switch to mustache templating (`templateFormat: "mustache"`), where `{{var}}` is
-the variable syntax and single braces are literal — convenient for prompts full of JSON or code.
+Double it: `{{` and `}}`. People get this wrong all the time when a prompt contains a JSON
+example. Or switch to mustache templating (`templateFormat: "mustache"`), where `{{var}}` is the
+variable syntax and single braces are literal. That's convenient for prompts full of JSON or
+code.
 </details>
 
 ### Intermediate
@@ -1647,21 +1705,29 @@ the variable syntax and single braces are literal — convenient for prompts ful
 <details>
 <summary><b>Q: Why use a template instead of a formatted string?</b></summary>
 
-Four reasons: **validation** (a missing variable throws with its name instead of silently
-inserting `undefined`); **structure** (you get real messages with roles, not a flattened
-string); **reuse** (one definition, importable, versionable, testable); and **composability**
-(it's a `Runnable`, so `prompt | model | parser` works and streaming/batching/tracing propagate
-for free). The validation point alone catches a whole class of silent quality bugs.
+Four reasons:
+
+- **Validation** — a missing variable throws an error with its name, instead of silently
+  inserting `undefined`.
+- **Structure** — you get real messages with roles, not a flattened string.
+- **Reuse** — one definition that you can import, version and test.
+- **Composability** — it's a `Runnable`, so `prompt | model | parser` works, and
+  streaming/batching/tracing pass through for free.
+
+The validation point alone catches a whole type of silent quality bug.
 </details>
 
 <details>
 <summary><b>Q: What are partial variables and when are they useful?</b></summary>
 
-`partial()` pre-fills some variables and returns a new template needing only the rest. Two main
-uses: **specialisation** — one base template becomes several ready-to-use prompts (per mode, per
-tenant, per language) sharing one definition; and **dynamic values** — a partial can be a
-*function* evaluated at render time, so things like today's date, a feature flag, or a request
-ID get injected without threading them through every call site.
+`partial()` pre-fills some variables and returns a new template needing only the rest. It has
+two main uses:
+
+- **Specialisation** — one base template becomes several ready-to-use prompts (per mode, per
+  tenant, per language) that share one definition.
+- **Dynamic values** — a partial can be a *function* evaluated at render time. So things like
+  today's date, a feature flag, or a request ID get injected without passing them through every
+  call site.
 </details>
 
 <details>
@@ -1672,19 +1738,20 @@ embeds your example pool, embeds the incoming input, and retrieves the k nearest
 which the few-shot template then renders. Benefits: relevance (examples match the input's
 domain), and you can hold a large example pool while only paying tokens for k of them.
 Alternatives include length-based selection (fit as many as the budget allows) and MMR
-selection (relevant *and* diverse). This is usually the highest-ROI upgrade to a plateaued
-few-shot classifier.
+selection (maximal marginal relevance: examples that are relevant *and* diverse). This is
+usually the upgrade with the best return for a few-shot classifier that has stopped improving.
 </details>
 
 <details>
 <summary><b>Q: A teammate concatenates history into one string instead of using MessagesPlaceholder. What's wrong with that?</b></summary>
 
-Three things. **Quality**: chat models were fine-tuned on role-structured conversations;
-flattening to `"Human: ...\nAI: ..."` inside a single user message is off-distribution and
-measurably worse. **Correctness**: tool calls and multimodal content can't survive
-stringification, so agents break. **Maintainability**: you can no longer trim, filter, or
-summarise messages as objects, and your history rendering is duplicated everywhere. Providers
-also apply their own chat templating to real messages — you'd be fighting it.
+Three things. **Quality**: chat models were fine-tuned on conversations structured by role.
+Flattening to `"Human: ...\nAI: ..."` inside a single user message is off-distribution (unlike
+what the model was trained on) and tends to be worse — measure it on your eval set. **Correctness**: tool calls and multimodal
+content are lost when turned into a string, so agents break. **Maintainability**: you can no
+longer trim, filter, or summarise messages as objects, and your history rendering is duplicated
+everywhere. Providers also apply their own chat templating to real messages, so you'd be
+fighting it.
 </details>
 
 ### Advanced
@@ -1696,13 +1763,15 @@ also apply their own chat templating to real messages — you'd be fighting it.
 prompt gets a stable ID and a version. For non-engineers editing prompts, a prompt registry
 (LangSmith Hub or your own DB) with the app pinning a version, never "latest".
 
-**Testing** — two layers. Cheap deterministic tests in CI: every prompt renders with its sample
-variables, declares no unused variables, produces the expected message count/roles. Then eval
-tests against a labelled dataset per prompt, gated on a minimum score before merge (Day 25).
+**Testing** — two layers. First, cheap deterministic tests in CI: every prompt renders with its
+sample variables, declares no unused variables, and produces the expected message count/roles.
+Then eval tests against a labelled dataset per prompt, with a minimum score required before
+merge (Day 25).
 
-**Rollout** — treat a prompt change like a code change: canary it on a traffic slice, compare
-online metrics (thumbs-down rate, escalation rate, cost/latency) against control, and keep a
-one-click revert. Prompt changes have caused more production incidents than model changes.
+**Rollout** — treat a prompt change like a code change. Canary it: send it to a small slice of
+traffic first. Compare live metrics (thumbs-down rate, escalation rate, cost/latency) against
+the old version, and keep a one-click revert. Prompt changes are a common, easily
+overlooked source of production regressions.
 
 **Observability** — tag every trace with prompt ID + version so you can attribute a quality
 regression to a specific edit. Log the *rendered* prompt, not just the variables.
@@ -1717,15 +1786,15 @@ and a rule that no prompt hard-codes a model-specific quirk without a comment ex
 <details>
 <summary><b>Q: Your prompt works with Groq but produces preambles on Gemini. How do you handle provider differences in prompts?</b></summary>
 
-First, diagnose rather than patch: render the prompt for both and confirm they're identical, and
-check whether the difference is instruction-following or *system-message handling* — some
+First, diagnose rather than patch. Render the prompt for both and confirm they're identical.
+Then check whether the difference is instruction-following or *system-message handling*. Some
 providers weight the system message differently, and Anthropic takes it as a separate top-level
 field entirely.
 
 Then, in order of preference:
-1. **Make the instruction structural rather than verbal** — a few-shot example whose output
-   starts directly with the desired first character beats any "do not add a preamble" sentence.
-   This generalises across providers.
+1. **Make the instruction structural rather than verbal.** Show a few-shot example whose output
+   starts directly with the first character you want. That beats any "do not add a preamble"
+   sentence, and it works across providers.
 2. **Constrain the output space** — structured output/tool calling makes a preamble
    unrepresentable. This is the real fix, and it's tomorrow's topic.
 3. **Post-process** — strip a known preamble pattern in an output parser. Cheap, reliable,
@@ -1773,5 +1842,13 @@ retry-on-invalid. This is the piece that makes LLM output safe to put into a dat
    multimodal content intact; and it keeps history as objects you can trim/filter/summarise.
 3. A `Runnable` — a composed chain. Significant because the composition itself implements
    `invoke`/`stream`/`batch`, so streaming, batching and tracing propagate through the whole
-   pipeline with no glue code. That's tomorrow-and-Day-07's core idea.
+   pipeline with no glue code. That's Day 07's core idea.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 04 — LangChain Models](day-04-langchain-models.md)** · **[Week 1 index](README.md)** · **[Day 06 — Output Parsers & Structured Output (Zod ↔ Pydantic) →](day-06-output-parsers-structured-output.md)**
+
+</div>

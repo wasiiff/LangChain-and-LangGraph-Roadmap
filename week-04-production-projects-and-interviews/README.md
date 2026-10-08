@@ -73,6 +73,8 @@ Some findings that most tutorials get wrong:
 | Python node timeouts require **async** nodes | 24 |
 | Tool exceptions: JS `ToolNode` returns them as content; **Python re-raises** unless `handle_tool_errors` | 24 |
 | Model-retry middleware defaults to turning the error **into the assistant's reply** | 24 |
+| JS: a Groq 429 is **never retried** by `maxRetries` (its text links to a billing page); Python's client retries it | 24 |
+| When every fallback fails, the error you see is the **primary's** | 24 |
 | Chat models fire `handleChatModelStart`, **not** `handleLLMStart` | 25 |
 | Python MCP tools are **async-only**; uncaught MCP handler exceptions **leak their raw text** | 26 |
 | AI SDK `generateText` with tools and no `stopWhen` **stops after the tool call** with empty text | 26 |
@@ -119,6 +121,7 @@ LangSmith tracing is optional (Day 25 shows how to do everything without it).
 | `Node timeouts are only supported for async nodes` | 24 | Make the node `async def` |
 | Python agent crashes when a tool raises | 24 | Catch in the tool, or `ToolNode(..., handle_tool_errors=...)` |
 | Users see "Model call failed after 3 attempts…" as the answer | 24 | `onFailure: "error"` / `on_failure="error"` |
+| JS gives up on the first Groq 429 despite `maxRetries: 6` | 24 | `.withRetry(...)` on the model (429/5xx only), or a fallback |
 | Metrics show zero model calls | 25 | Listen for `handleChatModelStart` / `on_chat_model_start` |
 | JS `evaluate` fails with 401 | 25 | It needs LangSmith credentials; use a local harness offline |
 | `StructuredTool does not support sync invocation` | 26 | MCP tools in Python: `await tool.ainvoke(...)` |

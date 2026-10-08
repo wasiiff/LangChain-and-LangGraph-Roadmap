@@ -2,11 +2,31 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 12](day-12-naive-rag.md) · 🧩 **Difficulty:** ●●●●○
 
-**Today you learn:** the retriever zoo — MMR, multi-query, HyDE, reranking, parent-document,
-contextual compression, self-query, ensemble — and the *adaptive* patterns that grade their own
-retrieval and try again: Corrective RAG, Self-RAG, Adaptive RAG and Agentic RAG.
+**Today you learn:** Yesterday's pipeline searches once and hopes the right text comes back.
+Often it doesn't: the results repeat each other, cover only half of a two-part question, or miss
+the answer completely. Today you fix each of those failures with a named retrieval technique.
+Then you build loops that check their own search results and try again when they are poor.
 
 This is the day naive RAG becomes production RAG.
+
+> 📖 **Words you'll meet today**
+>
+> - **Reranking** — fetch many chunks quickly, then let a slower, more accurate model re-score
+>   them and keep the best few.
+> - **MMR (Maximal Marginal Relevance)** — pick results that are relevant *and* different from
+>   each other, so you don't get five copies of one fact.
+> - **Multi-query** — ask the model to rephrase the question several ways, search with each, and
+>   merge the results.
+> - **HyDE (Hypothetical Document Embeddings)** — let the model write a fake answer, then search
+>   with that answer instead of the question.
+> - **Parent-document retrieval** — search over small chunks, but hand the model the larger chunk
+>   each one came from.
+> - **Self-query** — the model turns a question into a search phrase plus metadata filters, such
+>   as "year 2024".
+> - **Corrective RAG** — grade the retrieved documents; if they are poor, rewrite the query and
+>   search again.
+> - **Self-RAG** — grade the generated *answer*; regenerate it or search again, depending on what
+>   went wrong.
 
 ---
 
@@ -35,8 +55,8 @@ Yesterday's pipeline retrieves once and hopes. Here's where that fails:
       Large chunks have context but retrieve imprecisely.
 ```
 
-Every one of these has a named solution. Today you learn all of them, and — more importantly —
-when each is worth its cost.
+Every one of these has a named solution. Today you learn all of them. More importantly, you learn
+when each one is worth its cost.
 
 ---
 
@@ -68,7 +88,13 @@ when each is worth its cost.
 ```
 
 **Everything today fits in one of those four boxes.** When you hit a RAG problem, ask which box
-it belongs in — that narrows eight techniques to two.
+it belongs in. That narrows eight techniques to two.
+
+Three names in the diagram are not in the words box. **Hybrid search** combines keyword search
+with vector search (Day 11). An **ensemble** retriever runs several retrievers and merges their
+results; Day 11's `EnsembleRetriever` is how LangChain does hybrid search. **Compress** means
+*contextual compression*: cutting each retrieved chunk down to the parts that match the question
+(§3.6).
 
 ### The single highest-ROI pattern
 
@@ -85,9 +111,14 @@ it belongs in — that narrows eight techniques to two.
    └──────────────────────────────────────────────────────────────┘
 ```
 
-**Why a cross-encoder is better:** a bi-encoder embeds the query and the document *separately*
-and compares vectors — it never sees them together. A cross-encoder feeds `[query, document]`
-into the model as one input, so it can judge actual relevance rather than vector proximity.
+The timings in the diagram are rough orders of magnitude for illustration, not measurements.
+
+ROI means *return on investment*: the most improvement for the least cost.
+
+**Why a cross-encoder is better:** a **bi-encoder** (the model behind your vector store) embeds
+the query and the document *separately* and compares the vectors. It never sees them together. A
+**cross-encoder** feeds `[query, document]` into the model as one input. So it can judge real
+relevance, not just how close two vectors are.
 
 It's far too slow to run over 100k documents, and perfect for 20.
 
@@ -111,14 +142,21 @@ It's far too slow to run over 100k documents, and perfect for 20.
                   (this is an agent — Week 3)
 ```
 
-Notice these all have **loops**. LCEL is acyclic (Day 07), so today you'll build them with
-bounded `while` loops — and feel exactly why LangGraph exists.
+**Adaptive RAG** looks at the question first and picks a strategy, including "don't retrieve at
+all". **Agentic RAG** gives the model a search tool and lets it decide when to use it.
+
+Notice these all have **loops**. LCEL is acyclic (Day 07): a chain can only run forwards, never
+back to an earlier step. So today you'll build them with bounded `while` loops — loops with a
+fixed maximum number of turns. You'll feel exactly why LangGraph exists.
 
 ---
 
 ## 3. First principles
 
 ### 3.1 MMR — Maximal Marginal Relevance
+
+> 💬 **In plain words:** MMR stops your results from repeating each other. Each new pick must be
+> relevant *and* different from what you already picked.
 
 Fixes: *"my top 5 are five paraphrases of one sentence."*
 
@@ -128,18 +166,21 @@ score(doc) = λ · relevance(doc, query) − (1 − λ) · max similarity(doc, a
               how relevant is it?            how redundant is it?
 ```
 
-Select greedily: pick the most relevant, then repeatedly pick whatever maximises that combined
-score. `λ = 1` is pure relevance (identical to normal search); `λ = 0` is pure diversity.
-**0.5–0.7 is the useful range.**
+Select greedily, one at a time: pick the most relevant document first. Then keep picking whichever
+document has the highest combined score. `λ = 1` is pure relevance (identical to normal search).
+`λ = 0` is pure diversity. **0.5–0.7 is the useful range.**
 
 ```js
 store.asRetriever({ searchType: "mmr", searchKwargs: { fetchK: 20, lambda: 0.6, k: 4 } })
 ```
 
-`fetchK` is the candidate pool MMR selects *from* — it must be larger than `k` or there's nothing
-to diversify.
+`fetchK` is the pool of candidates MMR selects *from*. It must be larger than `k`, or there's
+nothing to diversify.
 
 ### 3.2 Multi-query — ask several ways
+
+> 💬 **In plain words:** your user's wording may not match the document's wording. Asking the same
+> question several ways gives the search more chances to hit.
 
 Fixes: *"one phrasing doesn't match how the document is written."*
 
@@ -154,10 +195,14 @@ Fixes: *"one phrasing doesn't match how the document is written."*
               union + dedupe → richer candidate set
 ```
 
-Costs one extra LLM call plus N retrievals (cheap, parallel). Reliably improves recall,
-especially for short or vague queries.
+It costs one extra LLM call plus N retrievals (cheap, and they run in parallel). It reliably
+improves **recall** — how many of the needed documents you actually find. The gain is largest for
+short or vague queries.
 
 ### 3.3 HyDE — Hypothetical Document Embeddings
+
+> 💬 **In plain words:** questions and documents are written differently. So you search with a
+> made-up answer, because it looks more like the documents you want.
 
 Fixes: *"queries and documents are different kinds of text."*
 
@@ -174,25 +219,32 @@ Fixes: *"queries and documents are different kinds of text."*
             retrieve — now document-shaped
 ```
 
-The hypothetical answer is often factually *wrong* — that doesn't matter. It only needs to be
-*shaped* like the target documents. Counter-intuitive and genuinely effective, especially in
-technical domains.
+The hypothetical answer is often factually *wrong*. That doesn't matter. It only needs to be
+*shaped* like the target documents. It sounds strange, but it works well, especially in technical
+fields.
 
-Cost: one extra LLM call and added latency. Worst case, a badly-off hypothetical retrieves worse
-than the raw query — so measure it.
+Cost: one extra LLM call and added latency. In the worst case, a hypothetical answer that is far
+off topic retrieves worse than the raw query. So measure it.
 
 ### 3.4 Reranking with a cross-encoder
 
+> 💬 **In plain words:** the right chunk is often found, just ranked too low. A second, more careful
+> model re-scores the top results and moves it up.
+
 Fixes: *"the right chunk is in my top 20 but not my top 4."*
 
-The highest-leverage single change you can make to a RAG pipeline. LangChain's
-`ContextualCompressionRetriever` wraps a base retriever with a compressor; the compressor can be
+This is the single change that improves a RAG pipeline the most. LangChain's
+`ContextualCompressionRetriever` wraps a base retriever with a compressor. The compressor can be
 a reranker or an LLM-based extractor.
 
-Without a hosted reranker (Cohere, Voyage, Jina) you can use an **LLM as the reranker** — slower
-and pricier, but works with the models you already have. That's what we'll build.
+Hosted rerankers exist (Cohere, Voyage, Jina). Without one, you can use an **LLM as the
+reranker**. It is slower and costs more, but it works with the models you already have. That's
+what we'll build.
 
 ### 3.5 Parent-document retrieval
+
+> 💬 **In plain words:** small chunks are easy to find but too short to answer from. So you search
+> the small chunks and hand the model the bigger chunk around them.
 
 Fixes: *"small chunks retrieve well but lack context; large chunks have context but retrieve badly."*
 
@@ -206,20 +258,31 @@ Fixes: *"small chunks retrieve well but lack context; large chunks have context 
               ▲ matched here
 ```
 
-You get precision *and* context. The cost is a document store alongside the vector store, and
-more tokens per retrieved item.
+You get precision *and* context. The cost is a document store next to the vector store, and more
+tokens per retrieved item.
 
 ### 3.6 Contextual compression
 
+> 💬 **In plain words:** a retrieved chunk is often mostly noise. Compression keeps only the
+> sentences that matter, so the prompt is shorter and clearer.
+
 Fixes: *"my chunk is 1000 characters and only one sentence is relevant."*
 
-Run each retrieved chunk through a filter that extracts only the query-relevant sentences (or
-drops the chunk entirely). Shrinks the prompt, sharpens the signal, reduces lost-in-the-middle.
+Run each retrieved chunk through a filter. The filter keeps only the sentences that match the
+query, or drops the chunk entirely. This shrinks the prompt and makes the useful text stand out.
+It also reduces *lost-in-the-middle*: models pay less attention to text in the middle of a long
+prompt.
 
-Two flavours: `LLMChainExtractor` (an LLM extracts relevant text — accurate, costs a call per
-document) and `EmbeddingsFilter` (drops chunks below a similarity threshold — nearly free).
+There are two kinds:
+
+- `LLMChainExtractor` — an LLM extracts the relevant text. Accurate, but costs one call per
+  document.
+- `EmbeddingsFilter` — drops chunks whose similarity score is below a threshold. Nearly free.
 
 ### 3.7 Self-query — natural language to metadata filters
+
+> 💬 **In plain words:** embeddings can't compare numbers or dates. So the model pulls those
+> conditions out of the question and turns them into exact filters.
 
 Fixes: *"embeddings can't do 'over £50k in 2024'."*
 
@@ -234,10 +297,13 @@ Fixes: *"embeddings can't do 'over £50k in 2024'."*
    metadata-filtered vector search
 ```
 
-This is how you handle numeric and categorical constraints, which embeddings fundamentally
-cannot do (Day 10's failure modes).
+This is how you handle numeric and categorical constraints (numbers, and fixed labels such as a
+plan name). Embeddings simply cannot do this (Day 10's failure modes).
 
 ### 3.8 Corrective RAG — grade and retry
+
+> 💬 **In plain words:** before answering, a small model checks whether the documents are any
+> good. If they are not, you rephrase the search and try again.
 
 ```
    retrieve → grade each doc: relevant / ambiguous / irrelevant
@@ -247,20 +313,26 @@ cannot do (Day 10's failure modes).
         └─ all irrelevant?   → fall back (web search, or refuse)
 ```
 
-**A bounded loop.** Cap the iterations or a confused grader will spin forever — the same
-`maxSteps` lesson from Day 02's ReAct loop.
+**A bounded loop.** Cap the number of turns, or a confused grader (the model that judges the
+documents) will loop forever. It's the same `maxSteps` lesson as Day 02's ReAct loop.
 
 ### 3.9 Self-RAG — grade the *answer*
+
+> 💬 **In plain words:** after answering, you check the answer itself. Is it backed by the
+> documents, and does it actually answer the question?
 
 ```
    generate → is it grounded in the docs?   no → regenerate
             → does it answer the question?  no → re-retrieve with a better query
 ```
 
-Two graders, two different loops. Yesterday's citation verification was a lightweight version of
-the first one.
+Two graders, two different loops. Yesterday's citation check was a lightweight version of the
+first one.
 
 ### 3.10 Choosing: the cost/benefit table
+
+> 💬 **In plain words:** every technique costs time or money. Start with the cheap, big wins and
+> add the others only when you can show they help.
 
 | Technique | Extra cost | Typical gain | Use when |
 |---|---|---|---|
@@ -297,8 +369,8 @@ import { OllamaEmbeddings } from "@langchain/ollama";
 import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory";
 import { Document } from "@langchain/core/documents";
 
-export const fast = new ChatGroq({ model: "llama-3.1-8b-instant", temperature: 0 });
-export const smart = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+export const fast = new ChatGroq({ model: "openai/gpt-oss-20b", temperature: 0 });
+export const smart = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 export const embeddings = new OllamaEmbeddings({ model: "nomic-embed-text" });
 
 export const DOCS = [
@@ -331,6 +403,17 @@ export const formatDocs = (docs) =>
   docs.map((d, i) => `[${i + 1}] (${d.metadata.section}) ${d.pageContent.split("\n\n")[1] ?? d.pageContent}`)
       .join("\n");
 ```
+
+> ⚠️ **Why every `fast.withStructuredOutput(...)` today passes `{ method: "jsonSchema" }`.** The
+> default method asks the model to call a tool. On a short yes/no prompt such as "Is this
+> relevant?", `openai/gpt-oss-20b` sometimes just answered in text. In our run (October 2026) the
+> corrective-RAG grader (§5.7) failed on its first document: `400 Tool choice is required, but
+> model did not call a tool` with `failed_generation: 'No'`. With JSON-schema mode the reply must
+> match the schema, and the same script ran to the end. Multi-query, reranking and self-query
+> also worked in this mode. Python spells it `method="json_schema", strict=True`. Keep
+> `strict=True`: without it, one Self-RAG grader in our run sent back the *schema itself*
+> instead of an answer. (JS's `jsonSchema` mode is already strict.) The methods are compared in
+> [Day 06](../week-01-foundations/day-06-output-parsers-structured-output.md).
 
 ### 4.2 MMR — kill the redundancy
 
@@ -370,7 +453,7 @@ const Variations = z.object({
 });
 
 async function multiQueryRetrieve(question, k = 3) {
-  const { queries } = await fast.withStructuredOutput(Variations).invoke(
+  const { queries } = await fast.withStructuredOutput(Variations, { method: "jsonSchema" }).invoke(
     `Generate 3 alternative phrasings of this question for document search. ` +
     `Vary the vocabulary — use synonyms a document might use.\n\nQuestion: ${question}`
   );
@@ -422,7 +505,7 @@ const retriever = MultiQueryRetriever.fromLLM({
 
 const docs = await retriever.invoke("how do I get my money back?");
 ```
-Building it by hand first means the dedupe behaviour isn't a mystery.
+Building it by hand first means the dedupe (duplicate-removal) behaviour isn't a mystery.
 </details>
 
 ### 4.4 HyDE
@@ -476,7 +559,7 @@ async function rerank(question, docs, topN = 3) {
   // Score each document against the query, in parallel.
   const scored = await Promise.all(
     docs.map(async (doc) => {
-      const r = await fast.withStructuredOutput(Relevance).invoke(
+      const r = await fast.withStructuredOutput(Relevance, { method: "jsonSchema" }).invoke(
         `Question: ${question}\n\nDocument: ${doc.pageContent}\n\n` +
         `How relevant is this document to answering the question?`
       );
@@ -525,8 +608,9 @@ const retriever = new ContextualCompressionRetriever({
 
 const docs = await retriever.invoke("can I cancel and get money back?");
 ```
-A hosted cross-encoder is ~10× faster and cheaper than LLM reranking. Use one in production;
-the LLM version is the free fallback.
+A hosted cross-encoder is typically much faster and cheaper than LLM reranking (one API call
+instead of one LLM call per candidate). Use one in production.
+The LLM version is the free fallback.
 </details>
 
 ### 4.6 Contextual compression
@@ -592,7 +676,7 @@ async function correctiveRag(question, { maxAttempts = 3, minRelevant = 2 } = {}
     const graded = await Promise.all(
       docs.map(async (doc) => ({
         doc,
-        ...(await fast.withStructuredOutput(Grade).invoke(
+        ...(await fast.withStructuredOutput(Grade, { method: "jsonSchema" }).invoke(
           `Question: ${question}\n\nDocument: ${doc.pageContent}\n\nIs this relevant?`
         )),
       }))
@@ -611,7 +695,8 @@ async function correctiveRag(question, { maxAttempts = 3, minRelevant = 2 } = {}
 
     // ── not enough, and attempts remain? rewrite and retry ───────────────
     if (attempt < maxAttempts) {
-      const { rewritten } = await fast.withStructuredOutput(Rewrite).invoke(
+      const { rewritten } = await fast
+        .withStructuredOutput(Rewrite, { method: "jsonSchema" }).invoke(
         `The search query "${query}" returned poor results for this question: "${question}".\n` +
         `Previously tried: ${tried.join(", ")}.\n` +
         `Write a DIFFERENT search query using other vocabulary.`
@@ -638,8 +723,8 @@ for (const q of [
 }
 ```
 
-**Note the bounded loop.** Without `maxAttempts` a confused grader rewrites forever — the same
-lesson as Day 02's ReAct step limit.
+**Note the bounded loop.** Without `maxAttempts`, a confused grader rewrites forever. It's the
+same lesson as Day 02's ReAct step limit.
 
 ### 4.8 Self-query — natural language to filters
 
@@ -658,7 +743,7 @@ const StructuredQuery = z.object({
 });
 
 async function selfQuery(question, k = 3) {
-  const q = await fast.withStructuredOutput(StructuredQuery).invoke(
+  const q = await fast.withStructuredOutput(StructuredQuery, { method: "jsonSchema" }).invoke(
     `Convert this question into a search query plus metadata filters.\n\n` +
     `Available metadata: section (Refunds|Cancellation|API|Shipping|Retention), ` +
     `plan (Basic|Pro|all), year (number).\n\nQuestion: ${question}`
@@ -691,7 +776,7 @@ for (const question of [
 ## 5. Code — Python
 
 ```bash
-pip install langchain langchain-classic langchain-ollama langchain-groq pydantic python-dotenv
+pip install langchain langchain-classic langchain-community langchain-ollama langchain-groq pydantic python-dotenv
 ```
 
 ### 5.1 Shared setup
@@ -706,8 +791,8 @@ from langchain_core.documents import Document
 
 load_dotenv()
 
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 DOCS = [
@@ -780,7 +865,7 @@ class Variations(BaseModel):
         description="3 alternative phrasings of the question, using different vocabulary")
 
 def multi_query_retrieve(question, k=3):
-    result = fast.with_structured_output(Variations).invoke(
+    result = fast.with_structured_output(Variations, method="json_schema", strict=True).invoke(
         f"Generate 3 alternative phrasings of this question for document search. "
         f"Vary the vocabulary — use synonyms a document might use.\n\nQuestion: {question}"
     )
@@ -871,7 +956,7 @@ class Relevance(BaseModel):
 def rerank(question, docs, top_n=3):
     scored = []
     for doc in docs:
-        r = fast.with_structured_output(Relevance).invoke(
+        r = fast.with_structured_output(Relevance, method="json_schema", strict=True).invoke(
             f"Question: {question}\n\nDocument: {doc.page_content}\n\n"
             f"How relevant is this document to answering the question?"
         )
@@ -937,6 +1022,12 @@ for d in extracted:
     print(f"  · {d.page_content[:80]}")
 ```
 
+> ⚠️ **Check what the extractor really returns.** `LLMChainExtractor` asks the model to copy
+> the relevant sentences as plain text. We ran it with `openai/gpt-oss-20b` in October 2026.
+> It kept the right document — *"Pro plans allow refunds within 60 days of purchase."* — but
+> put its own heading, `Extracted relevant parts:`, in front of it. That heading then becomes part
+> of your context. Print the extracted text before you trust it.
+
 ### 5.7 Corrective RAG — grade and retry
 
 ```python
@@ -974,7 +1065,7 @@ def corrective_rag(question, max_attempts=3, min_relevant=2):
         # ── grade every document ────────────────────────────────────────
         graded = []
         for doc in docs:
-            g = fast.with_structured_output(Grade).invoke(
+            g = fast.with_structured_output(Grade, method="json_schema", strict=True).invoke(
                 f"Question: {question}\n\nDocument: {doc.page_content}\n\nIs this relevant?")
             graded.append((doc, g.relevant))
 
@@ -989,7 +1080,7 @@ def corrective_rag(question, max_attempts=3, min_relevant=2):
 
         # ── not enough, attempts remain? rewrite and retry ───────────────
         if attempt < max_attempts:
-            r = fast.with_structured_output(Rewrite).invoke(
+            r = fast.with_structured_output(Rewrite, method="json_schema", strict=True).invoke(
                 f'The search query "{query}" returned poor results for this question: '
                 f'"{question}".\nPreviously tried: {", ".join(tried)}.\n'
                 f"Write a DIFFERENT search query using other vocabulary.")
@@ -1028,7 +1119,7 @@ class StructuredQuery(BaseModel):
     min_year: Optional[int] = Field(None, description="Minimum year, or null for no constraint")
 
 def self_query(question, k=3):
-    q = fast.with_structured_output(StructuredQuery).invoke(
+    q = fast.with_structured_output(StructuredQuery, method="json_schema", strict=True).invoke(
         f"Convert this question into a search query plus metadata filters.\n\n"
         f"Available metadata: section (Refunds|Cancellation|API|Shipping|Retention), "
         f"plan (Basic|Pro|all), year (number).\n\nQuestion: {question}"
@@ -1113,17 +1204,19 @@ Requires a store whose translator LangChain supports (Chroma, Qdrant, pgvector a
    ❌ must run once PER PAIR → impossible over a whole corpus
 ```
 
-The two-stage design uses each where it's strong: the bi-encoder cheaply narrows 100k to 20; the
+The two-stage design uses each where it's strong. The bi-encoder cheaply narrows 100k to 20. The
 cross-encoder accurately narrows 20 to 4.
 
-**Typical impact:** reranking commonly moves recall@4 by 10–20 points on a corpus where naive
-retrieval is around 70%. That's a bigger gain than switching embedding models, at a fraction of
-the effort — and no re-indexing.
+**Typical impact** (illustrative, not a measurement — the size of the gain depends on your corpus
+and queries; measure it with Exercise 1): reranking can move recall@4 by a large margin on a
+corpus where naive retrieval is mediocre, say around 70%. (Recall@4 is the share of questions whose right chunk appears in the top
+4.) That's a bigger gain than switching embedding models, for much less effort. And you don't
+need to re-index.
 
 ### Why HyDE works despite generating false text
 
 Retrieval quality depends on the *distance* between query and document embeddings. Questions and
-statements occupy systematically different regions of embedding space (Day 10's asymmetry).
+statements sit in consistently different regions of embedding space (Day 10's asymmetry).
 
 ```
    embedding space (schematically)
@@ -1137,11 +1230,11 @@ statements occupy systematically different regions of embedding space (Day 10's 
    HyDE moves the query INTO the document region before searching.
 ```
 
-The hypothetical answer's *facts* are irrelevant — only its *shape and vocabulary* matter. It
-uses the right jargon, the right sentence structure, the right register.
+The hypothetical answer's *facts* are irrelevant. Only its *shape and vocabulary* matter. It uses
+the right technical terms, the right sentence structure and the right tone.
 
-**When HyDE hurts:** if the model's hypothetical goes off-topic (a domain it knows nothing
-about), you retrieve for the wrong thing. Always measure rather than assuming.
+**When HyDE hurts:** the model may know nothing about your field. Then its hypothetical answer
+goes off-topic, and you retrieve for the wrong thing. Always measure rather than assume.
 
 ### Why MMR needs `fetchK > k`
 
@@ -1154,27 +1247,30 @@ A common bug: setting them equal and concluding "MMR does nothing".
 
 ### Why the loops need bounds
 
-Corrective and Self-RAG are loops driven by a model's judgement. Two failure modes:
+Corrective and Self-RAG are loops driven by a model's judgement. They can fail in two ways:
 
-1. **Infinite loop** — the grader never accepts, so you rewrite forever, burning money.
-2. **Oscillation** — the rewriter alternates between two phrasings that both fail.
+1. **Infinite loop** — the grader never accepts, so you rewrite forever and keep paying.
+2. **Oscillation** — the rewriter switches back and forth between two phrasings that both fail.
 
-Mitigations: a hard `maxAttempts`; pass previously-tried queries into the rewrite prompt (as in
-§4.7) so it must produce something new; and always have a terminal fallback that returns an
-honest failure rather than looping.
+Mitigations:
 
-**And note what's awkward about all of this.** You're hand-writing a state machine — a loop with
-counters, accumulated state, and conditional exits — because LCEL can't express cycles. That
-works at this size and becomes unmanageable when you add streaming, persistence, and a human
+- A hard `maxAttempts`.
+- Pass the queries you already tried into the rewrite prompt (as in §4.7), so it must produce
+  something new.
+- Always have a terminal fallback: a last step that returns an honest failure instead of looping.
+
+**And note what's awkward about all of this.** You're hand-writing a state machine: a loop with
+counters, saved state and conditional exits. You do it because LCEL can't express cycles. That
+works at this size. It becomes unmanageable when you add streaming, persistence and a human
 approval step.
 
-That gap is precisely what LangGraph fills, and it's where Week 3 starts.
+That gap is exactly what LangGraph fills, and it's where Week 3 starts.
 
 <details>
 <summary>📜 A note on RAG pattern names</summary>
 
-The literature names a lot of variants and they overlap heavily. The distinctions that actually
-matter:
+Research papers and blogs name a lot of variants, and they overlap heavily. These are the
+distinctions that actually matter.
 
 | Name | Distinctive idea |
 |---|---|
@@ -1187,9 +1283,9 @@ matter:
 | **Graph RAG** | Retrieve over an entity/relationship graph rather than flat chunks |
 | **Modular RAG** | Framing all of the above as swappable components |
 
-In interviews, the useful move is to describe the *mechanism* rather than reciting names —
-"grade retrieved documents and re-query on failure" tells the interviewer more than "we use
-CRAG". The names are labels for combinations of the four intervention points in §2.
+In interviews, describe the *mechanism* instead of reciting names. "Grade retrieved documents and
+re-query on failure" tells the interviewer more than "we use CRAG". The names are just labels for
+combinations of the four intervention points in §2.
 </details>
 
 ---
@@ -1198,14 +1294,14 @@ CRAG". The names are labels for combinations of the four intervention points in 
 
 **❌ Adding every technique at once**
 
-You can't tell what helped, latency balloons, and cost multiplies.
-✅ Add one at a time, measure recall@k, keep what earns its cost.
+You can't tell what helped, latency grows fast, and cost multiplies.
+✅ Add one at a time, measure recall@k, and keep only what earns its cost.
 
 ---
 
 **❌ MMR with `fetchK == k`**
 
-Nothing to diversify from; it's a no-op.
+There's nothing to diversify from, so it does nothing.
 ✅ `fetchK` should be 3–5× `k`.
 
 ---
@@ -1226,8 +1322,9 @@ A grader that never approves rewrites forever.
 
 **❌ Using the big model for grading and reranking**
 
-Grading 20 documents with a 70B model per query is enormously expensive.
-✅ Small fast model for grading/reranking/rewriting; big model only for the final answer.
+Grading 20 documents with the 120B model per query is enormously expensive.
+✅ Use a small, fast model for grading, reranking and rewriting. Use the big model only for the
+final answer.
 
 ---
 
@@ -1241,7 +1338,7 @@ Four queries × k=5 returns 20 documents, many identical, wasting your context b
 **❌ Assuming HyDE always helps**
 
 In domains the model doesn't know, the hypothetical can be misleading and retrieval gets *worse*.
-✅ A/B it on your eval set.
+✅ A/B test it: run your eval set (a fixed list of test questions) with and without HyDE.
 
 ---
 
@@ -1255,7 +1352,7 @@ Aggressive thresholds or over-eager extraction can drop the one relevant sentenc
 **❌ Reaching for advanced RAG before fixing chunking**
 
 No retriever recovers an answer split across a chunk boundary.
-✅ Day 09 first. Fix the ingest, then optimise retrieval.
+✅ Day 09 first. Fix the ingest (how documents are split and stored), then optimise retrieval.
 
 ---
 
@@ -1315,7 +1412,7 @@ class Variations(BaseModel):
 
 def multi_query(q, k=3):
     stats["calls"] += 1
-    result = fast.with_structured_output(Variations).invoke(
+    result = fast.with_structured_output(Variations, method="json_schema", strict=True).invoke(
         f"Generate 3 alternative phrasings for document search.\n\nQuestion: {q}")
     seen, merged = set(), []
     for query in [q] + result.queries:
@@ -1344,7 +1441,7 @@ def rerank(q, k=3, fetch=8):
     scored = []
     for d in candidates:
         stats["calls"] += 1
-        r = fast.with_structured_output(Relevance).invoke(
+        r = fast.with_structured_output(Relevance, method="json_schema", strict=True).invoke(
             f"Question: {q}\n\nDocument: {d.page_content}\n\nRelevance?")
         scored.append((d, r.score))
     return [d for d, _ in sorted(scored, key=lambda x: -x[1])[:k]]
@@ -1404,6 +1501,8 @@ const STRATEGIES = {
 
 **Typical output:**
 
+Your numbers will differ — this output is illustrative.
+
 ```
 strategy       recall@3   ms/query   LLM calls/query
 ----------------------------------------------------------
@@ -1424,7 +1523,8 @@ baseline recall: 0.75
 **Four conclusions worth internalising:**
 
 1. **Reranking wins on recall and loses on latency** — 8 extra calls and ~1.8s. In production
-   you'd use a hosted cross-encoder (Cohere/Voyage) instead: one API call, ~200ms, same benefit.
+   you'd use a hosted cross-encoder (Cohere/Voyage) instead: one API call (typically a few
+   hundred ms at most), similar benefit.
    The LLM version is the free proof of concept.
 2. **MMR shows no recall gain here** — and that's *correct*, because MMR optimises for
    **diversity**, not recall. Measuring it with recall@k is measuring the wrong thing. Its real
@@ -1599,23 +1699,26 @@ Parent chunks give the model the full policy paragraph, so the answer covers the
 | Tokens per document | ~200 | ~800 |
 | Deduplication | n/a | ⭐ essential — 3 children often share 1 parent |
 
-**That dedup step is the detail people miss.** Three child hits frequently belong to one parent;
-without deduplication you'd send the same 800-character parent three times, wasting most of your
-context budget on repeats.
+**That dedup step is the detail people miss.** Three child hits often belong to one parent.
+Without deduplication you'd send the same 800-character parent three times. Most of your context
+budget would go on repeats.
 
-**Where this shines:** technical documentation and legal text, where the retrievable phrase and
-the answerable unit are genuinely different sizes. It resolves Day 09's chunk-size dilemma by
-refusing to choose.
+**Where this shines:** technical documentation and legal text. There, the phrase you search for
+and the passage you answer from are genuinely different sizes. It solves Day 09's chunk-size
+dilemma by refusing to choose.
 </details>
 
 ---
 
 ### Exercise 3 — Self-RAG with answer grading ●●●●○
 
-Build a Self-RAG loop that grades the generated answer on two axes — **grounded** (supported by
-the retrieved documents) and **relevant** (actually answers the question) — and takes a different
-action for each failure: regenerate if ungrounded, re-retrieve if irrelevant. Bound the loop and
-log every decision.
+Build a Self-RAG loop that grades the generated answer on two axes:
+
+- **grounded** — supported by the retrieved documents;
+- **relevant** — actually answers the question.
+
+Take a different action for each failure: regenerate if ungrounded, re-retrieve if irrelevant.
+Bound the loop and log every decision.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1663,7 +1766,7 @@ def self_rag(question, max_loops=3):
         answer = answer_chain.invoke({"context": context, "question": question})
 
         # ── grade 1: is it GROUNDED? ─────────────────────────────────────
-        g = fast.with_structured_output(Groundedness).invoke(
+        g = fast.with_structured_output(Groundedness, method="json_schema", strict=True).invoke(
             f"Documents:\n{context}\n\nAnswer:\n{answer}\n\n"
             f"Is every claim in the answer supported by the documents?")
 
@@ -1681,7 +1784,8 @@ def self_rag(question, max_loops=3):
             ]) | smart | StrOutputParser()).invoke(
                 {"context": context, "question": question})
 
-            g2 = fast.with_structured_output(Groundedness).invoke(
+            g2 = fast.with_structured_output(
+                Groundedness, method="json_schema", strict=True).invoke(
                 f"Documents:\n{context}\n\nAnswer:\n{answer}\n\nEvery claim supported?")
             if not g2.grounded:
                 log.append("  ❌ still ungrounded after regeneration")
@@ -1694,7 +1798,7 @@ def self_rag(question, max_loops=3):
             log.append("  ✅ grounded")
 
         # ── grade 2: does it ANSWER the question? ────────────────────────
-        u = fast.with_structured_output(Usefulness).invoke(
+        u = fast.with_structured_output(Usefulness, method="json_schema", strict=True).invoke(
             f"Question: {question}\n\nAnswer: {answer}\n\nDoes this answer the question?")
 
         if u.answers_question:
@@ -1705,7 +1809,7 @@ def self_rag(question, max_loops=3):
 
         # ── not useful → RE-RETRIEVE with a new query ────────────────────
         if loop < max_loops:
-            r = fast.with_structured_output(Rewrite).invoke(
+            r = fast.with_structured_output(Rewrite, method="json_schema", strict=True).invoke(
                 f'The query "{query}" retrieved documents that did not answer: "{question}". '
                 f"Write a DIFFERENT search query using other vocabulary.")
             query = r.rewritten
@@ -1730,7 +1834,7 @@ for q in [
 **JavaScript** — the two-grader structure:
 ```js
 // grade 1: grounded?
-const g = await fast.withStructuredOutput(Groundedness).invoke(
+const g = await fast.withStructuredOutput(Groundedness, { method: "jsonSchema" }).invoke(
   `Documents:\n${context}\n\nAnswer:\n${answer}\n\nIs every claim supported?`);
 
 if (!g.grounded) {
@@ -1739,11 +1843,12 @@ if (!g.grounded) {
 }
 
 // grade 2: useful?
-const u = await fast.withStructuredOutput(Usefulness).invoke(
+const u = await fast.withStructuredOutput(Usefulness, { method: "jsonSchema" }).invoke(
   `Question: ${question}\n\nAnswer: ${answer}\n\nDoes this answer the question?`);
 
 if (!u.answersQuestion && loop < maxLoops) {
-  query = (await fast.withStructuredOutput(Rewrite).invoke(/* ... */)).rewritten;
+  query = (await fast.withStructuredOutput(Rewrite, { method: "jsonSchema" })
+    .invoke(/* ... */)).rewritten;
   continue;                                    // ← re-RETRIEVE, don't just regenerate
 }
 ```
@@ -1755,22 +1860,21 @@ if (!u.answersQuestion && loop < maxLoops) {
 | Ungrounded | The model invented something; the docs may be fine | **Regenerate** with the same docs and a stricter prompt |
 | Not useful | The docs genuinely don't contain the answer | **Re-retrieve** with a different query |
 
-Conflating them is the common mistake — re-retrieving because of a hallucination wastes a
-retrieval when the documents were already correct, and regenerating on irrelevant documents just
-produces a different wrong answer from the same bad context.
+Mixing the two up is the common mistake. Re-retrieving because of a hallucination (an invented
+claim) wastes a retrieval when the documents were already correct. Regenerating from irrelevant
+documents just produces a different wrong answer from the same bad context.
 
-**The cost is real:** up to 3 loops × (retrieve + generate + 2 grades) ≈ 12 LLM calls worst case.
-Mitigations: cheap model for the graders (done here), only enable Self-RAG for high-stakes
-queries, and cache aggressively.
+**The cost is real:** up to 3 loops × (retrieve + generate + 2 grades) — about 12 LLM calls in the
+worst case. Mitigations: a cheap model for the graders (done here), Self-RAG only for high-stakes
+queries, and heavy caching.
 
-**And notice how awkward this code is.** You're hand-managing loop counters, accumulated state, a
-log, and multiple exit conditions — with `continue` statements controlling flow. Adding streaming
-or a human approval step would make it considerably worse.
+**And notice how awkward this code is.** You're managing loop counters, saved state, a log and
+several exit conditions by hand, with `continue` statements controlling the flow. Adding streaming
+or a human approval step would make it much worse.
 
-This is a **state machine written as a while loop**. LangGraph's entire proposition is letting
-you declare it as nodes and conditional edges instead, with state, persistence and interrupts
-handled for you. Week 3 rebuilds exactly this pattern as a graph, and the comparison is
-illuminating.
+This is a **state machine written as a while loop**. LangGraph's whole idea is to let you declare
+it as nodes and conditional edges instead. It handles state, persistence and interrupts for you.
+Week 3 rebuilds exactly this pattern as a graph, and the comparison teaches a lot.
 </details>
 
 ---
@@ -1804,7 +1908,8 @@ class Route(BaseModel):
                     "multi = comparison or multi-part question needing several searches; "
                     "filtered = mentions a specific plan, year or section to filter by")
 
-router = fast.with_structured_output(Route).with_config(run_name="route_question")
+router = (fast.with_structured_output(Route, method="json_schema", strict=True)
+          .with_config(run_name="route_question"))
 
 class Variations(BaseModel):
     """Alternative phrasings."""
@@ -1851,7 +1956,7 @@ def adaptive_rag(question):
     # ── multi: decompose into sub-queries ────────────────────────────────
     elif route.strategy == "multi":
         stats["calls"] += 1
-        v = fast.with_structured_output(Variations).invoke(
+        v = fast.with_structured_output(Variations, method="json_schema", strict=True).invoke(
             f"Break this question into 2-3 focused search queries, one per part.\n\n"
             f"Question: {question}")
         seen, docs = set(), []
@@ -1865,7 +1970,7 @@ def adaptive_rag(question):
     # ── filtered: extract metadata constraints ───────────────────────────
     else:
         stats["calls"] += 1
-        f = fast.with_structured_output(Filters).invoke(
+        f = fast.with_structured_output(Filters, method="json_schema", strict=True).invoke(
             f"Extract the semantic query and metadata filters.\n"
             f"Sections: Refunds|Cancellation|API|Shipping|Retention. "
             f"Plans: Basic|Pro|all.\n\nQuestion: {question}")
@@ -1924,14 +2029,15 @@ switch (route.strategy) {
     break;
 
   case "multi": {
-    const { queries } = await fast.withStructuredOutput(Variations).invoke(/* ... */);
+    const { queries } = await fast
+      .withStructuredOutput(Variations, { method: "jsonSchema" }).invoke(/* ... */);
     const sets = await Promise.all(queries.map((q) => store.asRetriever({ k: 2 }).invoke(q)));
     docs = dedupe(sets.flat());
     break;
   }
 
   case "filtered": {
-    const f = await fast.withStructuredOutput(Filters).invoke(/* ... */);
+    const f = await fast.withStructuredOutput(Filters, { method: "jsonSchema" }).invoke(/* ... */);
     docs = await store.similaritySearch(f.semanticQuery, 3, buildFilter(f));
     break;
   }
@@ -1939,6 +2045,8 @@ switch (route.strategy) {
 ```
 
 **Typical output:**
+
+Your numbers will differ — this output is illustrative.
 
 ```
 question                                    strategy    docs  reasoning
@@ -1953,24 +2061,24 @@ Tell me about Pro plan API limits           filtered       2  Names a specific p
 
 **Three things worth drawing out:**
 
-1. **Skipping retrieval is a real optimisation, not a micro-optimisation.** In a production
-   assistant a meaningful fraction of turns are greetings, acknowledgements ("thanks!"), or
-   general questions. Retrieving for those wastes an embedding call, adds latency, and — worse —
-   can pull in irrelevant documents that *degrade* the answer, because the model tries to use
-   what you gave it.
+1. **Skipping retrieval is a real saving, not a tiny one.** In a production assistant, a
+   meaningful share of turns are greetings, thank-yous ("thanks!") or general questions.
+   Retrieving for those wastes an embedding call and adds latency. Worse, it can pull in
+   irrelevant documents that *degrade* the answer, because the model tries to use what you gave
+   it.
 
 2. **The `multi` path handles comparisons, which naive RAG genuinely can't.** "Compare refunds
-   with cancellation" embedded as one query lands between the two topics and often retrieves
-   neither well. Decomposing into sub-queries retrieves both cleanly.
+   with cancellation" embedded as one query lands between the two topics. It often retrieves
+   neither well. Splitting it into sub-queries retrieves both cleanly.
 
 3. **The router itself must be cheap and must fail safe.** It runs on every request. Use the
-   small model, and give it a fallback value — if classification fails, default to `simple`
-   rather than erroring. A router that takes down the whole system when it misbehaves is worse
-   than no router.
+   small model, and give it a fallback value: if classification fails, default to `simple`
+   instead of throwing an error. A router that takes down the whole system when it misbehaves is
+   worse than no router.
 
 **The honest caveat:** the router adds one call to *every* request, including the simple ones.
-It pays for itself when a decent share of traffic skips retrieval or genuinely needs the multi
-path. Measure your actual distribution before assuming it's worth it — on a corpus where every
+It pays for itself when a good share of traffic skips retrieval or truly needs the multi path.
+Measure your real mix of questions before assuming it's worth it. On a corpus where every
 question is a simple lookup, a router is pure overhead.
 </details>
 
@@ -1978,10 +2086,18 @@ question is a simple lookup, a router is pure overhead.
 
 ### Exercise 5 — 🏆 Production RAG pipeline ●●●●●
 
-Combine the techniques that earn their cost into one configurable pipeline: hybrid retrieval →
-optional query transform → wide retrieval → rerank → compress → generate with verified citations
-→ optional corrective retry. Make every stage toggleable, report per-stage timing, and
-demonstrate the difference between a minimal and a full configuration.
+Combine the techniques that earn their cost into one configurable pipeline. The stages, in order:
+
+1. hybrid retrieval;
+2. optional query transform;
+3. wide retrieval;
+4. rerank;
+5. compress;
+6. generate with verified citations;
+7. optional corrective retry.
+
+Make every stage something you can switch on or off, and report the time each stage takes. Show
+the difference between a minimal and a full configuration.
 
 <details>
 <summary>✅ Solution</summary>
@@ -2079,7 +2195,7 @@ def transform_query(question, cfg, timings):
 
     t0 = time.time()
     if cfg.query_transform == "multi":
-        v = fast.with_structured_output(Variations).invoke(
+        v = fast.with_structured_output(Variations, method="json_schema", strict=True).invoke(
             f"Generate 2 alternative phrasings for search.\n\nQuestion: {question}")
         result = [question] + v.queries
     else:  # hyde
@@ -2114,7 +2230,7 @@ def rerank(question, docs, cfg, timings):
     t0 = time.time()
     scored = []
     for d in docs:
-        r = fast.with_structured_output(Relevance).invoke(
+        r = fast.with_structured_output(Relevance, method="json_schema", strict=True).invoke(
             f"Question: {question}\n\nDocument: {d.page_content}\n\nRelevance 0-10?")
         scored.append((d, r.score))
 
@@ -2178,7 +2294,9 @@ def run(question, cfg: RagConfig):
             log.append(f"compress → {len(docs)}")
 
         t0 = time.time()
-        result = (answer_prompt | smart.with_structured_output(Answer)).invoke(
+        answerer = answer_prompt | smart.with_structured_output(
+            Answer, method="json_schema", strict=True)
+        result = answerer.invoke(
             {"context": format_docs(docs), "question": question})
         timings["generate"] = (time.time() - t0) * 1000
 
@@ -2236,13 +2354,16 @@ async function run(question, cfg) {
   let docs = await retrieve(queries, cfg, timings);
   docs = await rerank(question, docs, cfg, timings);
   docs = await compress(question, docs, cfg, timings);
-  const result = await answerPrompt.pipe(smart.withStructuredOutput(Answer))
+  const result = await answerPrompt
+    .pipe(smart.withStructuredOutput(Answer, { method: "jsonSchema" }))
     .invoke({ context: formatDocs(docs), question });
   return { result, docs, timings };
 }
 ```
 
 **Typical comparison:**
+
+Your numbers will differ — this output is illustrative.
 
 ```
 MINIMAL
@@ -2269,11 +2390,11 @@ MAXIMAL
 **Five things this pipeline demonstrates:**
 
 1. **Reranking dominates the latency budget.** ~1.6s of a 2.7s total. In production you'd replace
-   the LLM reranker with a hosted cross-encoder (Cohere, Voyage, Jina): one API call, ~200ms,
-   same quality gain. This is the single most impactful production swap on this page.
+   the LLM reranker with a hosted cross-encoder (Cohere, Voyage, Jina): one API call (typically
+   a few hundred ms at most), a similar quality gain. This is the single most impactful production swap on this page.
 
 2. **"Recommended" is the right default.** Hybrid + rerank captures most of the quality gain of
-   "maximal" at 85% of the latency. Multi-query and compression add real cost for a smaller
+   "maximal" at about 87% of its latency in this illustrative run (2708 ms vs 3130 ms). Multi-query and compression add real cost for a smaller
    marginal benefit on most corpora — enable them where measurement justifies it.
 
 3. **Citation verification catches the difference.** Minimal gets 1/2 verified; the reranked
@@ -2281,22 +2402,22 @@ MAXIMAL
    rate is a useful *proxy* for retrieval quality that you can measure in production without
    labelled data.
 
-4. **`compress()` never returns nothing.** `return list(kept) or docs` — an over-aggressive
-   threshold that filters away every document would otherwise produce an empty context and a
-   guaranteed "I don't know". Guard rails on optimisation stages matter.
+4. **`compress()` never returns nothing.** Look at `return list(kept) or docs`. A threshold that
+   is too strict could filter away every document. You would get an empty context and a
+   guaranteed "I don't know". Optimisation stages need safety checks like this.
 
-5. **Corrective retry mutates the config for the next attempt** — it upgrades to multi-query
-   rather than repeating the identical failed search. Retrying the same query is pointless.
+5. **Corrective retry changes the config for the next attempt.** It upgrades to multi-query
+   instead of repeating the same failed search. Retrying the same query is pointless.
 
 **What this design still can't do, and where Week 3 picks up:**
 
-The corrective loop is a `for` loop with a `continue`. Adding a third strategy, or streaming
-progress to a UI, or pausing for human approval before an expensive path, means more flags and
-more branches in an increasingly tangled function.
+The corrective loop is a `for` loop with a `continue`. Suppose you add a third strategy, stream
+progress to a UI, or pause for human approval before an expensive path. Each one means more flags
+and more branches in an ever more tangled function.
 
-You've now hand-built a state machine three times today — corrective RAG, self-RAG, and this
+You've now hand-built a state machine three times today: corrective RAG, self-RAG and this
 pipeline. Each time the awkwardness is the same: **LCEL composes forward, but these problems
-loop.** LangGraph makes the states and transitions explicit, and hands you persistence,
+loop.** LangGraph makes the states and transitions explicit. It also gives you persistence,
 streaming and interrupts for free.
 
 That's Day 17 onward.
@@ -2311,55 +2432,59 @@ That's Day 17 onward.
 <details>
 <summary><b>Q: What is reranking and why does it help?</b></summary>
 
-A two-stage retrieval pattern: use a fast bi-encoder (your vector store) to fetch a wide
-candidate set — say 20 — then use a slower, more accurate cross-encoder to score and select the
-best 3–5.
+A two-stage retrieval pattern. First, a fast bi-encoder (your vector store) fetches a wide set of
+candidates — say 20. Then a slower, more accurate cross-encoder scores them and keeps the best
+3–5.
 
-It helps because a bi-encoder embeds query and document *separately* and compares vectors, so it
-never sees them together. A cross-encoder processes `[query, document]` as a single input with
-full attention between them, judging actual relevance rather than vector proximity. It's far too
-slow to run over a whole corpus and ideal over 20 candidates.
+It helps because a bi-encoder embeds query and document *separately* and compares vectors. It
+never sees them together. A cross-encoder reads `[query, document]` as a single input, with full
+attention between them. So it judges actual relevance, not just vector closeness. It's far too
+slow to run over a whole corpus, and ideal over 20 candidates.
 
-In practice it's the single highest-impact addition to a naive RAG pipeline — commonly worth
-10–20 points of recall@k, with no re-indexing.
+In practice it's often the single biggest improvement you can add to a naive RAG pipeline, and
+it needs no re-indexing. How many points of recall@k it buys depends on the corpus — measure it
+on your own eval set.
 </details>
 
 <details>
 <summary><b>Q: What is MMR?</b></summary>
 
 Maximal Marginal Relevance — retrieval that balances relevance against diversity. Each candidate
-is scored as `λ · relevance − (1−λ) · max_similarity_to_already_selected`, and documents are
-picked greedily.
+is scored as `λ · relevance − (1−λ) · max_similarity_to_already_selected`. Documents are picked
+greedily, one at a time.
 
-It solves the problem where your top-5 are five paraphrases of the same sentence, wasting the
+It solves the problem where your top-5 are five paraphrases of the same sentence. That wastes the
 context budget on one fact. `λ` around 0.5–0.7 is the useful range. Important detail: `fetchK`
-must be substantially larger than `k`, or there's nothing to diversify from and MMR is a no-op.
+must be much larger than `k`. Otherwise there's nothing to diversify from, and MMR does nothing.
 </details>
 
 <details>
 <summary><b>Q: What is HyDE?</b></summary>
 
 Hypothetical Document Embeddings. Instead of embedding the user's question, you have the model
-write a hypothetical *answer* — a passage in the style of your documents — and embed that for
-retrieval.
+write a hypothetical *answer* — a passage in the style of your documents. You embed that and
+retrieve with it.
 
-It works because questions and statements occupy systematically different regions of embedding
-space, so a question embedding is a poor proxy for the document you want. The hypothetical
-answer's factual accuracy is irrelevant; only its vocabulary and shape matter. It's especially
-effective in technical domains, and it can hurt where the model knows nothing about the subject —
-so it needs measuring rather than assuming.
+It works because questions and statements sit in consistently different regions of embedding
+space. So a question's embedding is a poor stand-in for the document you want. The hypothetical
+answer's factual accuracy is irrelevant. Only its vocabulary and shape matter. It's especially
+effective in technical fields. It can hurt where the model knows nothing about the subject, so
+measure it rather than assume.
 </details>
 
 <details>
 <summary><b>Q: What is Corrective RAG?</b></summary>
 
-RAG with a feedback loop on retrieval quality: retrieve, grade each document for relevance, and
-branch — if enough are relevant, generate; if not, rewrite the query and retrieve again; if
-repeated attempts fail, fall back to another source or refuse honestly.
+RAG with a feedback loop on retrieval quality. You retrieve, grade each document for relevance,
+and then branch:
 
-The essential implementation details are a hard attempt limit (a grader that never approves would
-otherwise loop forever) and passing previously-tried queries into the rewriter so it must produce
-something genuinely different.
+- If enough documents are relevant, generate.
+- If not, rewrite the query and retrieve again.
+- If repeated attempts fail, fall back to another source or refuse honestly.
+
+Two implementation details are essential. First, a hard attempt limit — a grader that never
+approves would otherwise loop forever. Second, pass the queries you already tried into the
+rewriter, so it must produce something genuinely different.
 </details>
 
 ### Intermediate
@@ -2367,49 +2492,57 @@ something genuinely different.
 <details>
 <summary><b>Q: Bi-encoder vs cross-encoder — explain the trade-off.</b></summary>
 
-A bi-encoder maps query and document to vectors *independently*, so document vectors can be
-precomputed at ingest and search is a cheap vector operation — that's what scales to millions of
-documents. The cost is that the model never sees the pair together, so it's judging vector
-proximity rather than relevance.
+A bi-encoder maps query and document to vectors *independently*. So document vectors can be
+computed in advance, at ingest, and search is a cheap vector operation. That's what scales to
+millions — and, with approximate-nearest-neighbour indexes, billions — of documents. The cost is that the model never sees the pair together. It judges how
+close two vectors are, not real relevance.
 
 A cross-encoder takes `[query, document]` as one input and runs the full transformer over both,
-with attention flowing between them. Much more accurate, but nothing can be precomputed — you
-pay a forward pass per pair, so it can't run over a corpus.
+with attention flowing between them. It is much more accurate, but nothing can be computed in
+advance. You pay for one forward pass (one full run of the model) per pair, so it can't run over a
+whole corpus.
 
-The production answer is to use both: bi-encoder narrows 100k → 20 cheaply, cross-encoder narrows
-20 → 4 accurately. That's the retrieve-wide-rerank-narrow pattern.
+The production answer is to use both. The bi-encoder narrows 100k to 20 cheaply. The
+cross-encoder narrows 20 to 4 accurately. That's the retrieve-wide-rerank-narrow pattern.
 </details>
 
 <details>
 <summary><b>Q: When would you use parent-document retrieval?</b></summary>
 
 When the ideal chunk size for *retrieval* differs from the ideal size for *answering*. Small
-chunks embed sharply and match precisely; large chunks carry enough context for the model to
+chunks embed sharply and match precisely. Large chunks carry enough context for the model to
 produce a complete answer. Parent-document retrieval refuses to choose: index small children,
 return their parents.
 
-It's most valuable for technical documentation and legal text, where a retrievable phrase is
-short but the answerable unit is a full paragraph or clause.
+It's most valuable for technical documentation and legal text. There, the phrase you search for
+is short, but the passage you answer from is a full paragraph or clause.
 
-The implementation detail people miss is **deduplication** — several child hits frequently belong
-to the same parent, and returning that parent multiple times wastes most of your context budget.
+The implementation detail people miss is **deduplication**. Several child hits often belong to
+the same parent. Returning that parent several times wastes most of your context budget.
 </details>
 
 <details>
 <summary><b>Q: How do you decide which advanced RAG techniques to adopt?</b></summary>
 
-Measure, one at a time, against an eval set with known correct chunks — and make sure the metric
-matches the technique's purpose. Recall@k is right for reranking and multi-query; it's the *wrong*
-metric for MMR, which optimises diversity and will show no recall gain even when it's working.
+Measure them one at a time, against an eval set with known correct chunks. And make sure the
+metric matches the technique's purpose. Recall@k is right for reranking and multi-query. It's the
+*wrong* metric for MMR. MMR optimises diversity, so it shows no recall gain even when it's working.
 
-My default ordering by return on cost: **hybrid search** first (near-free, fixes the
-exact-identifier failure that embeddings can't), then **reranking** (biggest single quality gain).
-Those two cover most of the gap between demo and production. Then query transforms (multi-query,
-HyDE) where queries are short or vocabulary-mismatched, self-query where numeric or categorical
-filters matter, and adaptive loops only where retrieval quality is genuinely inconsistent.
+My default order, by return on cost:
+
+1. **Hybrid search** first. It is nearly free, and it fixes the exact-identifier failure that
+   embeddings can't handle.
+2. **Reranking** next — the biggest single quality gain.
+
+Those two cover most of the gap between demo and production. After that:
+
+- query transforms (multi-query, HyDE) where queries are short or use different words from the
+  documents;
+- self-query where numeric or categorical filters matter;
+- adaptive loops only where retrieval quality is genuinely inconsistent.
 
 The prerequisite: fix chunking first. No retriever recovers an answer split across a chunk
-boundary, so advanced retrieval on bad chunks is wasted effort.
+boundary. Advanced retrieval on bad chunks is wasted effort.
 </details>
 
 <details>
@@ -2423,11 +2556,11 @@ rewrites the query and retrieves again, because the problem is upstream.
 **Self-RAG** grades the *generated answer* — typically on two axes: is it grounded in the
 retrieved documents, and does it actually address the question?
 
-That two-axis split matters, because the failures imply different remedies. Ungrounded means the
-model invented something while the documents may have been fine, so you **regenerate** with a
+That two-axis split matters, because the failures need different fixes. Ungrounded means the
+model invented something, while the documents may have been fine. So you **regenerate** with a
 stricter prompt and the same documents. Not-useful means the documents genuinely lacked the
-answer, so you **re-retrieve** with a different query. Conflating them wastes retrievals on
-hallucinations and re-generates from context that was never going to work.
+answer. So you **re-retrieve** with a different query. Mixing them up wastes retrievals on
+hallucinations, and regenerates from context that was never going to work.
 
 Both need bounded loops. In practice they compose.
 </details>
@@ -2437,63 +2570,69 @@ Both need bounded loops. In practice they compose.
 <details>
 <summary><b>Q: Design a RAG system where retrieval quality varies a lot across query types.</b></summary>
 
-Variable quality across query types is the case for **Adaptive RAG** — classify first, then route
-to a strategy suited to the query, rather than paying for the most expensive path on every request.
+When quality varies across query types, that is the case for **Adaptive RAG**. Classify the
+question first, then route it to a strategy that suits it. You stop paying for the most expensive
+path on every request.
 
-**Routing tiers.** A cheap classifier decides: no retrieval (greetings, general knowledge,
-arithmetic — a meaningful share of real assistant traffic, and retrieving for them adds latency
-*and* can degrade the answer by injecting irrelevant context); simple retrieval for single-fact
-lookups; multi-query decomposition for comparisons and multi-part questions, which naive RAG
-genuinely handles badly because one embedding of "compare A with B" lands between both topics;
-and metadata-filtered retrieval where the query carries numeric or categorical constraints that
-embeddings cannot express.
+**Routing tiers.** A cheap classifier picks one of four routes:
 
-**The router must be cheap and fail safe** — it runs on every request, so use a small model, and
-give it a fallback value rather than letting a classification failure take down the system.
+- **No retrieval** — greetings, general knowledge, arithmetic. These are a meaningful share of
+  real assistant traffic. Retrieving for them adds latency *and* can degrade the answer by adding
+  irrelevant context.
+- **Simple retrieval** — single-fact lookups.
+- **Multi-query decomposition** — comparisons and multi-part questions. Naive RAG genuinely
+  handles these badly, because one embedding of "compare A with B" lands between both topics.
+- **Metadata-filtered retrieval** — the query carries numeric or categorical constraints that
+  embeddings cannot express.
 
-**Add a quality loop only where it pays.** Corrective retry for query classes you've measured as
-unreliable; skip it for the reliable ones. Cheap models for graders and rewriters, the strong
-model only for the final answer.
+**The router must be cheap and fail safe.** It runs on every request, so use a small model. Give
+it a fallback value, so a classification failure can't take down the system.
 
-**Instrument by query class.** Track recall and answer quality *segmented by route* — a global
-average hides the fact that comparisons are at 50% while lookups are at 95%. That segmentation
-is what tells you which route to invest in next, and it's the thing most teams don't build.
+**Add a quality loop only where it pays.** Use corrective retry for query classes you've measured
+as unreliable, and skip it for the reliable ones. Use cheap models for graders and rewriters, and
+the strong model only for the final answer.
 
-**And be honest about the ceiling.** If some query class needs aggregation across the whole
-corpus ("how many contracts mention indemnity?"), no retrieval strategy fixes it — that's a
+**Instrument by query class.** Track recall and answer quality *segmented by route* (measured
+separately for each route). A global average hides the fact that comparisons are at 50% while
+lookups are at 95%. That split tells you which route to invest in next. Most teams don't build
+it.
+
+**And be honest about the ceiling.** Some query classes need aggregation across the whole corpus
+("how many contracts mention indemnity?"). No retrieval strategy fixes that. It's a
 structured-data query, and the right answer is text-to-SQL or an agent with a database tool.
 </details>
 
 <details>
 <summary><b>Q: Your RAG works well on simple questions but fails on complex multi-part ones. Diagnose and fix.</b></summary>
 
-The mechanism is usually straightforward: a multi-part question produces **one embedding that is
-the average of several topics**. "Compare the refund policy with the cancellation policy" lands
-between the two regions and retrieves a poor spread of both — often several chunks about one and
-none about the other. It's the same pooling-dilution effect as an oversized chunk, but on the
-query side.
+The mechanism is usually simple: a multi-part question produces **one embedding that is the
+average of several topics**. "Compare the refund policy with the cancellation policy" lands
+between the two regions. It retrieves a poor spread of both — often several chunks about one and
+none about the other. It's the same dilution effect as an oversized chunk (one vector averaging
+too many ideas), but on the query side.
 
-**First, confirm that's actually the failure** by checking whether the required chunks for each
-sub-part were retrieved at all. If they weren't, it's retrieval; if they were and the answer
+**First, confirm that's actually the failure.** Check whether the required chunks for each
+sub-part were retrieved at all. If they weren't, it's retrieval. If they were and the answer
 still missed a part, it's generation.
 
 **If retrieval:**
-- **Query decomposition** is the main fix — have the model split the question into focused
-  sub-queries, retrieve for each, and merge with deduplication. This directly addresses the
+- **Query decomposition** is the main fix. Have the model split the question into focused
+  sub-queries, retrieve for each, and merge with deduplication. This directly fixes the
   averaging problem.
 - **Raise `k` and rerank**, so each sub-topic has room in the candidate set.
 - **MMR** helps when one sub-topic's chunks crowd out the other's.
 
 **If generation:**
-- The relevant chunks may be buried mid-context — reduce `k` after reranking, or reorder.
-- The prompt may not require completeness; asking explicitly for each part to be addressed, or
-  using a structured output with a field per sub-question, forces coverage.
+- The relevant chunks may be buried in the middle of the context. Reduce `k` after reranking, or
+  reorder them.
+- The prompt may not ask for a complete answer. Ask explicitly for each part to be addressed, or
+  use a structured output with one field per sub-question. Either forces full coverage.
 
-**For genuinely multi-hop questions** — where the second retrieval depends on the first's answer
-("what's the refund window for the plan with the highest rate limit?") — decomposition isn't
-enough, because you can't formulate query two until query one returns. That needs *iterative*
-retrieval, which is an agent loop: retrieve, reason, retrieve again. That's the point where you
-move from LCEL to LangGraph.
+**Genuinely multi-hop questions** are harder: the second retrieval depends on the first one's
+answer ("what's the refund window for the plan with the highest rate limit?"). Decomposition
+isn't enough here, because you can't write query two until query one returns. That needs
+*iterative* retrieval, which is an agent loop: retrieve, reason, retrieve again. That's the point
+where you move from LCEL to LangGraph.
 
 Finally, build a multi-part section into the eval set and track it separately. A global accuracy
 number will hide this class of failure entirely.
@@ -2502,38 +2641,38 @@ number will hide this class of failure entirely.
 <details>
 <summary><b>Q: You've added reranking, hybrid search, multi-query and compression. Latency is 6 seconds. Fix it.</b></summary>
 
-First, **measure per stage** rather than guessing. In my experience reranking dominates — an LLM
-scoring 20 documents serially is easily 2–3 seconds on its own.
+First, **measure each stage** instead of guessing. Reranking is a common culprit: an LLM
+scoring 20 documents one after another can take seconds on its own.
 
 **The single biggest win: replace LLM reranking with a hosted cross-encoder.** Cohere, Voyage or
-Jina rerank endpoints score 20 documents in one API call in roughly 100–200ms, versus 20
-sequential LLM calls. Same quality benefit, an order of magnitude less latency and cost. This
-alone often takes 6s to 2.5s.
+Jina rerank endpoints score 20 documents in one API call (typically a few hundred milliseconds at
+most — check your provider). Compare that with 20 LLM calls in a row. You get a similar quality
+benefit for a fraction of the latency and cost. If reranking was the dominant stage, this alone
+can cut total latency substantially — re-measure to confirm.
 
-**Then parallelise what's serial.** Multi-query retrievals are independent — fire them
-concurrently. Document grading and scoring are independent — batch them. Hybrid's vector and
-BM25 legs are independent. A surprising amount of RAG latency is sequential code that didn't need
-to be.
+**Then run in parallel what now runs one by one.** Multi-query retrievals are independent, so
+send them at the same time. Document grading and scoring are independent, so batch them. Hybrid's
+vector and BM25 halves are independent too. A surprising amount of RAG latency is sequential code
+that didn't need to be.
 
-**Then cut work that isn't earning its cost.** Measure each stage's contribution to recall and
-drop the ones with marginal gains — compression in particular often costs more than it saves
-unless your chunks are large. Multi-query may be unnecessary if reranking is already doing the
-work.
+**Then cut work that isn't earning its cost.** Measure how much each stage adds to recall, and
+drop the ones with small gains. Compression in particular often costs more than it saves, unless
+your chunks are large. Multi-query may be unnecessary if reranking is already doing the work.
 
-**Then cache.** Query embeddings, retrieval results for repeated questions, and reranker scores
-for (query, document) pairs. Real query distributions are heavily skewed, so a modest cache
-covers a large share of traffic.
+**Then cache.** Cache query embeddings, retrieval results for repeated questions, and reranker
+scores for (query, document) pairs. In real traffic a few questions are asked very often. So a
+modest cache covers a large share of traffic.
 
-**Then restructure for perceived latency**, which is what users actually experience: stream the
-answer, and render retrieved sources *before* generation starts. Retrieval finishes in ~200ms
-while generation takes seconds — showing sources immediately makes the system feel responsive
-and lets users start verifying.
+**Then restructure for perceived latency** — how fast the system *feels* to users. Stream the
+answer, and show the retrieved sources *before* generation starts. Retrieval typically finishes in a
+fraction of a second, while generation takes seconds. Showing sources at once makes the system feel responsive, and lets
+users start checking them.
 
 **Finally, route adaptively.** Not every query needs the full pipeline. Simple lookups can skip
-multi-query and compression entirely; reserve the expensive path for queries that need it.
+multi-query and compression entirely. Keep the expensive path for queries that need it.
 
-The framing I'd give: latency optimisation here is mostly about *stage selection and
-parallelism*, not micro-optimisation — and about separating true latency from perceived latency.
+The framing I'd give: latency work here is mostly about *choosing stages and running them in
+parallel*, not tiny tweaks. It is also about separating true latency from perceived latency.
 </details>
 
 ---
@@ -2542,22 +2681,33 @@ parallelism*, not micro-optimisation — and about separating true latency from 
 
 - ✅ Four intervention points: transform the **query**, change **retrieval**, post-process
   **results**, add a **feedback loop**
-- ✅ **Hybrid search + reranking** are the two highest-ROI additions — do these first
-- ✅ Retrieve **wide** (20), rerank **narrow** (4) — bi-encoder for scale, cross-encoder for accuracy
-- ✅ MMR fixes redundancy — needs `fetchK` ≫ `k`, and recall is the wrong metric for it
-- ✅ Multi-query fixes vocabulary mismatch; HyDE fixes query/document shape mismatch
+- ✅ **Hybrid search and reranking** give the most gain for the least cost — do these first
+- ✅ Retrieve **wide** (20), rerank **narrow** (4) — the bi-encoder for scale, the cross-encoder
+  for accuracy
+- ✅ MMR fixes repeated results. It needs `fetchK` much larger than `k`, and recall is the wrong
+  metric for it
+- ✅ Multi-query fixes a wording mismatch. HyDE fixes the shape mismatch between questions and
+  documents
 - ✅ Parent-document: index small children, return large parents — **dedupe the parents**
-- ✅ Self-query converts natural language into metadata filters embeddings can't express
-- ✅ Corrective RAG grades **documents** → re-retrieve; Self-RAG grades the **answer** → regenerate
+- ✅ Self-query turns natural language into metadata filters that embeddings can't express
+- ✅ Corrective RAG grades the **documents** and re-retrieves. Self-RAG grades the **answer** and
+  regenerates
 - ✅ **Bound every loop**, use cheap models for graders, and always have a terminal fallback
 - ✅ Fix chunking before optimising retrieval — no retriever recovers a split answer
 
+> 📏 **Measure it:** Take three questions from `CASES` in Exercise 1's `day13_bakeoff.py` and run
+> each one through its `baseline` and `rerank` functions. Reranking counts as an improvement only
+> if it finds the expected section for a question `baseline` missed, and loses none that
+> `baseline` found. [Day 25](../week-04-production-projects-and-interviews/day-25-observability-and-evaluation.md)
+> turns this quick check into a proper evaluation suite.
+
 ### Tomorrow
 
-**[Day 14 — Memory](day-14-memory.md)**: the last piece of Week 2. Buffer, window, summary, token
-and entity memory; what "memory" actually means when the model is stateless; how it really works
-in modern LangChain (`trimMessages`, history classes, and the shift to LangGraph checkpointers);
-and the Week 2 project bringing retrieval and memory together.
+**[Day 14 — Memory](day-14-memory.md)**: the last piece of Week 2. You meet buffer, window,
+summary, token and entity memory. You see what "memory" really means when the model is stateless
+(it remembers nothing between calls). You see how memory works in modern LangChain:
+`trimMessages`, history classes, and the shift to LangGraph checkpointers. And you build the
+Week 2 project, which brings retrieval and memory together.
 
 ### Quick self-check
 
@@ -2569,13 +2719,21 @@ and the Week 2 project bringing retrieval and memory together.
 <summary>Answers</summary>
 
 1. Reranking is about **selection**, not ordering. Reranking 4 down to 4 just reorders the same
-   documents — the relevant one is either already there or it isn't. The value comes from
+   documents. The relevant one is either already there or it isn't. The value comes from
    retrieving 20–30 candidates cheaply and letting the cross-encoder pick the best few.
-2. **Regenerate.** Ungrounded means the model invented a claim; the retrieved documents may be
+2. **Regenerate.** Ungrounded means the model invented a claim. The retrieved documents may be
    perfectly good. Regenerate with the same documents and a stricter prompt. Re-retrieve when the
-   *usefulness* grader fires — that's the signal the documents genuinely lack the answer.
-3. **Hybrid search and reranking.** Hybrid is nearly free and fixes the class of failure
-   embeddings cannot handle (exact identifiers, error codes, names). Reranking is the largest
-   single quality gain available and needs no re-indexing. Neither requires a loop, so both are
-   simple to add and easy to measure.
+   *usefulness* grader fails the answer — that's the signal the documents genuinely lack it.
+3. **Hybrid search and reranking.** Hybrid is nearly free. It fixes the failures embeddings
+   cannot handle (exact identifiers, error codes, names). Reranking is the largest single quality
+   gain available, and needs no re-indexing. Neither requires a loop, so both are simple to add
+   and easy to measure.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 12 — Naive RAG End-to-End (and Six Ways to Break It)](day-12-naive-rag.md)** · **[Week 2 index](README.md)** · **[Day 14 — Memory →](day-14-memory.md)**
+
+</div>

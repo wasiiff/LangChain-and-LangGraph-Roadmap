@@ -21,6 +21,9 @@ otherwise have shipped as confident, wrong prose.
 | `tools/check_links.py` | `python tools/check_links.py .` | relative `.md` links only, across files git tracks or would track (respects `.gitignore`) |
 | `tools/gen_resources.py` | `python tools/gen_resources.py .` | regenerates `resources/js-vs-python-mapping.md`, `interview-bank.md`, `troubleshooting.md` from the day files; prints the question count |
 | `tools/sort_glossary.py` | `python tools/sort_glossary.py resources/glossary.md` | sorts every section alphabetically; asserts the entry count is unchanged |
+| `tools/readability.py` | `python tools/readability.py .` or `… <file>` | Flesch score, grade, and every prose sentence over 30 words (code, tables and HTML stripped). House target: Flesch ≥ 60 |
+| `tools/check_code_unchanged.py` | `python tools/check_code_unchanged.py <files>` | compares with the git index copy: every fenced block and inline-code span must survive exactly. Use after any prose-only edit. ⚠️ Once your edits are staged, the index *is* your edit — compare against a commit instead (e.g. stage nothing until checked) |
+| `tools/add_footers.py` | `python tools/add_footers.py . [--check]` | adds the ← previous · week index · next → footer to any day that lacks one, in course order |
 
 Known false positive: `verify.py` flags Day 17 `E2:no-PY`. That exercise's solution *generates*
 `<details>` markup inside a code block, which truncates the parser's split. It does contain both

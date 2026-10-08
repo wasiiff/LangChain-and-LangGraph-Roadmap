@@ -2,10 +2,26 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 19](day-19-control-flow.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** the three lines that make everything you've built survive a restart.
-Checkpointers, `thread_id` as the unit of a conversation, `getState` and the full state
-history — and **time travel**: rewind to any past checkpoint, edit it, and re-run from there.
-Everything on Day 21 depends on today.
+**Today you learn:** Everything you've built so far is lost when the process stops, and you
+can't look back at what an agent did at each step. Today you add a **checkpointer** in three
+lines, give each conversation its own **thread** (`thread_id`), and read the full state
+history with `getState`. Then you use **time travel**: rewind to any past checkpoint, edit it,
+and re-run from there. Everything on Day 21 depends on today.
+
+> 📖 **Words you'll meet today**
+>
+> - **Checkpointer** — the part that saves the graph's state after every step, like a game's
+>   autosave.
+> - **Checkpoint** — one saved copy of the state, plus a note of which node runs next.
+> - **Thread** — one conversation, named by its `thread_id`; each thread has its own
+>   checkpoints.
+> - **Superstep** — one round of the graph: the active nodes run, then their updates are applied.
+> - **Time travel** — going back to an old checkpoint and running the graph forward from there.
+> - **Replay** — time travel without changes: run forward again from an old checkpoint.
+> - **Fork** — time travel with a change: edit an old checkpoint, then run forward on a new
+>   branch.
+> - **IDOR** — "insecure direct object reference": a bug where changing an id in a request shows
+>   someone else's data.
 
 ---
 
@@ -145,6 +161,9 @@ just a thread with no checkpoints yet.
 
 ### 3.1 What a checkpoint contains
 
+> 💬 **In plain words:** A checkpoint stores what the graph knows and what it was about to do
+> next. With those two things, a brand-new process can carry on the run.
+
 ```
    A CHECKPOINT
    ├─ values          every channel's value at this moment
@@ -162,18 +181,23 @@ Give those to a fresh process and it can carry on as if nothing happened.
 
 ### 3.2 Checkpoints are written after *every* superstep
 
+> 💬 **In plain words:** The graph saves after every step, not only at the end. That gives you
+> resuming and history, and each save costs one database write.
+
 ```
    invoke({n: 0}) on a 2-node graph
-     ├─ checkpoint  step -1   source: "input"    ← before anything runs
+     ├─ checkpoint  step -1   next: (__start__)   source: "input"  ← input received
+     ├─ apply the input (the __start__ step)
+     ├─ checkpoint  step 0    next: (bump)                         ← input now in state
      ├─ run bump
-     ├─ checkpoint  step 0                        ← after superstep 1
+     ├─ checkpoint  step 1    next: (note)
      ├─ run note
-     ├─ checkpoint  step 1                        ← after superstep 2
-     └─ checkpoint  step 2    next: ()            ← final
+     └─ checkpoint  step 2    next: ()                             ← final
 ```
 
-Verified: two runs of a two-node graph produce **8 checkpoints**. That's ~4 per run — one per
-superstep plus the input marker.
+Verified: two runs of a two-node graph produce **8 checkpoints**, 4 per run. That's the input
+marker, one after the input is applied, then one after each node. The second run carries on
+the count at steps 3 to 6.
 
 This is the cost model from [Day 18](day-18-state-and-reducers.md), made concrete:
 
@@ -187,6 +211,9 @@ almost every application the trade is obviously worth it. The mistake isn't chec
 it's putting a 2 MB document in the thing you checkpoint.
 
 ### 3.3 History is newest-first, and includes the "about to run" states
+
+> 💬 **In plain words:** The history lists the newest save first. Each save's `next` field tells
+> you which node would run if you resumed from that save.
 
 Verified output for two runs of `START → bump → note → END`:
 
@@ -203,14 +230,17 @@ Verified output for two runs of `START → bump → note → END`:
    …32d2         ('__start__',)  0     -1     ← run 1's input, oldest
 ```
 
-Read `next` as **"if you resume from here, this is what runs."** That's the field you filter
-on to pick a time-travel target: *"give me the checkpoint where we were about to run the tool
-node."*
+Read `next` as **"if you resume from here, this is what runs"**. That's the field you filter
+on to pick a time-travel target, for example *"the checkpoint where we were about to run the
+tool node"*.
 
 > 💡 Checkpoint IDs are time-ordered UUIDs, so they all share a long prefix within a run.
 > Slice at least 13 characters when printing them, or every ID will look identical.
 
 ### 3.4 Replay vs fork — the two kinds of time travel
+
+> 💬 **In plain words:** Replay runs forward again from an old save, unchanged. Fork first
+> changes something in that old save, then runs forward; the original stays as it was.
 
 ```
    REPLAY                                FORK
@@ -248,6 +278,9 @@ reducers.
 
 ### 3.5 `updateState` and `asNode`
 
+> 💬 **In plain words:** Give `updateState` a node name and your change looks as if that node
+> wrote it. The graph then carries on with whatever normally follows that node.
+
 By default `updateState` writes a checkpoint that looks like it came from "outside", so `next`
 is unchanged. Pass a node name and it looks like **that node produced it**, which changes what
 runs next:
@@ -260,10 +293,13 @@ runs next:
 ```
 
 Verified in both languages. This is the mechanism behind Day 21's "edit the agent's tool call
-and continue": you overwrite what the agent node produced, then let the graph proceed as if
-the agent had said that all along.
+and continue". You overwrite what the agent node produced. Then you let the graph carry on as
+if the agent had said that all along.
 
 ### 3.6 `null` / `None` as input means "resume, don't start"
+
+> 💬 **In plain words:** An empty input (`null` in JS, `None` in Python) means "continue from
+> the save". Real input means "add this, then run".
 
 ```
    invoke({ messages: [...] }, config)   →  ADD this input, then run
@@ -659,17 +695,18 @@ config = {"configurable": {"thread_id": "persist-1"}}
 with SqliteSaver.from_conn_string("studybuddy.sqlite") as checkpointer:
     app = builder.compile(checkpointer=checkpointer)
     print(app.invoke({"n": 0}, config))
-    # {'log': ['bump->1'], 'n': 1}
+    # {'log': ['bump->1', 'noted'], 'n': 1}
 
 # ── "process 2" — a brand-new saver from the same file ──────────────────
 with SqliteSaver.from_conn_string("studybuddy.sqlite") as checkpointer:
     app = builder.compile(checkpointer=checkpointer)
     print(app.invoke({}, config))
-    # {'log': ['bump->1', 'bump->2'], 'n': 2}          ← it remembered
-    print(len(list(app.get_state_history(config))))    # 6
+    # {'log': ['bump->1', 'noted', 'bump->2', 'noted'], 'n': 2}   ← it remembered
+    print(len(list(app.get_state_history(config))))    # 8
 ```
 
-Verified: a real 20 KB file on disk, and the second block continues from the first.
+Verified (langgraph 1.2.14, langgraph-checkpoint-sqlite 3.1.1): a real 28 KB file on disk
+(28,672 bytes), and the second block continues from the first.
 
 > ⚠️ **`from_conn_string` is a context manager in Python.** Use `with`, or the connection
 > leaks. In a long-running server you want the saver alive for the process lifetime — enter
@@ -700,10 +737,13 @@ already running one. Remember its one-time `setup()` call to create the tables.
 checkpointer.delete_thread("u42:chat-1")
 ```
 
-Decide three policies before launch: **retention** (how long threads live), **deletion** (a
-GDPR request must clear the thread *and* the store namespace from Day 18), and **size
-monitoring** (alert on p99 checkpoint size — it's your early warning that someone put a blob
-in state).
+Decide three policies before launch:
+
+- **Retention** — how long threads live.
+- **Deletion** — a GDPR request (the EU data-protection law's "delete my data" right) must
+  clear the thread *and* the store namespace from Day 18.
+- **Size monitoring** — alert on p99 checkpoint size, the size that 99% of checkpoints stay
+  under. It's your early warning that someone put a blob (a large chunk of data) in state.
 
 ### 5.11 The full JS ↔ Python translation for today
 
@@ -760,7 +800,7 @@ A subtle but important point: replaying from a checkpoint does **not** re-execut
 that produced it. It loads their *results* and continues from `next`.
 
 ```
-   checkpoint at step 4:  values = { log: ['bump->1'], n: 1 }   next = ('note',)
+   checkpoint at step 1:  values = { log: ['bump->1'], n: 1 }   next = ('note',)
 
    invoke(None, thatConfig)
      → loads those values           ← `bump` does NOT run again
@@ -788,7 +828,7 @@ Two consequences people trip on:
 
 - **It appends on appending channels.** To *replace* a list you need a reducer that
   understands replacement — the way `addMessages` understands `RemoveMessage`. There's no
-  generic "overwrite this channel" escape hatch.
+  generic "overwrite this channel" shortcut.
 - **It forks rather than rewrites.** The old checkpoint still exists and is still the parent.
   You never lose history; you branch it.
 
@@ -824,8 +864,10 @@ Four levers, in the order you should pull them:
    4. FASTER BACKEND    Postgres with a connection pool; Redis if threads are short-lived
 ```
 
-Note that #4 is *last*. Teams usually reach for it first and get a 20% win, when shrinking
-state would have given them 50×.
+Note that #4 is *last*. Teams often reach for it first and get a modest win, when shrinking
+state could have given them a far bigger one — the write cost scales with state size, so
+replacing a large payload with a small pointer cuts it roughly in proportion. Measure your own
+checkpoint sizes before and after.
 
 ---
 
@@ -913,8 +955,8 @@ reducer's own removal protocol (Day 18) to clear.
 ✅ documentIds: Annotation()    // fetch in the node
 ```
 
-Day 18's rule, now with teeth: whatever you put in state is written to a database ~4 times per
-turn, per user. This is the number-one cause of "checkpointing is slow."
+Day 18's rule, now with real consequences: whatever you put in state is written to a database ~4
+times per turn, per user. This is the number-one cause of "checkpointing is slow."
 
 ### ❌ 9. Never deleting anything
 
@@ -935,7 +977,7 @@ Also a compliance problem: "delete my data" must clear the thread **and** the st
 
 In a server, enter the context once at startup rather than per request — and use
 `AsyncSqliteSaver` if your handlers are async. JS's `fromConnString` returns the saver
-directly, so this trips people moving Python-first code to Node and vice versa.
+directly, so this catches out people moving Python-first code to Node and vice versa.
 
 ### ❌ 11. Using time travel as an undo button in production
 
@@ -1029,31 +1071,38 @@ for h in history:
     print(f'{h.metadata["step"]:>3}  {nxt:<12} n={h.values.get("n")}  {h.values.get("log")}')
 ```
 
-**Output**
+**Output** (Python, langgraph 1.2.14)
 
 ```
 10 checkpoints (newest first)
 
-  8  (done)       n=2  ['one','two','three','one','two','three']
-  7  three        n=2  ['one','two','three','one','two']
-  6  two          n=2  ['one','two','three','one']
-  5  one          n=1  ['one','two','three']
-  4  __start__    n=1  ['one','two','three']
-  3  (done)       n=1  ['one','two','three']
-  2  three        n=1  ['one','two']
+  8  (done)       n=2  ['one', 'two', 'three', 'one', 'two', 'three']
+  7  three        n=2  ['one', 'two', 'three', 'one', 'two']
+  6  two          n=2  ['one', 'two', 'three', 'one']
+  5  one          n=1  ['one', 'two', 'three']
+  4  __start__    n=1  ['one', 'two', 'three']
+  3  (done)       n=1  ['one', 'two', 'three']
+  2  three        n=1  ['one', 'two']
   1  two          n=1  ['one']
   0  one          n=0  []
- -1  __start__    n=0  []
+ -1  __start__    n=None  []
 ```
+
+The JS run (langgraph 1.4.20) prints the same steps and `next` values. Two small differences:
+the log prints as JSON (`["one","two"]`), and step -1 shows `n=0`, because the JS channel has
+a default of 0.
 
 **Answers**
 
-1. **10** — five per run: one `__start__` marker for the input, then one after each of the
-   three supersteps, plus the final. Rule of thumb: **supersteps + 2 per run.**
+1. **10** — five per run. First the input checkpoint (step -1, `next` = `__start__`). Then
+   one after the input is applied (step 0, `next` = `one`). Then one after each of the three
+   nodes; the last of these is the final one, with `next` empty. Rule of thumb for a
+   straight-line graph: **nodes + 2 per run.**
 
-2. **`-1`**, and it's the **input** checkpoint — the state after your input was merged but
-   before any node ran. Negative because it precedes superstep 0. It's the checkpoint you'd
-   resume from to re-run the entire graph with the same input.
+2. **`-1`**, and it's the **input** checkpoint. It is saved when your input arrives, before
+   it is applied: Python shows `n=None` there. The input is in state from step 0 onwards.
+   Resuming from step -1 with a `null`/`None` input re-applies the saved input and re-runs
+   the entire graph (measured: it ran `one`, `two`, `three` again).
 
 3. **The one with `next = ["three"]`** — `step 7` for the second run, `step 2` for the first.
    Resuming from it loads `['one','two',...]` and runs only `three`. Note there are **two**
@@ -1524,7 +1573,7 @@ original step 1 still has 1 entries (unchanged) · history grew 5 -> 9
    tool almost always wants oldest-first. Doing the reverse once, in one helper, avoids the
    off-by-everything bugs from §7 #6.
 
-**On `threads`:** LangGraph's graph API is deliberately scoped to *one* thread — there's no
+**On `threads`:** LangGraph's graph API is deliberately scoped to *one* thread. There's no
 `listThreads()` on the compiled graph, because "which threads exist" is an application
 question, not a graph one. In a real app you keep your own `conversations` table (id, user_id,
 title, updated_at) and use the `thread_id` as the join key. Some checkpointer backends expose
@@ -1702,7 +1751,7 @@ def chat(body: ChatBody, user=Depends(require_auth)):
 > startup rather than per request — or use `AsyncPostgresSaver` with your framework's
 > lifespan hook. JS's `fromConnString` returns the saver directly.
 
-**The two that would page you at 3am:**
+**The two that would wake you with an alert at 3am:**
 
 - **#2 is the sneaky one.** `MemorySaver` behind 4 replicas doesn't fail — it *degrades
   probabilistically*. Roughly 3 turns in 4 land on a replica that's never seen the
@@ -1717,9 +1766,9 @@ def chat(body: ChatBody, user=Depends(require_auth)):
 
 **The number worth quoting in the review:** 4 + 5 + 6 together mean roughly **45 MB of
 checkpoint writes per conversation**. At 10k conversations a day that's 450 GB/day of writes
-for an agent that could be doing 5 GB. Nobody signs off on that once it's written as a
-number — which is why "what's in state, and how big is it?" should be a standing question in
-every design review.
+for an agent that could be doing 5 GB. Nobody approves that once it's written as a number.
+That's why "what's in state, and how big is it?" should be a standing question in every design
+review.
 </details>
 
 ---
@@ -1788,9 +1837,15 @@ Both branch rather than rewrite: the original timeline still exists and is still
 
 **Q7. What's in a state snapshot?**
 
-`values` (every channel), `next` (which nodes run next — empty means finished), `config` (the
-checkpoint's address: thread_id, checkpoint_ns, checkpoint_id), `parent_config`, `metadata`
-(source, step), `created_at`, and `tasks` (pending work, which is where interrupts appear).
+Seven fields:
+
+- `values` — every channel.
+- `next` — which nodes run next; empty means finished.
+- `config` — the checkpoint's address: thread_id, checkpoint_ns, checkpoint_id.
+- `parent_config` — the checkpoint this one came from.
+- `metadata` — source, step.
+- `created_at` — a timestamp.
+- `tasks` — pending work, which is where interrupts appear.
 
 `values` and `next` together are a complete description of "where we are": what we know and
 what we were about to do. That's precisely what makes resumption possible.
@@ -1799,10 +1854,11 @@ what we were about to do. That's precisely what makes resumption possible.
 
 **Q8. `getStateHistory` returns snapshots in what order, and how do you pick a target?**
 
-Newest-first, in both languages. Don't index blindly — filter on `next`: *"the checkpoint
-where we were about to run the tools node"* is `history.filter(h => h.next[0] === "tools")`,
-and since it's newest-first, `.at(-1)` gives you the earliest such point and `[0]` the most
-recent. Getting that backwards is the most common time-travel bug.
+Newest-first, in both languages. Don't pick by index blindly; filter on `next` instead. *"The
+checkpoint where we were about to run the tools node"* is
+`history.filter(h => h.next[0] === "tools")`. Because the list is newest-first, `.at(-1)` gives
+you the earliest such point and `[0]` the most recent. Getting that backwards is the most common
+time-travel bug.
 
 ---
 
@@ -1837,15 +1893,17 @@ UUID per request, or one derived from something that changes.
 
 **Q11. What are the costs of checkpointing, and how do you reduce them?**
 
-Cost is `sizeof(state) × supersteps × turns × users`, since the full state is serialised after
-every superstep. Levers, in order of impact:
+Cost is `sizeof(state) × supersteps × turns × users`, since the full state is serialised
+(turned into bytes for storage) after every superstep. Levers, in order of impact:
 
-1. **Shrink state** — pointers not payloads. Usually a 10–100× win on its own.
+1. **Shrink state** — pointers not payloads. Often the largest win on its own, roughly in
+   proportion to how much smaller the state gets.
 2. **Trim messages** — an uncapped history channel grows every checkpoint.
 3. **Fewer supersteps** — merge trivially sequential nodes, parallelise independent ones.
 4. **Faster backend** — pooled Postgres, or Redis for short-lived threads.
 
-Teams reach for #4 first and get 20%. #1 is where the real win is.
+Teams often reach for #4 first and get a modest improvement. #1 is usually where the real win
+is — measure checkpoint size before and after to confirm.
 
 ---
 
@@ -1931,7 +1989,7 @@ Four, and they're all easy to get wrong:
 3. **History is permanent by default.** "Delete that message" doesn't delete it from the
    checkpoints that already contain it. A real deletion story means deleting the thread.
 4. **Time travel is a privileged operation.** `updateState` lets you rewrite what the agent
-   "saw." Anyone who can call it can make the agent believe anything — that endpoint needs
+   "saw". Anyone who can call it can make the agent believe anything. So that endpoint needs
    admin auth and an audit trail, and it should never be reachable from a user-facing route.
 
 ---
@@ -1965,7 +2023,7 @@ namespaces — worth knowing when you're reading a history and see checkpoints y
 expect.
 
 One practical consequence: a subgraph that shares an appending channel with its parent
-(Day 19's duplication trap) makes every one of those checkpoints bigger too, so the bug shows
+(Day 19's duplication trap) makes every one of those checkpoints bigger too. So the bug shows
 up as a storage problem as well as a correctness one.
 
 ---
@@ -2026,11 +2084,11 @@ Then the Week 3 project: a SQL agent that can read anything but must ask before 
    than the latest.
 
 3. Get the history, filter for the checkpoint whose `next` is the step-9 node, then
-   `invoke(null, thatCheckpoint.config)`. The cost is **steps 9–12 only** — replay loads the
-   earlier results rather than re-executing them, so you don't pay for steps 1–8 and you
-   don't depend on a stochastic model reproducing the same path. If you want to *change*
-   something at step 9 first, `updateState` on that checkpoint and invoke from the config it
-   returns.
+   `invoke(null, thatCheckpoint.config)`. The cost is **steps 9–12 only**. Replay loads the
+   earlier results rather than re-executing them. So you don't pay for steps 1–8, and you don't
+   depend on a stochastic (randomly sampling) model reproducing the same path. If you want to
+   *change* something at step 9 first, `updateState` on that checkpoint and invoke from the config
+   it returns.
 </details>
 
 ---

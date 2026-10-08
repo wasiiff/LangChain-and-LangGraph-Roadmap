@@ -21,16 +21,30 @@ waiting 8 seconds per experiment.
 
 | Model ID | Use it for |
 |---|---|
-| `llama-3.3-70b-versatile` | Default. Smart, good at tool calling. |
-| `llama-3.1-8b-instant` | Cheap/fast experiments, classification |
-| `openai/gpt-oss-120b` | Strongest reasoning on Groq |
+| `openai/gpt-oss-120b` | Default. Smart, good at tool calling and structured output. |
+| `openai/gpt-oss-20b` | The small, fast, cheap model: quick experiments, classification |
+| `qwen/qwen3.8-27b` | Only for Day 02's hand-built text agent. A **preview** model on Groq (not for production) |
+
+Both GPT-OSS models are **reasoning models**: before the answer they write hidden "thinking"
+tokens, and those tokens count towards your `max_tokens` limit. Day 01 shows what that means in
+practice.
+
+> 📦 **Model names change.** This course was checked against Groq's model list on
+> 7 October 2026. If a name gives a `404 … does not exist` error, open
+> <https://console.groq.com/docs/models> and pick a current **production** model. For example,
+> the old default that many tutorials still use now fails with
+> ``404 The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.``
 
 ### 🥈 Google Gemini — our fallback + free embeddings
 
 1. Go to <https://aistudio.google.com/apikey>
 2. **Create API key** → copy it
 
-**Models:** `gemini-2.5-flash` (chat), `gemini-embedding-001` / `text-embedding-004` (embeddings).
+**Models:** `gemini-3.8-flash` (chat), `gemini-embedding-2` (embeddings).
+
+> ⚠️ **Gemini is sometimes busy.** A popular model can answer
+> `503 This model is currently experiencing high demand`. That is not your bug. Wait a minute
+> and retry, or fall back to another model (Day 24 shows how to do this in code).
 
 Gemini matters because Groq **does not** offer an embeddings endpoint — so from Week 2 (RAG)
 onward, embeddings come from Gemini or Ollama.
@@ -58,7 +72,7 @@ ollama run llama3.2 "say hi in five words"
 ```
 
 > ⚠️ **Groq has no embeddings endpoint.** From Week 2 (Day 10) onward, embeddings come from
-> **Ollama** (`nomic-embed-text`, local and free) or **Google** (`text-embedding-004`, free tier).
+> **Ollama** (`nomic-embed-text`, local and free) or **Google** (`gemini-embedding-2`, free tier).
 > Chat still uses Groq. If you only set up one extra thing for Week 2, make it `ollama pull
 > nomic-embed-text`.
 
@@ -144,7 +158,9 @@ mkdir langchain-practice && cd langchain-practice
 npm init -y
 ```
 
-**Critical step** — open `package.json` and add `"type": "module"`:
+**Critical step** — make `package.json` say `"type": "module"`. Recent npm versions (npm 11,
+verified) write `"type": "commonjs"` for you, so you must *change* that line, not add a new one.
+The quickest way is one command: `npm pkg set type=module`. The result should look like this:
 
 ```json
 {
@@ -156,7 +172,7 @@ npm init -y
 
 > Without `"type": "module"`, `import` statements throw
 > `SyntaxError: Cannot use import statement outside a module`.
-> This is the single most common setup error. We explain *why* on [Day 03](week-01-foundations/day-03-js-python-essentials-and-why-langchain.md).
+> This is the single most common setup error. We explain *why* on [Day 0B](week-00-start-here/day-00b-programming-for-ai.md).
 
 ### Install packages
 
@@ -179,7 +195,7 @@ Create `check.js`:
 import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile" });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b" });
 const res = await model.invoke("Reply with exactly: SETUP OK");
 
 console.log(res.content);
@@ -190,12 +206,16 @@ console.log("tokens used:", res.usage_metadata);
 node check.js
 ```
 
-Expected:
+Expected (our run on 7 October 2026; your token counts may differ a little):
 
 ```
 SETUP OK
-tokens used: { input_tokens: 15, output_tokens: 5, total_tokens: 20 }
+tokens used: { input_tokens: 78, output_tokens: 50, total_tokens: 128 }
 ```
+
+Why 50 output tokens for a two-word reply? The model "thought" before answering, and those
+hidden reasoning tokens are billed as output. Why 78 input tokens for a short sentence? The
+provider wraps your message in a hidden template. Day 01 explains both.
 
 ✅ If you see that, your JS setup is done.
 
@@ -252,7 +272,7 @@ from langchain_groq import ChatGroq
 
 load_dotenv()
 
-model = ChatGroq(model="llama-3.3-70b-versatile")
+model = ChatGroq(model="openai/gpt-oss-120b")
 res = model.invoke("Reply with exactly: SETUP OK")
 
 print(res.content)
@@ -263,12 +283,15 @@ print("tokens used:", res.usage_metadata)
 python check.py
 ```
 
-Expected:
+Expected (our run on 7 October 2026; your token counts may differ a little):
 
 ```
 SETUP OK
-tokens used: {'input_tokens': 15, 'output_tokens': 5, 'total_tokens': 20}
+tokens used: {'input_tokens': 78, 'output_tokens': 51, 'total_tokens': 129, 'output_token_details': {'reasoning': 39}}
 ```
+
+Python shows one extra detail: `reasoning: 39` means 39 of the 51 output tokens were the
+model's hidden thinking. Only about a dozen were the visible answer.
 
 ✅ If you see that, your Python setup is done.
 
@@ -278,11 +301,13 @@ tokens used: {'input_tokens': 15, 'output_tokens': 5, 'total_tokens': 20}
 
 | Error | Cause | Fix |
 |---|---|---|
-| `Cannot use import statement outside a module` | Missing `"type": "module"` in `package.json` | Add it |
+| `Cannot use import statement outside a module` | `package.json` lacks `"type": "module"` (npm 11 writes `"type": "commonjs"`) | `npm pkg set type=module` |
 | `Error: Missing API key` / `GROQ_API_KEY not set` | `.env` not loaded, or wrong folder | JS: `import "dotenv/config"` as the **first** line. Python: `load_dotenv()` **before** creating the model |
 | `ModuleNotFoundError: No module named 'langchain_groq'` | venv not activated, or installed globally | Activate `.venv`, reinstall |
 | `401 Invalid API Key` | Key copied with a trailing space/newline | Re-copy; no quotes needed in `.env` |
-| `429 Rate limit reached` | Free tier limit hit | Wait 60s, or switch to `llama-3.1-8b-instant`, or use Ollama |
+| `404 The model … does not exist or you do not have access to it` | The model name was retired | Pick a current production model at <https://console.groq.com/docs/models> |
+| `429 Rate limit reached` | Free tier limit hit | Wait 60s, or switch to `openai/gpt-oss-20b`, or use Ollama |
+| Empty reply, `finish_reason: "length"` | `max_tokens` too small for a reasoning model | Raise `max_tokens` (e.g. 512–1024) — see Day 01 |
 | `fetch failed` / `ENOTFOUND` | Network / corporate proxy | Check firewall; try Ollama offline |
 | Python `SSL: CERTIFICATE_VERIFY_FAILED` | macOS missing certs | Run `/Applications/Python\ 3.x/Install\ Certificates.command` |
 

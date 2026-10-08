@@ -2,10 +2,28 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 17](day-17-langgraph-basics.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** reducers properly — how to write them, the rules they must obey, and
-what `addMessages` really does. Then the distinction that decides whether your app scales or
-melts: **state vs context vs store vs checkpoint vs "memory."** By the end you'll be able to
-look at any piece of data and say instantly where it belongs.
+**Today you learn:** where each piece of an agent's data should live. Put the wrong thing in
+state and your app forgets users, crashes, leaks private data, or gets slow and costly. You'll
+learn to write safe reducers and see what `addMessages` really does. Then you'll learn to tell
+apart **state, context, store, checkpoint and "memory"**, so you can look at any piece of
+data and say instantly where it belongs.
+
+> 📖 **Words you'll meet today**
+>
+> - **Reducer** — the rule that merges a node's update into a channel, such as "append" or
+>   "add".
+> - **Context (config)** — per-call settings and live objects, like a database connection,
+>   passed in each time and never saved.
+> - **Store** — a long-term key-value database for facts about a user, shared by all their
+>   conversations.
+> - **Checkpoint** — a snapshot of the state, saved automatically after each step so a run
+>   can resume.
+> - **Thread** — one conversation. Its state is kept separate from every other conversation.
+> - **Serialisable** — can be turned into text (such as JSON) and back. Anything that gets
+>   saved must be.
+> - **Schema** — the declared shape of some data: which fields exist and what type each has.
+> - **Associative** — grouping doesn't change the result: (a with b) then c equals a with
+>   (b with c).
 
 ---
 
@@ -46,8 +64,8 @@ Every one of those is a real production incident:
 
 Every one of them is the same mistake: **treating state as "the place where data goes."**
 
-State is not a junk drawer. It is *specifically* the data that flows between nodes in one
-run, and there are four other places data can live.
+State is not a junk drawer — a place to throw everything. It is *specifically* the data that
+flows between nodes in one run, and there are four other places data can live.
 
 ### The real-life version
 
@@ -124,8 +142,8 @@ asks "how does memory work in LangGraph?", the answer is that sentence, not a cl
    5. growing history       → STATE, with a trimming rule in the reducer or a node
 ```
 
-Note #3. The right answer wasn't one of the five places — it was "don't put it anywhere near
-the graph." Recognising that is the difference between a system that works for ten users and
+Note #3. The right answer wasn't one of the five places. It was: keep it away from the graph
+completely. Recognising that is the difference between a system that works for ten users and
 one that works for ten thousand.
 
 ### What a reducer actually is
@@ -149,6 +167,9 @@ right one.
 ## 3. First principles
 
 ### 3.1 The reducer contract
+
+> 💬 **In plain words:** a reducer must be safe to re-run and must never change its inputs. It
+> must also handle the first write, and give the same answer in any order.
 
 A reducer must satisfy four properties. Break any of them and you get bugs that only appear
 under concurrency — the worst kind to debug.
@@ -191,6 +212,9 @@ subtracts, because the result depends on an ordering you can't see.
 
 ### 3.2 What `addMessages` actually does
 
+> 💬 **In plain words:** the messages reducer does more than add to the end. It can also
+> replace and delete messages, which is how you edit and trim a conversation.
+
 `addMessages` (JS) / `add_messages` (Python) is the reducer behind `MessagesAnnotation` /
 `MessagesState`. It does four things, and only the first is obvious. All four are verified
 below:
@@ -214,7 +238,7 @@ Verified, both languages:
    + [ HumanMessage("x") ]         →  [ ..., {id:"<uuid>", "x"} ]                   ← auto-id
 ```
 
-Property 2 is what makes human-in-the-loop message editing possible on Day 21: to change what
+Property 2 is what makes human-in-the-loop message editing possible on Day 21. To change what
 the user "said", you re-send the message with the same ID. Property 4 is how you implement
 "forget this turn" and history trimming.
 
@@ -223,6 +247,9 @@ the user "said", you re-send the message with the same ID. Property 4 is how you
 > Convenient when messages arrive as JSON from a web request.
 
 ### 3.3 Three schemas, not one
+
+> 💬 **In plain words:** callers can send in less, and get back less, than the graph uses
+> inside. That keeps private working data out of your API responses.
 
 A graph can declare **three** different shapes:
 
@@ -245,14 +272,17 @@ Verified — the same graph, with a node that writes both `scratch` and `answer`
 ```
 
 That's request #4 from §1, solved in one constructor argument. It matters because a graph is
-often exposed over HTTP, and your internal scratchpad — which may contain raw prompts,
-retrieved documents, or another user's data in a shared-tenant bug — should not be in the
-response body by default.
+often exposed over HTTP. Your internal scratchpad may hold raw prompts, retrieved documents,
+or even another user's data (through a shared-tenant bug, where customers who share one
+system see each other's data). None of that should be in the response body by default.
 
 > 🔒 Treat the output schema as a **security boundary**, not a convenience. Default to
 > returning the minimum, and add fields deliberately.
 
 ### 3.4 State vs context: the serialisation test
+
+> 💬 **In plain words:** if a value can't be saved as JSON, pass it in with each call. If it
+> can, decide whether it belongs to this conversation (state) or to the user (store).
 
 The rule that decides it, every time:
 
@@ -280,6 +310,9 @@ Nodes receive it as a second argument. It never touches a checkpoint, which is e
 it's the right home for secrets and handles.
 
 ### 3.5 The cost model of state
+
+> 💬 **In plain words:** everything in state is saved again after every step. Keep it small:
+> store an ID that points to big data, not the data itself.
 
 This is the part people learn the expensive way.
 
@@ -377,8 +410,8 @@ await app.invoke({});
 > assert.deepEqual(merge(["a"], ["a", "b"]), ["a","b"]); // dedupes
 > const orig = ["a"]; merge(orig, ["b"]); assert.deepEqual(orig, ["a"]);  // non-mutating
 > ```
-> This is the cheapest test in your whole suite and it catches the bug class that's hardest
-> to reproduce.
+> This is the cheapest test in your whole suite. It catches the kind of bug that's hardest to
+> reproduce.
 
 ### 4.2 `addMessages` in detail
 
@@ -410,7 +443,7 @@ addMessages(existing, [new RemoveMessage({ id: REMOVE_ALL_MESSAGES })]);
 
 > 📦 `addMessages` and `messagesStateReducer` are **the same function** — both exported from
 > `@langchain/langgraph`, and `addMessages === messagesStateReducer` is `true`. You'll see
-> both names in the wild. Prefer `addMessages`; it matches the Python name.
+> both names in real code. Prefer `addMessages`; it matches the Python name.
 
 ### 4.3 Trimming history *inside* the graph
 
@@ -424,7 +457,7 @@ async function trim(state) {
   const kept = await trimMessages(state.messages, {
     maxTokens: 2000,
     strategy: "last",
-    tokenCounter: model,          // the model counts its own tokens
+    tokenCounter: model,          // an estimate: GPT-2's tokenizer, fetched once
     startOn: "human",             // never start on a tool result — the API rejects that
     includeSystem: true,
   });
@@ -476,10 +509,10 @@ const app = new StateGraph({
   output: OutputSchema,
 })
   .addNode("think", (s) => ({ scratch: `reasoning about ${s.question}...` }))
-  .addNode("answer", (s) => ({ answer: "42" }))
+  .addNode("respond", (s) => ({ answer: "42" }))
   .addEdge(START, "think")
-  .addEdge("think", "answer")
-  .addEdge("answer", END)
+  .addEdge("think", "respond")
+  .addEdge("respond", END)
   .compile();
 
 console.log(await app.invoke({ question: "meaning of life?" }));
@@ -592,13 +625,37 @@ const State = Annotation.Root({
 // node return values are now type-checked against the channel set
 ```
 
-If you're in plain JS, the pragmatic defence is to define channel names once and reference
-them, so a typo is a `ReferenceError` rather than a silent drop:
+In plain JS, a common tip is to define channel names once in an object. That alone does
+**not** catch typos. Reading a missing property gives `undefined`, not an error — even on a
+frozen object:
 
 ```js
 const K = { QUESTION: "question", SCORE: "score", TAGS: "tags" };
-return { [K.SCORE]: 7 };          // typo → ReferenceError, immediately
+return { [K.SCOER]: 7 };          // typo → { undefined: 7 } — no error, the write is dropped
 ```
+
+I ran it: `invoke` returned `{ question: 'What is a reducer?', tags: [] }`, with no `score` and
+no error. The defence that works is a small helper that checks every key against the real
+channel list, which `Annotation.Root` exposes as `State.spec`:
+
+```js
+const CHANNELS = new Set(Object.keys(State.spec));   // question, score, tags
+
+function patch(update) {
+  for (const key of Object.keys(update)) {
+    if (!CHANNELS.has(key)) {
+      throw new Error(`Unknown channel "${key}". Known: ${[...CHANNELS].join(", ")}`);
+    }
+  }
+  return update;
+}
+
+// inside a node:
+return patch({ scoer: 7 });
+// → Error: Unknown channel "scoer". Known: question, score, tags
+```
+
+Wrap each node's return value in `patch(...)`, and a typo stops the run on the first test.
 
 ---
 
@@ -644,8 +701,8 @@ app.invoke({"tags": []})
 > callable `(existing, incoming) -> merged`; `operator.add` works for both lists (concat) and
 > ints (sum), which is why it shows up everywhere.
 >
-> A channel with `Annotated[..., reducer]` starts from an empty value; a channel **without** a
-> reducer has no default at all and simply won't appear in the output dict until something
+> A channel with `Annotated[..., reducer]` starts from an empty value. A channel **without** a
+> reducer has no default at all, and simply won't appear in the output dict until something
 > writes it.
 
 ```python
@@ -688,13 +745,14 @@ add_messages([], [{"role": "user", "content": "hey"}])
 
 ```python
 from langchain_core.messages import trim_messages, RemoveMessage
+from langchain_core.messages.utils import count_tokens_approximately
 
 def trim(state: MessagesState) -> dict:
     kept = trim_messages(
         state["messages"],
         max_tokens=2000,
         strategy="last",
-        token_counter=model,        # the model counts its own tokens
+        token_counter=count_tokens_approximately,   # ~4 chars per token, no download
         start_on="human",           # never start on a tool result
         include_system=True,
     )
@@ -710,6 +768,10 @@ builder.add_edge("trim", "agent")   # trim BEFORE the model sees the history
 builder.add_edge("agent", END)
 app = builder.compile()
 ```
+
+`count_tokens_approximately` is a quick guess (about four characters per token). With
+`token_counter=model`, `ChatGroq` would fall back to downloading GPT-2's tokenizer (Day 04
+§5.6), and a trimming budget doesn't need more than a guess.
 
 ### 5.4 Three schemas — hide the scratchpad
 
@@ -730,10 +792,10 @@ class FullState(TypedDict):
 
 builder = StateGraph(FullState, input_schema=InputSchema, output_schema=OutputSchema)
 builder.add_node("think", lambda s: {"scratch": f'reasoning about {s["question"]}...'})
-builder.add_node("answer", lambda s: {"answer": "42"})
+builder.add_node("respond", lambda s: {"answer": "42"})
 builder.add_edge(START, "think")
-builder.add_edge("think", "answer")
-builder.add_edge("answer", END)
+builder.add_edge("think", "respond")
+builder.add_edge("respond", END)
 app = builder.compile()
 
 print(app.invoke({"question": "meaning of life?"}))
@@ -856,6 +918,10 @@ Three verified details that surprise people:
 2. **`invoke` still returns a plain `dict`** — the Pydantic model validates going *in*, it
    doesn't wrap what comes *out*.
 3. **Nodes still return dicts** — patches are dicts regardless of the state schema type.
+
+One thing it does **not** catch: a typo'd key in a node's patch. A node returning
+`{"noteS": ["hi"]}` against a Pydantic state with `notes` was dropped silently, and `invoke`
+returned `None`. For that, use a key check like the JS `patch()` helper in §4.7.
 
 Trade-off: validation costs a little speed on every superstep. Worth it for a public-facing
 graph; usually not worth it for an internal one.
@@ -1015,7 +1081,7 @@ persistence, with `TypeError: Converting circular structure to JSON` (JS) or a p
 ✅ textbookId: Annotation()          // "doc_8891" — fetch chunks in the node
 ```
 
-State is written on **every superstep**. Multiply by nodes × turns × users before putting
+State is written on **every superstep**. Multiply by nodes, turns and users before putting
 anything large in it.
 
 ### ❌ 5. User-level facts in thread-level state
@@ -1399,12 +1465,14 @@ import { addMessages } from "@langchain/langgraph";
 import { ChatGroq } from "@langchain/groq";
 import { z } from "zod";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.3 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.3 });
 const store = new InMemoryStore();
 
 // ── schemas ──────────────────────────────────────────────────────────────
+// a PLAIN channel here: the reducer lives in FullState. Declaring a different reducer
+// for the same key throws "Channel "messages" already exists with a different type."
 const InputSchema = Annotation.Root({
-  messages: Annotation({ reducer: addMessages, default: () => [] }),
+  messages: Annotation(),
 });
 const OutputSchema = Annotation.Root({ answer: Annotation() });
 
@@ -1447,12 +1515,14 @@ async function answer(state) {
 }
 
 // ── 3. extract durable facts and write them back ─────────────────────────
+// JSON-schema mode: with GPT-OSS on Groq the default tool-calling mode can fail (Day 06)
 const extractor = model.withStructuredOutput(
   z.object({
     level: z.enum(["beginner", "advanced", "unknown"]),
     language: z.string().describe('ISO code, or "unknown"'),
     note: z.string().describe('one durable preference, or "none"'),
-  })
+  }),
+  { method: "jsonSchema" }
 );
 
 async function extract(state, config) {
@@ -1486,11 +1556,11 @@ const app = new StateGraph({
   output: OutputSchema,
 })
   .addNode("loadProfile", loadProfile)
-  .addNode("answer", answer)
+  .addNode("respond", answer)
   .addNode("extract", extract)
   .addEdge(START, "loadProfile")
-  .addEdge("loadProfile", "answer")
-  .addEdge("answer", "extract")
+  .addEdge("loadProfile", "respond")
+  .addEdge("respond", "extract")
   .addEdge("extract", END)
   .compile({ store, checkpointer: new MemorySaver() });
 
@@ -1504,7 +1574,8 @@ console.log(
     cfg("chat-1")
   )).answer
 );
-console.log("\nstored profile:", (await store.get(["students", "s1"], "profile")).value);
+// `?.` because nothing is stored if extract found no durable fact
+console.log("\nstored profile:", (await store.get(["students", "s1"], "profile"))?.value);
 
 console.log("\n── conversation 2 (NEW thread) ──");
 console.log(
@@ -1513,7 +1584,8 @@ console.log(
     cfg("chat-2")
   )).answer
 );
-// → technical, because `level: "advanced"` came from the STORE, not the thread
+// → technical IF extract stored `level: "advanced"` — that comes from the STORE, not the
+//   thread. Check the "stored profile" line first (see the real run below).
 ```
 
 **Python**
@@ -1530,7 +1602,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_groq import ChatGroq
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 store = InMemoryStore()
 
 # ── schemas ──────────────────────────────────────────────────────────────
@@ -1541,7 +1613,9 @@ def merge(existing: dict, incoming: dict) -> dict:
     return {**existing, **incoming}
 
 class InputSchema(TypedDict):
-    messages: Annotated[list, add_messages]
+    # a PLAIN key here: the reducer lives in FullState. A different reducer for the same
+    # key raises "ValueError: Channel 'messages' already exists with a different type"
+    messages: list
 
 class OutputSchema(TypedDict):
     answer: str
@@ -1577,7 +1651,8 @@ class Extracted(BaseModel):
     language: str = Field(description='ISO code, or "unknown"')
     note: str = Field(description='one durable preference, or "none"')
 
-extractor = model.with_structured_output(Extracted)
+# JSON-schema mode: with GPT-OSS on Groq the default tool-calling mode can fail (Day 06)
+extractor = model.with_structured_output(Extracted, method="json_schema", strict=True)
 
 def extract(state: FullState, config: RunnableConfig, *, store) -> dict:
     transcript = "\n".join(f"{m.type}: {m.content}" for m in state["messages"])
@@ -1605,11 +1680,11 @@ def extract(state: FullState, config: RunnableConfig, *, store) -> dict:
 # ── wire it up ───────────────────────────────────────────────────────────
 builder = StateGraph(FullState, input_schema=InputSchema, output_schema=OutputSchema)
 builder.add_node("load_profile", load_profile)
-builder.add_node("answer", answer)
+builder.add_node("respond", answer)
 builder.add_node("extract", extract)
 builder.add_edge(START, "load_profile")
-builder.add_edge("load_profile", "answer")
-builder.add_edge("answer", "extract")
+builder.add_edge("load_profile", "respond")
+builder.add_edge("respond", "extract")
 builder.add_edge("extract", END)
 app = builder.compile(store=store, checkpointer=InMemorySaver())
 
@@ -1621,12 +1696,26 @@ print(app.invoke(
     {"messages": [HumanMessage("Explain recursion. I'm a CS undergrad, keep it technical.")]},
     cfg("chat-1"),
 )["answer"])
-print("\nstored profile:", store.get(("students", "s1"), "profile").value)
+item = store.get(("students", "s1"), "profile")   # None if extract found no durable fact
+print("\nstored profile:", item.value if item else None)
 
 print("\n── conversation 2 (NEW thread) ──")
 print(app.invoke({"messages": [HumanMessage("Now explain memoization.")]}, cfg("chat-2"))["answer"])
-# → technical, because level="advanced" came from the STORE, not the thread
+# → technical IF extract stored level="advanced" — that comes from the STORE, not the
+#   thread. Check the "stored profile" line first (see the real run below).
 ```
+
+**What a real run showed** (`openai/gpt-oss-120b`, 7 October 2026). The wiring worked in both
+languages, but the *extraction* did not go the way the comment hopes. JavaScript stored
+`{ level: 'beginner', language: 'en', notes: [ 'recursion definition' ] }`. Python stored
+nothing (`stored profile: None`). In both, conversation 1 got a beginner answer with a
+nesting-dolls analogy, and so did conversation 2. The model did not treat "I'm a CS undergrad"
+as a durable fact meaning *advanced*.
+
+That is the lesson of this exercise, not a failure of it. The store carries over whatever
+`extract` writes, so memory is only as good as the extraction prompt. To get the advanced
+path, tell the extractor what counts. For example: "a university CS student, or anyone who
+asks for technical answers, is advanced." Then test it on a few sentences first.
 
 **The four design decisions worth defending in a code review:**
 
@@ -1638,7 +1727,8 @@ print(app.invoke({"messages": [HumanMessage("Now explain memoization.")]}, cfg("
 2. **`extract` writes a *patch*, not the whole profile.** Blindly `put`-ing an extracted
    profile lets one bad extraction ("level: beginner") wipe a correct value. Comparing
    against what's stored and writing only genuine changes makes memory
-   **monotonic-ish** — it degrades slowly rather than catastrophically.
+   **monotonic-ish** (it changes in small, steady steps). It degrades slowly rather than
+   catastrophically.
 
 3. **The capped reducer composes with `addMessages` rather than replacing it.**
    `addMessages(existing, incoming).slice(-6)` keeps upsert-by-ID and removal handling, then
@@ -1659,7 +1749,7 @@ entirely into a background job. That's a Day 27 concern, but it's worth noticing
 
 ### Exercise 5 — Design review: fix a bad state schema ●●●●○
 
-Here's a real-shaped state from a support agent that "works in dev and falls over in prod."
+Here's a real-shaped state from a support agent that "works in dev and fails in prod."
 Find **every** problem and rewrite it. There are at least eight.
 
 ```js
@@ -1695,12 +1785,12 @@ const State = Annotation.Root({
 | 2 | `db`, `openaiClient` | Not serialisable. Works until you add a checkpointer, then crashes. | 🔴 crash |
 | 3 | `knownIssues` reducer | **Mutates** `a` — corrupts previous checkpoints and other nodes' snapshots. | 🔴 silent corruption |
 | 4 | `customerRecord` | 300 KB × supersteps × turns × users. | 🟠 throughput |
-| 5 | `attemptCount` | No reducer, but **3 nodes increment it**. Two increments vanish. | 🟠 silent wrong |
+| 5 | `attemptCount` | No reducer, but **3 nodes increment it**. If they run in the same superstep, the run fails with `InvalidUpdateError`; if they run one after another, each must read-then-write correctly. | 🟠 crash / wrong count |
 | 6 | `topThreeSignals` | `slice(0, 3)` keeps the **first** 3 — non-associative, non-deterministic under fan-out. | 🟠 silent wrong |
 | 7 | `messages` | No reducer → each turn **replaces** history. The conversation is always one message long. | 🟠 silent wrong |
 | 8 | `customerPrefersEmail` | Thread-scoped, so it's forgotten in every new conversation. Belongs in the store. | 🟡 wrong behaviour |
 | 9 | `threadId` | Circular — the checkpointer keys state *by* thread id. It comes from config. | 🟡 confusion |
-| 10 | `knownIssues` default | `default: []` (not `() => []`) — one array shared across every run and user. | 🔴 cross-user leak |
+| 10 | `knownIssues` default | `default: []` (not `() => []`). langgraph JS 1.4.20 refuses it at definition: `TypeError: initialValueFactory is not a function`. A factory returning one shared array, plus the mutating reducer (#3), would leak across runs and users. | 🔴 crash / cross-user leak |
 | 11 | `scratchpad` | Fine to keep, but it will be returned to callers without an output schema. | 🟡 leak |
 
 **The rewrite — JavaScript**
@@ -1752,7 +1842,7 @@ const OutputSchema = Annotation.Root({
 });
 
 const InputSchema = Annotation.Root({
-  messages: Annotation({ reducer: addMessages, default: () => [] }),
+  messages: Annotation(),        // plain: the capped reducer lives in FullState (see Exercise 4)
   customerId: Annotation(),
 });
 
@@ -1790,7 +1880,9 @@ def last_3(existing: list, incoming: list) -> list:
     return (existing + incoming)[-3:]                      # 6 ✅ LAST, not first
 
 class InputSchema(TypedDict):
-    messages: Annotated[list, add_messages]
+    # a PLAIN key here: the reducer lives in FullState. A different reducer for the same
+    # key raises "ValueError: Channel 'messages' already exists with a different type"
+    messages: list
     customer_id: str
 
 class OutputSchema(TypedDict):                             # 11 ✅ the boundary
@@ -1825,9 +1917,9 @@ store.put(("customers", customer_id), "prefs", {"prefers_email": True})
 ```
 
 **The meta-lesson.** Nine of the eleven problems are invisible in a single-threaded
-development test with no checkpointer. The schema is where you pay for or avoid an entire
-class of production incidents, and it's ten lines of code — which makes **state schema
-review** one of the highest-leverage code reviews in an agent codebase. Read every new
+development test with no checkpointer. The schema is where you either pay for or avoid a
+whole class of production incidents. And it's only ten lines of code. That makes **state
+schema review** one of the highest-value code reviews in an agent codebase. Read every new
 channel and ask the four questions: *Who writes it? Can two writers collide? Does it
 serialise? Does it need to outlive this thread?*
 </details>
@@ -1848,17 +1940,23 @@ concat for lists, `+` for counters, `addMessages` for conversation history.
 
 **Q2. What's the default reducer and when is it wrong?**
 
-Last-write-wins. It's wrong whenever a channel should accumulate (history, traces, collected
-results) and whenever **more than one node writes it in the same superstep** — parallel
-writes silently discard all but one, with no error.
+Last-write-wins. It's wrong in two cases. The first is whenever a channel should accumulate
+(history, traces, collected results). The second is whenever **more than one node writes it in
+the same superstep**: current versions raise `InvalidUpdateError` ("can only receive one value
+per step") rather than keep one write — re-verified October 2026.
 
 ---
 
 **Q3. What does `addMessages` do beyond appending?**
 
-Three more things: it **upserts by ID** (a message with an existing ID replaces it rather
-than duplicating), it **auto-assigns UUIDs** to messages that lack one, and it **handles
-`RemoveMessage`** — by ID to delete one, or with `REMOVE_ALL_MESSAGES` to clear the list.
+Three more things:
+
+- It **upserts by ID** ("update or insert"): a message with an existing ID replaces it rather
+  than duplicating.
+- It **auto-assigns UUIDs** (unique random IDs) to messages that lack one.
+- It **handles `RemoveMessage`** — by ID to delete one, or with `REMOVE_ALL_MESSAGES` to clear
+  the list.
+
 The upsert behaviour is what makes editing conversation history possible.
 
 ---
@@ -1895,8 +1993,12 @@ The one they're actually asking, so answer it structurally:
 - **Memory** — **not an API.** Short-term memory *is* state + a checkpointer; long-term memory
   *is* the store. The `Memory` classes from 0.x were removed.
 
-Finish with the decision rule: not serialisable → context; needs to outlive the thread →
-store; large → external storage with a reference in state; otherwise state.
+Finish with the decision rule:
+
+- Not serialisable? Context.
+- Needs to outlive the thread? Store.
+- Large? External storage, with a reference in state.
+- Otherwise, state.
 
 ---
 
@@ -1908,7 +2010,7 @@ Pure, total, non-mutating, associative.
 - **Total** — it must handle the default value as `existing`, since the first write always
   sees it.
 - **Non-mutating** — the old value is still referenced by other nodes' snapshots and by the
-  previous checkpoint; mutating it corrupts your time-travel history.
+  previous checkpoint. Mutating it corrupts your time-travel history.
 - **Associative** — parallel writes are folded pairwise in an order you don't control, so
   `(a⊕b)⊕c` must equal `a⊕(b⊕c)`.
 
@@ -1939,24 +2041,24 @@ real users start second conversations.
 
 **Q10. How do you keep conversation history from growing forever?**
 
-A trimming node before the model, using `trimMessages` / `trim_messages` with
-`strategy: "last"` and a token budget, emitting `RemoveMessage`s for everything it dropped —
-`addMessages` understands removals, so deletion is just a state update. Alternatively cap
-inside the reducer: `addMessages(existing, incoming).slice(-20)`.
+Add a trimming node before the model. It uses `trimMessages` / `trim_messages` with
+`strategy: "last"` and a token budget, and emits `RemoveMessage`s for everything it dropped.
+Because `addMessages` understands removals, deletion is just a state update. Alternatively,
+cap inside the reducer: `addMessages(existing, incoming).slice(-20)`.
 
-Two details: set `startOn: "human"` so the window never begins with an orphaned tool result
-(the provider rejects that with a 400), and prefer a **node** over a hidden reducer cap when
-you want the trimming to be visible in your diagram and stream events.
+Two details. First, set `startOn: "human"` so the window never begins with an orphaned tool
+result (the provider rejects that with a 400). Second, prefer a **node** over a hidden reducer
+cap when you want the trimming to be visible in your diagram and stream events.
 
 ---
 
 **Q11. When would you use a Pydantic model as state instead of a TypedDict?**
 
-When the graph is exposed to untrusted input and you want **runtime validation** — a
-`TypedDict` annotation is erased at runtime, a Pydantic model raises `ValidationError` on bad
-input. The costs: validation runs on every superstep, and the ergonomics shift (nodes receive
-a model instance, so `state.n` not `state["n"]`, though `invoke` still returns a plain dict
-and nodes still return dicts).
+When the graph is exposed to untrusted input and you want **runtime validation**. A
+`TypedDict` annotation is erased at runtime. A Pydantic model raises `ValidationError` on bad
+input. The costs: validation runs on every superstep, and the code feels different to write.
+Nodes receive a model instance, so you write `state.n` not `state["n"]`. But `invoke` still
+returns a plain dict, and nodes still return dicts.
 
 Rule of thumb: Pydantic at the edge, TypedDict inside. JS has no direct equivalent — you get
 compile-time safety from `Annotation<T>()` in TypeScript and nothing at runtime.
@@ -1983,7 +2085,8 @@ is serialised after every superstep. So:
 6. Only then consider infrastructure: a faster checkpointer backend, or checkpointing less
    often for low-value runs.
 
-The framing that lands: **state is a write-amplified data structure.** Design it like a
+The framing that works in an interview: **state is a write-amplified data structure** — one
+small change causes the whole thing to be written again. Design it like a
 database row you're going to `UPDATE` thousands of times, not like a scratch object.
 
 ---
@@ -2016,8 +2119,9 @@ def add_counters(existing: dict, incoming: dict) -> dict:
 ```
 
 This is associative and commutative, so it's correct under any fold order. The general
-principle — and the reason it's a good interview question — is that **it's the same problem
-as a CRDT**: when concurrent writers can't see each other, you must send operations, not
+principle is also why this is a good interview question: **it's the same problem as a CRDT**.
+A CRDT (conflict-free replicated data type) is data that many writers can update at once and
+still agree on. When concurrent writers can't see each other, you must send operations, not
 resulting values.
 
 ---
@@ -2070,12 +2174,12 @@ Four cases:
    filter.
 2. **API stability** — the input schema is your public contract. Internal state can be
    refactored freely without breaking callers.
-3. **Subgraphs** (Day 19) — a subgraph has its own state; input/output schemas define exactly
-   what crosses the boundary, so a subgraph is genuinely encapsulated rather than sharing one
-   global bag of fields.
+3. **Subgraphs** (Day 19) — a subgraph has its own state. Input/output schemas define exactly
+   what crosses the boundary. So a subgraph is truly self-contained (encapsulated) rather
+   than sharing one global bag of fields.
 4. **Private node-to-node channels** — a field that two adjacent nodes use to pass working
-   data, declared in the internal schema only, so it never appears in input or output and
-   nobody outside those two nodes depends on it.
+   data. It is declared in the internal schema only, so it never appears in input or output.
+   Nobody outside those two nodes depends on it.
 
 The theme: schemas turn your state from one shared global into something with **interfaces**.
 That matters at exactly the point a graph gets big enough for more than one person to work
@@ -2093,13 +2197,13 @@ In three layers, cheapest first:
    class of concurrency bugs that are otherwise unreproducible.
 2. **Nodes alone.** `(state) => patch`. Hand-build a state object, call the node, assert on
    the patch. Assert it returns *only* the keys it should.
-3. **The graph with a fake model** and a real `InMemoryStore`, asserting on cross-thread
-   behaviour: run thread A, then thread B, and check that profile facts carried over while
+3. **The graph with a fake model** and a real `InMemoryStore`. Assert on cross-thread
+   behaviour: run thread A, then thread B. Check that profile facts carried over while
    conversation history did not.
 
-Add one schema test that asserts `invoke` returns exactly the output-schema keys — that's
-your regression test against accidentally leaking internal fields when someone adds a channel
-six months from now.
+Add one schema test that asserts `invoke` returns exactly the output-schema keys. That's your
+regression test (a test that stops an old bug coming back). It guards against accidentally
+leaking internal fields when someone adds a channel six months from now.
 
 ---
 
@@ -2118,7 +2222,8 @@ six months from now.
   security boundary
 - ✅ **Context** (`config.configurable`) holds handles and secrets and is **never persisted**
 - ✅ The **store** is memory that crosses threads; state is memory that doesn't
-- ✅ **"Memory" is not an API** — short-term = state + checkpointer, long-term = store
+- ✅ **"Memory" is not an API** — short-term memory is state plus a checkpointer, and
+  long-term memory is the store
 - ✅ State is written **every superstep**: `size × supersteps × turns × users`
 - ✅ State holds **pointers and decisions, not payloads**
 
@@ -2135,10 +2240,13 @@ six months from now.
 ### Tomorrow
 
 **[Day 19 — Control Flow](day-19-control-flow.md)**: your routers so far have been `if/else`
-returning a node name. Tomorrow you get the real tools — `Command` (update state *and* route
-in one return), `Send` (fan out to N copies of a node with different inputs — genuine
-map-reduce), and subgraphs (a graph as a node, with its own state and its own schemas). You'll
-build a research graph that splits a question into sub-questions, researches all of them in
+returning a node name. Tomorrow you get the real tools:
+
+- `Command` — update state *and* route in one return.
+- `Send` — fan out to N copies of a node with different inputs (genuine map-reduce).
+- Subgraphs — a graph as a node, with its own state and its own schemas.
+
+You'll build a research graph that splits a question into sub-questions, researches all of them in
 parallel, and merges the findings.
 
 ### Quick self-check

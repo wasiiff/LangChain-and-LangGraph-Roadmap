@@ -2,16 +2,38 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 10](day-10-embeddings.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** why exact search stops working, how HNSW and IVF make search sub-linear,
-the recall/latency trade-off you're actually choosing, how to compare the major vector stores,
-metadata filtering done properly — and **hybrid search**, the fix for yesterday's `ERR_4471`
-problem.
+**Today you learn:** Yesterday's search engine checks every vector on every query, and forgets
+everything when it restarts. Today you move to a **vector database**. You learn how **ANN
+search** with an index like **HNSW** makes search fast, and how much **recall** that speed costs.
+You also filter safely for each **tenant**, and fix yesterday's `ERR_4471` problem with
+**hybrid search**.
+
+> 📖 **Words you'll meet today**
+>
+> - **Vector database** — a database built to store embeddings and quickly find the ones nearest
+>   a query.
+> - **ANN search** — approximate nearest-neighbour search: finds *almost* the closest vectors,
+>   much faster than checking them all.
+> - **HNSW** — the most common ANN index: a layered graph of vectors that the search walks
+>   through.
+> - **Recall** — the share of the true best matches a search actually returns. 100% means none
+>   were missed.
+> - **Tenant** — one customer in a shared system, whose data must stay separate from everyone
+>   else's.
+> - **Pre-filtering** — applying a metadata filter (such as "tenant = A") *before* the search,
+>   not after it.
+> - **BM25** — a classic keyword-ranking formula that scores documents by the query words they
+>   contain.
+> - **Hybrid search** — running keyword search and vector search together, then merging the two
+>   result lists.
 
 ---
 
 ## 1. The problem
 
-Yesterday's search engine works. Here's what happens when it grows:
+Yesterday's search engine works. Here's what happens when it grows (the timings are
+illustrative, not measured — they assume a few microseconds per comparison and scale linearly;
+your hardware will differ, but the shape won't):
 
 ```
    corpus size    vectors scanned    time per query
@@ -22,7 +44,8 @@ Yesterday's search engine works. Here's what happens when it grows:
    50,000,000         50,000,000      ~150,000 ms     💀
 ```
 
-Every query compares against **every** vector. That's O(n), and it never gets better.
+Every query compares against **every** vector. That's O(n): the time grows in step with the
+number of vectors, and it never gets better.
 
 And there are three more problems you can't fix with faster maths:
 
@@ -33,7 +56,7 @@ And there are three more problems you can't fix with faster maths:
 ```
 
 That last one is a security issue, not just a performance one. If you scan all tenants' vectors
-and filter afterwards, a bug in the filter is a data leak.
+(every customer's data) and filter afterwards, a bug in the filter is a data leak.
 
 **A vector database solves all four.** Today you learn how, and — more usefully — what it costs
 you in exchange.
@@ -56,13 +79,15 @@ you in exchange.
    ✅ use under ~10k vectors            ✅ use above that
 ```
 
-**"Approximate" means you may miss a true nearest neighbour.** For retrieval that's almost always
-fine — if the 5th-best chunk is returned instead of the 4th-best, your answer is unchanged. It
-matters far more for exact-match use cases like deduplication.
+**"Approximate" means you may miss a true nearest neighbour** (one of the truly closest
+vectors). For retrieval that's almost always fine. If the 5th-best chunk is returned instead of
+the 4th-best, your answer is unchanged. It matters far more for exact-match use cases like
+deduplication.
 
 ### HNSW — the index you'll actually use
 
-Hierarchical Navigable Small World. The mental model is **express trains and local trains**:
+HNSW stands for Hierarchical Navigable Small World. Picture it as **express trains and local
+trains**.
 
 ```
    layer 2   ●───────────────────────●              few nodes, long hops
@@ -87,11 +112,14 @@ The key parameters:
 | `efConstruction` | candidates considered while *building* | ↑ better index, ↑ build time |
 | `ef` / `efSearch` | candidates considered while *searching* | ↑ better recall, ↑ query latency |
 
-**`ef` is the one you tune at runtime.** It's the recall/latency dial, and it must be ≥ your `k`.
+**`ef` is the one you tune at runtime.** It's the dial that trades recall against latency
+(speed), and it must be at least your `k`.
 
 ### IVF — the other common index
 
-Inverted File. Cluster the vectors, then only search the nearest clusters:
+IVF stands for Inverted File. It groups the vectors into clusters, then searches only the
+clusters nearest the query. (In the diagram, k-means is a standard method for grouping points
+into clusters.)
 
 ```
    BUILD: k-means the vectors into `nlist` clusters
@@ -107,8 +135,9 @@ Inverted File. Cluster the vectors, then only search the nearest clusters:
 ```
 
 **HNSW vs IVF:** HNSW has better recall/latency and needs no training, but uses more memory and
-is slower to build. IVF is more memory-efficient and better for very large static datasets, but
-needs a training step on a sample. **Default to HNSW** unless memory is your binding constraint.
+is slower to build. IVF is more memory-efficient and better for very large static datasets
+(ones that rarely change). But it needs a training step on a sample. **Default to HNSW** unless
+memory is the limit you hit first.
 
 ### Hybrid search — the fix for yesterday's failure
 
@@ -131,13 +160,16 @@ needs a training step on a sample. **Default to HNSW** unless memory is your bin
               ERR_4472 doc
 ```
 
-Vectors find meaning; keywords find exact strings. **Real systems use both.**
+Vectors find meaning. Keywords find exact strings. **Real systems use both.**
 
 ---
 
 ## 3. First principles
 
 ### 3.1 What a vector database gives you
+
+> 💬 **In plain words:** a vector database handles the hard parts for you — fast search, saving
+> to disk, updates, filtering and growth.
 
 | Capability | Why you can't easily hand-roll it |
 |---|---|
@@ -150,8 +182,11 @@ Vectors find meaning; keywords find exact strings. **Real systems use both.**
 
 ### 3.2 Pre-filter vs post-filter — the detail that matters
 
-This is the most important implementation detail in vector search, and it's usually invisible
-until it bites.
+> 💬 **In plain words:** if you filter *after* searching, you can get far fewer results than you
+> asked for. The filter has to work *before* or *during* the search.
+
+This is the most important implementation detail in vector search. You usually don't notice it
+until it causes a real problem.
 
 ```
    POST-FILTER (naive)                    PRE-FILTER (correct)
@@ -167,19 +202,24 @@ until it bites.
    → you return 1 result 😱               ✅
 ```
 
-Post-filtering silently returns **fewer results than you asked for**, and gets worse as the
-filter gets more selective. If your filter matches 1% of documents, a top-10 search returns
-roughly *zero* usable results.
+Post-filtering silently returns **fewer results than you asked for**. It gets worse as the
+filter gets more selective (matches fewer documents). If your filter matches 1% of documents, a
+top-10 search returns roughly *zero* usable results.
 
-**Workarounds if your store post-filters:** over-fetch (ask for `k * 20` then filter), or
-partition into separate collections per tenant. Qdrant, Weaviate and pgvector do proper
-pre-filtering; check your store's docs rather than assuming.
+**Workarounds if your store post-filters:** over-fetch (ask for `k * 20` results, then filter),
+or partition: give each tenant its own collection. Qdrant and Weaviate filter during the search.
+pgvector's approximate indexes filter *after* the index scan, unless you turn on iterative scans
+(pgvector 0.8+) or the query planner uses a regular index instead. Check your store's docs rather
+than assuming.
 
 > 🚨 **The multi-tenant rule:** never rely on filtering alone for tenant isolation if you can
 > partition instead. A separate collection per tenant makes cross-tenant leakage structurally
-> impossible rather than one bug away.
+> impossible, because the data isn't in the same place. With a filter, a leak is one bug away.
 
 ### 3.3 The stores compared
+
+> 💬 **In plain words:** pick the simplest store that fits your situation. If you already run
+> Postgres, pgvector is often all you need.
 
 | Store | Type | Persistence | Best for | Watch out |
 |---|---|---|---|---|
@@ -195,19 +235,23 @@ pre-filtering; check your store's docs rather than assuming.
 
 **How to actually choose:**
 
-1. **Already have Postgres and under ~1M vectors?** → **pgvector.** One database, transactional
-   consistency with your relational data, real SQL filtering. This is the right answer far more
-   often than the vector-database marketing suggests.
+1. **Already have Postgres and under ~1M vectors?** → **pgvector.** You get one database, and
+   your vectors stay in step with your ordinary tables (transactional consistency with your
+   relational data). You also get real SQL filtering. This is the right answer far more often
+   than the vector-database marketing suggests.
 2. **Prototyping locally?** → **Chroma.** Zero setup, persists to disk.
 3. **Self-hosting at scale?** → **Qdrant.** Excellent filtering, good performance, sane ops.
 4. **Don't want to run anything?** → **Pinecone.**
 5. **Need best-in-class hybrid search out of the box?** → **Weaviate.**
 
-> 💡 **The under-rated answer is pgvector.** Keeping vectors next to your relational data means
-> you can `JOIN` search results against users, permissions and timestamps in one query, with real
-> transactions. Teams routinely add a dedicated vector database they didn't need.
+> 💡 **The under-rated answer is pgvector.** Keep vectors next to your relational data, and you
+> can `JOIN` search results against users, permissions and timestamps. It all happens in one
+> query, with real transactions. Teams routinely add a dedicated vector database they didn't need.
 
 ### 3.4 The vector store interface
+
+> 💬 **In plain words:** every LangChain vector store offers the same core methods. One of them
+> turns the store into a retriever you can plug straight into a chain.
 
 Every LangChain vector store implements roughly:
 
@@ -225,12 +269,15 @@ into an LCEL chain. That's how tomorrow's RAG pipeline is built.
 
 ### 3.5 BM25 and hybrid fusion
 
-BM25 is the classic keyword ranking function. Roughly: a document scores higher when it contains
-more of the query's *rare* terms, with diminishing returns for repetition and a penalty for
-length.
+> 💬 **In plain words:** BM25 ranks documents by matching words. RRF merges two ranked lists
+> using only each document's position, not its score.
 
-To combine two rankings, use **Reciprocal Rank Fusion** — simple, robust, and it needs no score
-normalisation:
+BM25 is the classic keyword ranking function. Roughly, a document scores higher when it contains
+more of the query's *rare* terms. Repeating a term helps less each time (diminishing returns),
+and long documents get a penalty.
+
+To combine two rankings, use **Reciprocal Rank Fusion** (RRF). It is simple and robust, and it
+needs no score normalisation (no rescaling of scores to a common range).
 
 ```
 RRF_score(doc) = Σ  1 / (k + rank_in_that_list)         k ≈ 60 by convention
@@ -245,9 +292,9 @@ RRF_score(doc) = Σ  1 / (k + rank_in_that_list)         k ≈ 60 by convention
    C            3             —          1/63        = 0.0159
 ```
 
-**Why RRF beats weighted score averaging:** cosine similarity (0–1) and BM25 (unbounded) live on
-incomparable scales. Fusing *ranks* sidesteps normalisation entirely, and it's remarkably hard to
-beat in practice.
+**Why RRF beats weighted score averaging:** cosine similarity (0–1) and BM25 (no upper limit)
+live on scales you can't compare. Fusing *ranks* avoids normalisation entirely, and it's
+remarkably hard to beat in practice.
 
 ---
 
@@ -379,9 +426,10 @@ multi.forEach((d) => console.log(`   [${d.metadata.dept}] ${d.pageContent.slice(
 ```
 
 > ⚠️ **Filter syntax is store-specific and does not port.** `MemoryVectorStore` takes a
-> *function*; Chroma takes a Mongo-style *object*; pgvector uses SQL; Pinecone has its own
-> dialect. This is the main thing that leaks through the vector-store abstraction, so isolate
-> filter construction behind your own helper if you might switch stores.
+> *function*. Chroma takes a Mongo-style *object* (the query format of the MongoDB database).
+> pgvector uses SQL, and Pinecone has its own dialect. This is the main difference the shared
+> vector-store interface can't hide. If you might switch stores, build your filters in one
+> helper function of your own.
 
 ### 4.3 Hybrid search — BM25 + vectors with RRF
 
@@ -501,8 +549,8 @@ for (const QUERY of [
 }
 ```
 
-Run it. On `"ERR_4471"` the vector search ranks `ERR_4472` competitively — yesterday's failure,
-reproduced. BM25 nails it. **Hybrid gets both queries right.**
+Run it. On `"ERR_4471"` the vector search ranks `ERR_4472` almost as high: that's yesterday's
+failure, reproduced. BM25 finds the exact match. **Hybrid gets both queries right.**
 
 ### 4.4 Benchmarking exact vs approximate
 
@@ -607,8 +655,9 @@ for (const nprobe of [1, 2, 5, 10, 25, 50, 100]) {
 }
 ```
 
-This is the recall/latency curve in your own terminal. You'll see recall climb steeply then
-plateau — the classic shape, and the reason `nprobe`/`ef` tuning is worth doing once.
+This is the recall/latency curve in your own terminal. You'll see recall climb steeply, then
+level off. That's the classic shape, and it's the reason `nprobe`/`ef` tuning is worth doing
+once.
 
 ---
 
@@ -857,7 +906,8 @@ for d in hybrid.invoke("ERR_4471"):
     print(d.page_content[:60])
 ```
 
-We built it by hand first so the fusion isn't a black box — but use the built-in in production.
+We built it by hand first so the fusion isn't a black box (something you use without seeing
+inside). In production, use the built-in.
 JS has `EnsembleRetriever` too, in `@langchain/classic/retrievers/ensemble`.
 </details>
 
@@ -966,17 +1016,17 @@ for nprobe in [1, 2, 5, 10, 25, 50, 100]:
              - return the top `k` of the `ef` results
 ```
 
-**Why `ef` must be ≥ `k`:** the result heap holds `ef` items and you return `k` of them. Setting
-`ef = 10, k = 10` gives you no room to explore — recall collapses. A common default is
-`ef = 2×k` or higher.
+**Why `ef` must be at least `k`:** the result heap (a list kept in score order) holds `ef`
+items, and you return `k` of them. Setting `ef = 10, k = 10` gives you no room to explore, and
+recall collapses. A common default is `ef = 2×k` or higher.
 
-**Why it's approximate:** the greedy descent can enter a region of the graph that doesn't contain
-the true nearest neighbour, and never find its way out. Higher `ef` and higher `M` both reduce
-the chance, at a cost.
+**Why it's approximate:** the greedy descent (always stepping to the closest neighbour) can
+enter a region of the graph that doesn't contain the true nearest neighbour. It never finds its
+way out. Higher `ef` and higher `M` both reduce the chance, at a cost.
 
 ### Filtering inside an ANN index is genuinely hard
 
-This is why pre-filtering isn't universal — it's not laziness, it's a real algorithmic problem.
+This is why not every store pre-filters. It isn't laziness. It's a real algorithmic problem.
 
 ```
    HNSW navigates by GRAPH EDGES. Removing nodes that fail the filter
@@ -988,15 +1038,22 @@ This is why pre-filtering isn't universal — it's not laziness, it's a real alg
 
 Stores solve this differently:
 
-- **Qdrant** builds additional links so filtered subgraphs stay connected, and switches to brute
-  force when the filter is very selective (a full scan of 1% of your data is fast anyway).
-- **pgvector** can use a regular B-tree index on the metadata column first, then vector-search
-  the surviving rows — real SQL query planning.
+- **Qdrant** builds extra links so the filtered parts of the graph stay connected. When the
+  filter is very selective, it switches to brute force (checking every match), because a full
+  scan of 1% of your data is fast anyway.
+- **pgvector** filters *after* scanning its HNSW/IVFFlat index by default, so a selective filter
+  can return fewer than k rows. Two ways out: turn on **iterative index scans** (pgvector 0.8+,
+  `SET hnsw.iterative_scan = relaxed_order`), which keeps scanning until enough rows match, or
+  let the query planner use a regular B-tree index (the standard database index) on the metadata
+  column and do an exact search over the surviving rows.
 - **Chroma** applies the filter during traversal.
 - Some stores simply post-filter.
 
-**The practical rule:** if your filters are highly selective, either verify your store
-pre-filters, or over-fetch and filter yourself, or partition into separate collections.
+> 📚 **Source for the pgvector row:** the [pgvector README](https://github.com/pgvector/pgvector)
+> ("Filtering" and "Iterative Index Scans"), checked October 2026.
+
+**The practical rule:** if your filters are highly selective, do one of three things. Check that
+your store pre-filters, over-fetch and filter yourself, or partition into separate collections.
 
 ### Why RRF is so hard to beat
 
@@ -1009,24 +1066,25 @@ BM25:    8.34   (unbounded, depends on corpus statistics and query length)
 normalise how? min-max over this result set? z-score? over what population?
 ```
 
-Every normalisation choice introduces assumptions that break on some queries — a query where
-every result scores 0.8 min-maxes into a meaningless spread.
+Every normalisation choice brings assumptions that break on some queries. Take a query where
+every result scores 0.8: min-max scaling stretches those scores into a meaningless spread.
 
-RRF uses only **rank**, which is scale-free. It also has a useful property: the `k` constant
-(≈60) damps the influence of top ranks, so a document ranked #1 by one retriever and #50 by the
-other doesn't automatically win. It's a robustness/precision trade that works well in practice.
+RRF uses only **rank**, which doesn't depend on any scale. It has another useful property. The
+`k` constant (about 60) damps the influence of top ranks. So a document ranked #1 by one
+retriever and #50 by the other doesn't automatically win. It trades some precision for
+robustness, and that works well in practice.
 
 ### Distance metric configuration
 
-Getting this wrong is a silent, top-to-bottom failure:
+Getting this wrong fails silently and affects every result:
 
 ```js
 collectionMetadata: { "hnsw:space": "cosine" }    // or "l2", "ip"
 ```
 
-If your embeddings are normalised (Day 10) then cosine, `ip` (inner product) and `l2` all rank
-identically — so a mistake is harmless. **If they're not normalised**, choosing `l2` on
-un-normalised vectors ranks partly by document length.
+If your embeddings are normalised (Day 10), then cosine, `ip` (inner product) and `l2`
+(euclidean distance) all rank identically. So a mistake is harmless. **If they're not
+normalised**, choosing `l2` on un-normalised vectors ranks partly by document length.
 
 **Set it explicitly at collection creation.** It usually cannot be changed afterwards without
 rebuilding the index.
@@ -1045,7 +1103,8 @@ Ask for `k=10` with a selective filter and get 1 result back.
 **❌ Filtering for multi-tenancy instead of partitioning**
 
 One bug in filter construction leaks another customer's data.
-✅ Separate collections per tenant where practical. Structural isolation beats a conditional.
+✅ Separate collections per tenant where practical. Structural isolation (keeping the data apart)
+beats a conditional (an if-check that one bug can break).
 
 ---
 
@@ -1069,7 +1128,8 @@ const store = await MemoryVectorStore.fromDocuments(docs, embeddings);  // every
 
 Error codes, SKUs, part numbers, usernames — embeddings can't distinguish `ERR_4471` from
 `ERR_4472`.
-✅ Hybrid search. This is the single most common quality gap in production RAG.
+✅ Hybrid search. This is the single most common quality gap in production RAG
+(retrieval-augmented generation, Day 12).
 
 ---
 
@@ -1106,9 +1166,9 @@ Your bot confidently cites a document that no longer exists.
 
 ### Exercise 1 — Store round-trip with persistence ●○○○○
 
-Build a script that ingests documents into Chroma on first run and, on subsequent runs, connects
-to the existing collection without re-embedding. Prove it by timing both runs and printing the
-collection count.
+Build a script that ingests documents into Chroma on the first run. On later runs, it should
+connect to the existing collection without re-embedding. Prove it by timing both runs and
+printing the collection count.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1207,11 +1267,12 @@ connected to existing (50 vectors) in 47ms      ← 40× faster
 ```
 
 **The point:** ingest is a *separate lifecycle* from serving. In production these are different
-processes — ingest runs in CI or a worker when documents change; the API server only ever
-connects. Re-embedding on every boot is one of the most common and most expensive beginner
-mistakes, and it makes cold starts unusable.
+processes. Ingest runs in CI (your automated build system) or a background worker when
+documents change. The API server only ever connects. Re-embedding on every boot is one of the
+most common and most expensive beginner mistakes. It also makes cold starts (the first start-up
+after a deploy) unusable.
 
-Note the `count() == 0` check rather than a try/catch on connection — connecting to an empty
+Note the `count() == 0` check rather than a try/catch on connection. Connecting to an empty
 collection usually *succeeds*, so catching an error isn't enough to detect "not yet ingested".
 </details>
 
@@ -1219,9 +1280,13 @@ collection usually *succeeds*, so catching an error isn't enough to detect "not 
 
 ### Exercise 2 — Pre-filter vs post-filter, demonstrated ●●○○○
 
-Build a store with documents across 5 tenants where one tenant owns only 2% of documents. Search
-with `k=10` filtered to that tenant, two ways: (a) filter passed to the store, (b) fetch `k=10`
-unfiltered then filter in your code. Show how many results each returns.
+Build a store with documents from 5 tenants, where one tenant owns only 2% of documents. Search
+with `k=10`, filtered to that tenant, in two ways:
+
+- (a) pass the filter to the store;
+- (b) fetch `k=10` unfiltered, then filter in your code.
+
+Show how many results each returns.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1344,26 +1409,32 @@ tenants in the unfiltered top-10:
   globex, acme, umbrella, initech, acme, globex, initech, umbrella, acme, globex
 ```
 
-**Case (b) returns nothing at all.** The rare tenant's 4 documents are relevant, but they never
-appear in an unfiltered top-10 out of 200 — the other 196 documents crowd them out.
+**Case (b) returns nothing at all.** Only one of the rare tenant's 4 documents (document 0)
+is about billing and refunds — `TOPICS[i % 5]` gives documents 1–3 other topics — and it doesn't
+make the unfiltered top-10 out of 200. The other tenants' 39 billing documents crowd it out.
 
-**Why this matters more than it looks:** this failure is silent and *load-dependent*. It works
-fine in development with 20 documents and one tenant. It breaks in production as the corpus
-grows, and it breaks *worst for your smallest customers* — exactly the ones least likely to be in
-your test data.
+**Why this matters more than it looks:** this failure is silent and *load-dependent* (it depends
+on how much data you have). It works fine in development with 20 documents and one tenant. It
+breaks in production as the corpus grows. And it breaks *worst for your smallest customers* —
+exactly the ones least likely to be in your test data.
 
-**The three fixes, in order of preference:** partition into per-tenant collections (structural,
-also the right security answer); use a store that genuinely pre-filters (Qdrant, pgvector,
-Weaviate); or over-fetch by a factor of roughly `1 / selectivity` and filter yourself, accepting
-the extra latency.
+**The three fixes, in order of preference:**
+
+1. Partition into per-tenant collections. This is structural, and it's also the right security
+   answer.
+2. Use a store that filters during the search (Qdrant, Weaviate), or pgvector with iterative
+   index scans turned on.
+3. Over-fetch by a factor of roughly `1 / selectivity` and filter yourself, accepting the extra
+   latency. Selectivity is the share of documents the filter keeps.
 </details>
 
 ---
 
 ### Exercise 3 — Tune the recall/latency curve ●●●○○
 
-Using the IVF benchmark from §4.4/§5.4, find the smallest `nprobe` that achieves ≥95% recall@10.
-Then repeat for `nlist` values of 50, 100 and 400 and explain how the two parameters interact.
+Using the IVF benchmark from §4.4/§5.4, find the smallest `nprobe` that reaches at least 95%
+recall@10. Then repeat for `nlist` values of 50, 100 and 400. Explain how the two parameters
+interact.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1474,25 +1545,30 @@ nlist  minNprobe  ms/query  recall  scanned  %ofCorpus
   400         38       8.7   0.958     2410      12.1%
 ```
 
+A caveat on the `scanned` column: the code sums the *largest* `nprobe` buckets, not the buckets
+a query actually probed, so it is an **upper bound** on the vectors scanned (and so is
+`%ofCorpus`).
+
 **How the parameters interact — this is the actual lesson:**
 
-1. **More clusters → smaller clusters → you need more of them (`nprobe` rises) but scan fewer
-   vectors overall.** Finer partitioning gives finer control.
+1. **More clusters means smaller clusters. You need to search more of them (`nprobe` rises),
+   but you scan fewer vectors overall.** Finer partitioning gives finer control.
 2. **The percentage of the corpus scanned falls as `nlist` rises**, which is why large systems
-   use many clusters. FAISS's rule of thumb is `nlist ≈ √N`, so ~140 for 20k vectors — and note
-   our 100 and 400 rows bracket that nicely.
-3. **The ratio `nprobe / nlist` is roughly stable** (~14%, ~12%, ~10%) — that's the fraction of
-   the space you must examine for a given recall, and it's a property of the data's intrinsic
-   dimensionality more than of your parameters.
-4. **There's a floor.** With random high-dimensional vectors, recall is genuinely hard — real
-   embeddings cluster far more, so real systems hit 95% recall scanning a much smaller fraction.
+   use many clusters. FAISS's rule of thumb is `nlist ≈ √N` (the square root of the number of
+   vectors), so ~140 for 20k vectors. Note that our 100 and 400 rows sit either side of that.
+3. **The ratio `nprobe / nlist` is roughly stable** (~14%, ~12%, ~10%). That's the fraction of
+   the space you must examine for a given recall. It depends more on the data's intrinsic
+   dimensionality (how many directions the data really varies in) than on your parameters.
+4. **There's a floor.** With random high-dimensional vectors, recall is genuinely hard. Real
+   embeddings cluster far more, so real systems hit 95% recall while scanning a much smaller
+   fraction.
 
-**Do this measurement on your own data.** Random vectors are a worst case; the curve on real
-embeddings is much friendlier, and knowing where *your* knee is tells you whether to spend on
-latency or on recall.
+**Do this measurement on your own data.** Random vectors are a worst case, and the curve on real
+embeddings is much friendlier. Find where *your* knee is: the point where the curve bends and
+flattens. It tells you whether to spend on latency or on recall.
 
-The HNSW equivalent is `ef` — same shape of curve, same method: sweep it, plot recall against
-latency, pick the knee.
+The HNSW equivalent is `ef`. The curve has the same shape, and the method is the same: sweep it
+(try a range of values), plot recall against latency, and pick the knee.
 </details>
 
 ---
@@ -1563,7 +1639,7 @@ const bm25 = new BM25(DOCS);
 const retriever = createHybridRetriever({ vectorStore, bm25, k: 3 });
 
 // ── it's a Runnable, so it composes ──────────────────────────────────────
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const chain = RunnableLambda.from(async (question) => {
   const docs = await retriever.invoke(question);
@@ -1645,7 +1721,7 @@ bm25 = BM25(DOCS)
 retriever = create_hybrid_retriever(vector_store, bm25, k=3)
 
 # ── it's a Runnable, so it composes ──────────────────────────────────────
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 def to_context(question):
     docs = retriever.invoke(question)
@@ -1677,18 +1753,18 @@ print(chain.invoke("what does ERR_4471 mean?"))
 
 **Three things this exercise establishes:**
 
-1. **A retriever is just a `Runnable` that returns `Document[]`.** That's the entire contract.
-   Once yours honours it, it drops into any chain that expects a retriever — which is why
-   tomorrow's RAG pipeline will work with this unchanged.
+1. **A retriever is just a `Runnable` that returns `Document[]`.** That's the entire contract
+   (the promise a component makes). Once yours keeps that promise, it drops into any chain that
+   expects a retriever. That's why tomorrow's RAG pipeline will work with this unchanged.
 2. **Weights let you bias per use case.** A documentation search with lots of error codes and API
-   names wants keyword-heavy; a conversational FAQ wants semantic-heavy. You can even route
-   dynamically — detect an identifier pattern in the query and shift the weights.
+   names wants keyword-heavy weights. A conversational FAQ wants semantic-heavy ones. You can
+   even route dynamically: detect an identifier pattern in the query and shift the weights.
 3. **`k * 2` over-fetch before fusion matters.** Fusing two top-3 lists gives RRF very little to
    work with. Retrieve more, fuse, then truncate.
 
 **The production note:** LangChain's `EnsembleRetriever` does this for you and is what you should
-actually use. Building it once by hand means that when its results surprise you, you know exactly
-what it's doing — RRF over ranks, not scores.
+actually use. But because you built it once by hand, you'll know exactly what it's doing when
+its results surprise you: RRF over ranks, not scores.
 </details>
 
 ---
@@ -1696,8 +1772,14 @@ what it's doing — RRF over ranks, not scores.
 ### Exercise 5 — 🏆 Production-shaped vector store service ●●●●●
 
 Build a `DocumentStore` class that wraps a vector store with the things production needs:
-incremental upsert by content hash, deletion by source, tenant-scoped collections, hybrid search
-with RRF, and stats. Then build a CLI over it.
+
+- incremental upsert by content hash (add or update only what changed);
+- deletion by source;
+- tenant-scoped collections;
+- hybrid search with RRF;
+- stats.
+
+Then build a CLI (command-line tool) over it.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1996,23 +2078,25 @@ export class DocumentStore {
 1. **One collection per tenant.** Cross-tenant leakage is structurally impossible, not one buggy
    filter away. This is the correct answer to Exercise 2's lesson, and it's a security decision
    before it's a performance one.
-2. **The content hash *is* the document ID.** That makes `upsert` idempotent for free: re-ingest
-   the same file and Chroma overwrites the same IDs rather than creating duplicates. Very few
-   tutorials do this and it eliminates an entire class of bug.
-3. **Delete-by-source exists.** Documents get removed from wikis and drives; if you never delete
+2. **The content hash *is* the document ID.** That makes `upsert` idempotent (safe to repeat)
+   for free. Re-ingest the same file and Chroma overwrites the same IDs rather than creating
+   duplicates. Very few tutorials do this, and it eliminates an entire class of bug.
+3. **Delete-by-source exists.** Documents get removed from wikis and drives. If you never delete
    their vectors, your assistant confidently cites content that no longer exists. This is the
    most commonly missing operation in hand-rolled ingest pipelines.
-4. **The BM25 index is invalidated on write** (`this._bm25 = null`) and rebuilt lazily. A stale
-   keyword index that silently misses new documents is a nasty, hard-to-spot bug.
+4. **The BM25 index is invalidated on write** (`this._bm25 = null`) and rebuilt lazily (only
+   when it's next needed). A stale keyword index that silently misses new documents is a nasty,
+   hard-to-spot bug.
 5. **Hybrid over-fetches (`k * 2`) before fusing**, so RRF has enough candidates to work with.
 6. **Stats by source** tell you whether an ingest actually landed — the first thing you want when
    someone reports "it can't find the new policy doc".
 7. **The embedding model name is baked into the content hash**, so switching models produces
    entirely new IDs rather than silently reusing vectors from a different space (Day 10's rule).
 
-**What's still missing for real production** — and worth saying in an interview: the BM25 index
-lives in process memory and is rebuilt from a full collection scan, which won't survive multiple
-API replicas or scale past a few hundred thousand chunks. At that point you move keyword search
+**What's still missing for real production** is worth saying in an interview. The BM25 index
+lives in process memory and is rebuilt by scanning the whole collection. That won't work across
+several API replicas (copies of your server), and it won't scale past a few hundred thousand
+chunks. At that point you move keyword search
 into the database itself — Postgres full-text search alongside pgvector, or a store with native
 hybrid support like Weaviate or Qdrant. There's also no batching of Chroma writes, no retry
 around the embedding calls, and no metrics.
@@ -2028,13 +2112,17 @@ around the embedding calls, and no metrics.
 <summary><b>Q: What is a vector database and why not just use an array?</b></summary>
 
 A database optimised for approximate nearest-neighbour search over embeddings. An in-memory array
-works up to a few thousand vectors, but it compares against every vector on every query (O(n)),
-loses everything on restart, requires a full rebuild to add a document, and can only filter
-*after* searching.
+works up to a few thousand vectors, but:
 
-A vector database adds an ANN index for sub-linear search, persistence, incremental
-insert/update/delete, metadata filtering integrated with the index, and operational concerns like
-sharding, replication and concurrent access.
+- it compares against every vector on every query (O(n));
+- it loses everything on restart;
+- it needs a full rebuild to add a document;
+- it can only filter *after* searching.
+
+A vector database adds an ANN index for sub-linear search, persistence, and incremental
+insert/update/delete. It also builds metadata filtering into the index. And it handles
+operational concerns like sharding (splitting data across machines), replication (keeping
+copies) and concurrent access.
 </details>
 
 <details>
@@ -2045,20 +2133,20 @@ graph: sparse upper layers with long-range links for fast coarse navigation, den
 for fine-grained search. A query greedily descends from the top, then does a best-first search at
 the bottom layer.
 
-That gives roughly O(log n) search instead of O(n). Key parameters: `M` (edges per node, affects
-recall and memory), `efConstruction` (build-time quality), and `ef` (search-time
-recall/latency dial, which must be ≥ `k`).
+That gives roughly O(log n) search instead of O(n): search time grows very slowly as the data
+grows. Key parameters: `M` (edges per node, affects recall and memory), `efConstruction`
+(build-time quality), and `ef` (search-time recall/latency dial, which must be at least `k`).
 </details>
 
 <details>
 <summary><b>Q: What does "approximate" mean here, and is it acceptable?</b></summary>
 
-The index may miss some true nearest neighbours — typical recall is 95–99% rather than 100% —
-because the greedy graph traversal can settle in a region that doesn't contain the true best
-match.
+The index may miss some true nearest neighbours. Typical recall is 95–99% rather than 100%.
+That's because the greedy graph traversal can settle in a region that doesn't contain the true
+best match.
 
-For retrieval this is almost always fine: if the 5th-best chunk is returned instead of the
-4th-best, the generated answer is unchanged, and you're usually retrieving several chunks and
+For retrieval this is almost always fine. If the 5th-best chunk is returned instead of the
+4th-best, the generated answer is unchanged. And you're usually retrieving several chunks and
 reranking anyway. It matters much more for exact-match tasks like deduplication or plagiarism
 detection, where you'd use exact search or a higher `ef`.
 </details>
@@ -2079,17 +2167,18 @@ ranks, so it sidesteps the problem that cosine scores and BM25 scores are on inc
 <details>
 <summary><b>Q: Pre-filtering vs post-filtering — why does it matter?</b></summary>
 
-Post-filtering runs the ANN search first and then discards results that fail the metadata filter,
-so you get **fewer results than you asked for** — and the more selective the filter, the worse it
-gets. A filter matching 2% of documents can return zero results from a top-10 search, because the
-other 98% crowd out everything relevant.
+Post-filtering runs the ANN search first, then throws away results that fail the metadata
+filter. So you get **fewer results than you asked for**, and the more selective the filter, the
+worse it gets. A filter matching 2% of documents can return zero results from a top-10 search,
+because the other 98% crowd out everything relevant.
 
 Pre-filtering restricts the search to matching vectors from the start, so `k=10` returns 10
 matching results.
 
 It's genuinely hard to implement, because removing nodes from an HNSW graph can disconnect the
 paths the search navigates. Qdrant adds extra links and falls back to brute force when filters
-are very selective; pgvector can use a B-tree on the metadata column first. If your store
+are very selective. pgvector filters after its index scan by default; iterative scans (0.8+) or a
+B-tree index on the metadata column fix that. If your store
 post-filters, either over-fetch by roughly `1/selectivity` or partition into separate collections.
 </details>
 
@@ -2097,44 +2186,48 @@ post-filters, either over-fetch by roughly `1/selectivity` or partition into sep
 <summary><b>Q: How do you choose a vector database?</b></summary>
 
 Start with what you already run. **If you have Postgres and under a million or so vectors,
-pgvector is usually the right answer** — one database, transactional consistency with your
-relational data, real SQL filtering and joins against users and permissions. Teams frequently add
-a dedicated vector service they didn't need.
+pgvector is usually the right answer.** You get one database, transactional consistency with
+your relational data, and real SQL filtering and joins against users and permissions. Teams
+frequently add a dedicated vector service they didn't need.
 
-Beyond that: Chroma for local development (zero setup, persists to disk); Qdrant for self-hosted
-production (excellent filtering and performance); Pinecone if you want zero operations; Weaviate
-if you want native hybrid search.
+Beyond that:
 
-The decision criteria that actually matter: does it pre-filter properly, what's the operational
-burden, does it support the scale and write rate you need, and can you do incremental
-upserts and deletes.
+- Chroma for local development (zero setup, persists to disk);
+- Qdrant for self-hosted production (excellent filtering and performance);
+- Pinecone if you want zero operations;
+- Weaviate if you want native hybrid search.
+
+The decision criteria that actually matter are four questions. Does it pre-filter properly? How
+heavy is the operational burden? Does it support the scale and write rate you need? Can you do
+incremental upserts and deletes?
 </details>
 
 <details>
 <summary><b>Q: Why RRF rather than averaging the scores?</b></summary>
 
-Cosine similarity and BM25 are on incomparable scales — cosine is bounded 0–1 and clusters
-around 0.4–0.9 because embedding spaces are anisotropic, while BM25 is unbounded and depends on
-corpus statistics and query length. Averaging them requires a normalisation, and every
-normalisation choice (min-max over the result set, z-score, global scaling) introduces
-assumptions that break on some queries.
+Cosine similarity and BM25 are on scales you can't compare. Cosine is bounded 0–1 and clusters
+around 0.4–0.9, because embedding spaces are anisotropic (Day 10). BM25 has no upper limit and
+depends on corpus statistics and query length. Averaging them requires a normalisation. Every
+normalisation choice (min-max over the result set, z-score, global scaling) brings assumptions
+that break on some queries.
 
-RRF fuses **ranks**, which are scale-free, so no normalisation is needed. The constant `k` (≈60)
-also damps the influence of the very top ranks, so a document ranked #1 by one retriever and #50
-by the other doesn't automatically dominate. It's simple, has no tuning to speak of, and is
-consistently hard to beat.
+RRF fuses **ranks**, which are scale-free, so no normalisation is needed. The constant `k`
+(about 60) also damps the influence of the very top ranks. So a document ranked #1 by one
+retriever and #50 by the other doesn't automatically dominate. It's simple, needs almost no
+tuning, and is consistently hard to beat.
 </details>
 
 <details>
 <summary><b>Q: How do you handle multi-tenancy in a vector store?</b></summary>
 
-Prefer **partitioning over filtering**: a separate collection or namespace per tenant makes
-cross-tenant leakage structurally impossible rather than dependent on every query constructing
-its filter correctly. It also keeps each index smaller and faster.
+Prefer **partitioning over filtering**. A separate collection or namespace per tenant makes
+cross-tenant leakage structurally impossible. With filtering, safety depends on every query
+building its filter correctly. Partitioning also keeps each index smaller and faster.
 
-The trade-off is per-collection overhead, which becomes a problem with very many small tenants —
-at that point you use metadata filtering with a store that genuinely pre-filters, and enforce the
-tenant filter in a single shared data-access layer rather than at call sites.
+The trade-off is per-collection overhead, which becomes a problem with very many small tenants.
+At that point, use metadata filtering with a store that genuinely pre-filters. Enforce the
+tenant filter in a single shared data-access layer (one module that every query goes through),
+not at each call site.
 
 Either way: never let the tenant scope be something an individual query author can forget.
 </details>
@@ -2144,28 +2237,32 @@ Either way: never let the tenant scope be something an individual query author c
 <details>
 <summary><b>Q: Walk me through how you'd tune an HNSW index for a specific latency budget.</b></summary>
 
-You can't tune what you don't measure, so the first step is a **ground-truth set**: take a
-representative sample of real queries and compute exact nearest neighbours by brute force. That's
-your recall denominator.
+You can't tune what you don't measure. So the first step is a **ground-truth set** (the known
+correct answers). Take a representative sample of real queries and compute their exact nearest
+neighbours by brute force. That's your recall denominator: what recall is measured against.
 
-Then sweep `ef` — the runtime dial — and plot recall against p95 latency. The curve is
-characteristically steep then flat: recall climbs quickly, plateaus, and beyond the knee you're
-paying latency for nothing. Pick the smallest `ef` that meets your recall target within the
-latency budget. `ef` must be at least `k`, and `2×k` is a reasonable floor.
+Then sweep `ef` — the runtime dial — and plot recall against p95 latency (the time within which
+95% of queries finish). The curve is typically steep, then flat. Recall climbs quickly, then
+levels off, and beyond the knee you're paying latency for nothing. Pick the smallest `ef` that
+meets your recall target within the latency budget. `ef` must be at least `k`, and `2×k` is a
+reasonable floor.
 
 If the knee doesn't fit the budget, the build-time parameters come next. Raising `M` improves
 recall at the cost of memory (it's edges per node, so memory scales with it) and slightly slower
 builds. Raising `efConstruction` improves index quality for a one-off build-time cost and no
-query-time cost — usually the first thing to increase if you have build time to spare.
+query-time cost. It's usually the first thing to increase if you have build time to spare.
 
-If it still doesn't fit: reduce dimensionality (a Matryoshka model truncated to fewer dimensions,
-since every distance computation touches every dimension), or quantise — int8 for ~4× memory
-reduction with modest recall loss, or binary quantisation as a fast first pass with full-precision
-rescoring of the top candidates.
+If it still doesn't fit, you have two more options:
 
-Two things people miss: recall must be measured **with your filters applied**, because filtered
-search behaves very differently; and it must be re-measured after significant data growth, since
-the graph's characteristics shift.
+- **Reduce dimensionality.** Use a Matryoshka model truncated to fewer dimensions, since every
+  distance computation touches every dimension.
+- **Quantise** (store each number in fewer bits). int8 gives ~4× memory reduction with modest
+  recall loss. Binary quantisation works as a fast first pass, with full-precision rescoring of
+  the top candidates.
+
+People miss two things. First, recall must be measured **with your filters applied**, because
+filtered search behaves very differently. Second, it must be re-measured after significant data
+growth, since the graph's characteristics shift.
 </details>
 
 <details>
@@ -2173,53 +2270,55 @@ the graph's characteristics shift.
 
 The skew is the whole problem — a design that suits either extreme is wrong for the other.
 
-**Tiered storage.** Small tenants get shared collections with enforced metadata filtering; the
-per-collection overhead of 5,000 tiny indexes would dominate. Large tenants get dedicated
-collections, or dedicated shards, giving isolation and predictable performance. A tenant migrates
-tiers as it grows, so that migration path has to exist from day one.
+**Tiered storage.** Small tenants get shared collections with enforced metadata filtering. The
+per-collection overhead of 5,000 tiny indexes would otherwise dominate. Large tenants get
+dedicated collections, or dedicated shards, giving isolation and predictable performance. A
+tenant migrates tiers as it grows, so that migration path has to exist from day one.
 
-**Enforce the tenant scope in one place.** A single data-access layer that takes tenant from the
-authenticated session and injects it — never a filter that individual call sites can forget. For
-shared collections, verify the store genuinely pre-filters, or you'll starve small tenants'
-results exactly as in Exercise 2.
+**Enforce the tenant scope in one place.** Use a single data-access layer that takes the tenant
+from the authenticated (logged-in) session and injects it into every query. Never use a filter
+that individual call sites can forget. For shared collections, verify the store genuinely
+pre-filters. Otherwise you'll starve small tenants' results exactly as in Exercise 2.
 
 **Per-tenant configuration**, because one setting won't fit both ends: `ef`, `k`, and even chunk
 size and embedding model can reasonably differ. Store this as tenant config, not code.
 
-**Ingest** is a queue with per-tenant rate limiting so one customer's bulk upload can't starve
-everyone else. Content-hash upserts for idempotency, and deletion handling as a first-class
-operation.
+**Ingest** is a queue with per-tenant rate limiting, so one customer's bulk upload can't starve
+everyone else. Use content-hash upserts for idempotency, and treat deletion handling as a
+first-class operation.
 
-**Noisy-neighbour control**: per-tenant quotas on query rate and corpus size, and monitoring of
-p95 latency *segmented by tenant tier* — a global p95 hides the fact that your largest customer
-is timing out.
+**Noisy-neighbour control** (stopping one busy tenant from slowing down the rest). Set
+per-tenant quotas on query rate and corpus size. Monitor p95 latency *segmented by tenant tier*:
+a global p95 hides the fact that your largest customer is timing out.
 
-**Cost attribution.** Track embedding and storage cost per tenant; with a 50,000× size range
+**Cost attribution.** Track embedding and storage cost per tenant. With a 50,000× size range
 between customers, flat pricing is a loss-maker on the large end.
 
-**Operationally**: re-indexing must be online (dual-write to a new index, shadow-read, compare,
-cut over), because with 5,000 tenants you cannot take a maintenance window, and an embedding
-model upgrade will eventually be necessary.
+**Operationally**: re-indexing must be online, while the system keeps serving. Dual-write to a
+new index, shadow-read (query it alongside the old one), compare, then cut over. With 5,000
+tenants you cannot take a maintenance window (planned downtime), and an embedding model upgrade
+will eventually be necessary.
 </details>
 
 <details>
 <summary><b>Q: Your retrieval recall is 60%. Walk through improving it.</b></summary>
 
-First, **define which recall**, because two different numbers get conflated. Retrieval recall
+First, **define which recall**, because two different numbers get mixed up. Retrieval recall
 (did the correct chunk appear in top-k?) is an application-level metric. ANN recall (did the
 index find the true nearest neighbours?) is an index-level metric. Fixing the wrong one wastes
 weeks.
 
 Measure ANN recall by comparing against brute-force results on a sample. If it's already 98%, the
-index is fine and the problem is upstream — which is the usual case, and it means no amount of
-`ef` tuning will help.
+index is fine and the problem is upstream (earlier in the pipeline). That's the usual case, and
+it means no amount of `ef` tuning will help.
 
 Then work up the pipeline, cheapest first:
 
 1. **Is the answer in a chunk, intact?** If it straddles a boundary, no retriever can find it.
    Fix chunk size and overlap (Day 09). This caps your ceiling and people skip checking it.
-2. **Did the chunk lose its heading?** Inject header breadcrumbs — routinely worth double-digit
-   recall on structured documents, for a handful of tokens.
+2. **Did the chunk lose its heading?** Inject header breadcrumbs (the chain of section headings
+   above the chunk). On structured documents that's routinely worth double-digit recall, for a
+   handful of tokens.
 3. **Is the query lexical?** Error codes, names, SKUs — add hybrid search. Often the single
    biggest win, and today's `ERR_4471` demo is exactly this.
 4. **Is there a phrasing gap** between terse queries and prose documents? Query rewriting,
@@ -2229,8 +2328,8 @@ Then work up the pipeline, cheapest first:
 6. **Are near-duplicates crowding the top-k?** Deduplicate at ingest or use MMR.
 7. **Raise `k` and rerank.** Retrieving 20 and reranking to 5 usually beats retrieving 5 directly,
    and it's cheap to try.
-8. **Only now**, consider a different embedding model — it's the most expensive change, since it
-   means re-embedding everything, and it's rarely the binding constraint.
+8. **Only now**, consider a different embedding model. It's the most expensive change, since it
+   means re-embedding everything, and it's rarely what's holding you back.
 
 Throughout: every fixed case becomes a permanent test case, and recall is tracked in CI. Without
 that, the next "improvement" to the splitter silently undoes the work.
@@ -2241,10 +2340,13 @@ that, the next "improvement" to the splitter silently undoes the work.
 ## 10. Recap
 
 - ✅ Exact search is O(n) — fine under ~10k vectors, hopeless above
-- ✅ **HNSW** = layered proximity graph, ~O(log n); `ef` is the runtime recall/latency dial (must be ≥ k)
-- ✅ **IVF** = cluster then search the nearest clusters; `nprobe` is the dial
+- ✅ **HNSW** is a layered proximity graph, ~O(log n). `ef` is the runtime recall/latency dial
+  (it must be at least k)
+- ✅ **IVF** groups vectors into clusters, then searches only the nearest ones. `nprobe` is the
+  dial
 - ✅ "Approximate" means 95–99% recall — nearly always fine for retrieval
-- ✅ **Pre-filter vs post-filter** — post-filtering starves selective queries; verify your store
+- ✅ **Pre-filter vs post-filter** — post-filtering starves selective queries of results, so
+  verify what your store does
 - ✅ **Partition per tenant** rather than relying on filters — structural isolation
 - ✅ pgvector is the under-rated default if you already run Postgres
 - ✅ Filter syntax is store-specific and does not port — isolate it
@@ -2278,3 +2380,11 @@ ways and diagnose each one, which is the fastest way to learn what actually matt
    them nearly identically. BM25 treats them as distinct rare tokens and matches exactly. Fuse
    both rankings with RRF.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 10 — Embeddings](day-10-embeddings.md)** · **[Week 2 index](README.md)** · **[Day 12 — Naive RAG End-to-End (and Six Ways to Break It) →](day-12-naive-rag.md)**
+
+</div>

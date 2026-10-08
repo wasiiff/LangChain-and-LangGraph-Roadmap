@@ -39,7 +39,7 @@ rows = []
 for path in days:
     text = read(path)
     rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
-    num = int(re.search(r"day-(\d+)", os.path.basename(path)).group(1))
+    num = re.search(r"day-(\d+[a-z]?)", os.path.basename(path)).group(1).upper()   # "03", "00A"
     lines = text.count("\n")
     total_lines += lines
 
@@ -88,8 +88,8 @@ readme = read(os.path.join(ROOT, "README.md"))
 if "*coming next*" in readme:
     problems.append("README still has '*coming next*' rows")
 linked_days = len(re.findall(r"\[→\]\(week-0", readme))
-if linked_days != 28:
-    problems.append(f"README links {linked_days} days, expected 28")
+if linked_days != len(days):
+    problems.append(f"README links {linked_days} days, expected {len(days)} (one per day file)")
 
 print("\n" + ("PROBLEMS:" if problems else "no problems found"))
 for p in problems:

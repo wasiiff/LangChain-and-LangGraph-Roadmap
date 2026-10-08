@@ -2,13 +2,25 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 26](day-26-mcp-and-ai-sdk.md) · 🧩 **Difficulty:** ●●●●○
 
-**Today you learn:** how to run StudyBuddy for real users. The three ways to ship a LangGraph
-application — inside your web app, as your own service, or on the LangGraph server — and how
-to choose. The **start / poll / resume** run pattern that survives long jobs and restarts.
-Docker, serverless and its limits, Postgres and Redis in the right roles, graceful shutdown,
-and the capacity arithmetic for scaling to a million students. The LangGraph server, its
-client SDKs in both languages, and a self-hosted service were all run locally for this
-chapter.
+**Today you learn:** StudyBuddy works on your laptop, but long runs time out, restarts lose
+work and nobody knows if it can handle a million students. Today you choose how to ship a
+LangGraph app, run long jobs as **background runs** with **workers** and a **queue**, and do the
+**capacity arithmetic** for scale. The LangGraph server, its client SDKs in both languages and
+a self-hosted service were all run locally for this chapter.
+
+> 📖 **Words you'll meet today**
+>
+> - **Stateless** — a server process that keeps nothing between requests, so any copy can
+>   serve any request.
+> - **Background run** — an agent run that keeps going after the HTTP request that started it
+>   has ended.
+> - **Queue** — a list of waiting jobs, so work is accepted now and done later.
+> - **Worker** — a process that takes jobs from the queue and runs them.
+> - **Serverless** — a platform that runs your code per request, with short time limits.
+> - **Graceful shutdown** — on a stop signal, finish current work before the process exits.
+> - **LangGraph server** — a ready-made service that runs your graphs as an HTTP API.
+> - **Capacity arithmetic** — estimating runs, model calls and tokens per second before
+>   choosing infrastructure.
 
 ---
 
@@ -28,8 +40,8 @@ StudyBuddy v5 works beautifully in `node studybuddy.mjs`. Then:
 ```
 
 Every one of those is an **architecture** problem, not a LangChain problem. You already have
-the pieces that fix them — checkpointers (Day 20), interrupts (Day 21), streaming (Day 23),
-reliability (Day 24), observability (Day 25). Today is about assembling them into a system
+the pieces that fix them: checkpointers (Day 20), interrupts (Day 21), streaming (Day 23),
+reliability (Day 24) and observability (Day 25). Today is about assembling them into a system
 that runs.
 
 ### The real-life version
@@ -61,8 +73,8 @@ A restaurant that works for a dinner party of eight doesn't automatically work a
    └──────────────────────────────────────────────────────────────────┘
 ```
 
-Day 20 already made this possible: with a shared checkpointer, the graph holds nothing and
-the `thread_id` finds everything. Deployment is mostly the discipline of not breaking it.
+Day 20 already made this possible. With a shared checkpointer, the graph holds nothing and
+the `thread_id` finds everything. Deployment is mostly the discipline of not breaking that.
 
 ### Three ways to ship a graph
 
@@ -87,8 +99,9 @@ the `thread_id` finds everything. Deployment is mostly the discipline of not bre
 | Streaming | you write SSE (Day 23) | you write SSE | ✅ `runs.stream` |
 | Client | your own fetch code | your own fetch code | `@langchain/langgraph-sdk` / `langgraph_sdk` |
 
-Many teams start with **A**, move long or stateful work to **B** or **C** when it hurts, and
-keep simple chat in **A**. That's fine; it's the same graph code in all three.
+Many teams start with **A**. They move long or stateful work to **B** or **C** when it starts
+causing problems, and keep simple chat in **A**. That's fine: it's the same graph code in all
+three.
 
 ### The shape of a production system
 
@@ -122,8 +135,11 @@ keep simple chat in **A**. That's fine; it's the same graph code in all three.
 
 ### 3.1 Request lifetime vs run lifetime
 
-An HTTP request lives for seconds. An agent run can live for minutes — or, with an interrupt
-waiting for a teacher, for days. Tying the two together is the root of most deployment pain:
+> 💬 **In plain words:** a web request lasts seconds, but an agent run can last days. Don't tie
+> the run to the request when it may take long or wait for a person.
+
+An HTTP request lives for seconds. An agent run can live for minutes, or even for days when
+an interrupt is waiting for a teacher. Tying the two together causes most deployment pain:
 
 ```
    BOUND TO THE REQUEST                        DECOUPLED
@@ -135,10 +151,14 @@ waiting for a teacher, for days. Tying the two together is the root of most depl
    retry = duplicate run                        retry of POST can be de-duplicated
 ```
 
-Rule of thumb: **if a run can exceed ~20 seconds, or can pause for a human, decouple it.**
-Short streaming chat can stay bound to the request (Day 23) — with cancellation wired.
+Rule of thumb: **if a run can take longer than about 20 seconds, or can pause for a human,
+decouple it** (run it separately from the request). Short streaming chat can stay bound to
+the request (Day 23), as long as cancellation is wired.
 
 ### 3.2 The start / poll / resume pattern — verified
+
+> 💬 **In plain words:** one call starts the run and returns at once. The client then asks "is
+> it done?" until it is, and sends an answer if the run is waiting for approval.
 
 This chapter's self-hosted service (§4.2, §5.2) was run in both languages with an identical
 result:
@@ -153,10 +173,13 @@ result:
    GET  the run under a DIFFERENT thread   → 404
 ```
 
-That last line is Day 20's IDOR lesson built into the API: a run is only visible through the
-thread that owns it.
+That last line is Day 20's IDOR lesson built into the API. (IDOR means reading someone
+else's data by guessing its id.) A run is only visible through the thread that owns it.
 
 ### 3.3 The LangGraph server — verified
+
+> 💬 **In plain words:** the LangGraph server gives you that whole API without writing it. Just
+> don't give your graph its own checkpointer, because the server brings one.
 
 The LangGraph server (the "Agent Server", run locally with `langgraph dev`) turns a compiled
 graph into that whole API. You describe the project in `langgraph.json`:
@@ -182,8 +205,11 @@ Run against it with the Python and JS SDKs (both verified against the same serve
    runs.create(…)                           → status "pending";  runs.join(…) → "success"
 ```
 
-Three things the server did that you'd otherwise build yourself: persistence per thread,
-interrupts surfaced and resumable over HTTP, and background runs you can join later.
+The server did three things that you'd otherwise build yourself:
+
+- persistence per thread,
+- interrupts shown and resumable over HTTP,
+- background runs you can join (wait for) later.
 
 **Verified trap:** a graph compiled *with* its own checkpointer is rejected at load:
 
@@ -194,24 +220,27 @@ interrupts surfaced and resumable over HTTP, and background runs you can join la
    postgres database to connect to, please set the `POSTGRES_URI` environment variable.
 ```
 
-Export the graph compiled **without** a checkpointer — `builder.compile()` — and keep a separate
-`compile({ checkpointer })` for local scripts and tests if you like.
+Export the graph compiled **without** a checkpointer, as `builder.compile()`. If you like, keep
+a separate `compile({ checkpointer })` for local scripts and tests.
 
 > 🪟 **Windows notes from running it:** the Python server needed `colorama` installed
 > (`ConsoleRenderer with colors=True on Windows requires the colorama package`) and a UTF-8
 > console (`PYTHONUTF8=1`). The JS CLI's `langgraphjs dev` failed to start on Node 24 here
-> (`node.exe: bad option: --clear-screen=false`) — check the CLI's supported Node versions,
+> (`node.exe: bad option: --clear-screen=false`). Check the CLI's supported Node versions,
 > or run it under WSL or Docker. The server's HTTP protocol is the same for both languages, so
 > the JS SDK client code in §4.3 was verified against the Python server.
 
 ### 3.4 Docker
 
+> 💬 **In plain words:** Docker packs your app and everything it needs into one image that runs
+> the same everywhere. Keep that image small and free of secrets.
+
 `langgraph dockerfile Dockerfile` generates a Dockerfile from `langgraph.json` (verified,
-offline): it builds on the `langchain/langgraph-api` base image, installs your project, and
+offline). It builds on the `langchain/langgraph-api` base image, installs your project, and
 registers the graphs through an environment variable. `langgraph build` builds the image.
 
-For a self-hosted service (option B) you write a normal Dockerfile. The principles are the
-usual ones, and they matter more for AI services because images get large fast:
+For a self-hosted service (option B), you write a normal Dockerfile. The usual principles
+apply. They matter more for AI services, because images get large fast:
 
 ```
    small base image · dependencies before source (layer cache) · non-root user ·
@@ -220,6 +249,9 @@ usual ones, and they matter more for AI services because images get large fast:
 ```
 
 ### 3.5 Serverless: what fits and what doesn't
+
+> 💬 **In plain words:** serverless is good for short requests. Long runs and anything that
+> must stay in memory need normal, always-on workers.
 
 ```
    FITS                                          DOESN'T
@@ -232,10 +264,14 @@ usual ones, and they matter more for AI services because images get large fast:
 ```
 
 The pattern that works: **serverless for the API, dedicated workers for long runs.** And use a
-connection pooler (PgBouncer, or your provider's pooled endpoint) — hundreds of short-lived
-function instances each opening a Postgres connection will exhaust it.
+**connection pooler** (PgBouncer, or your provider's pooled endpoint), which shares a few
+database connections between many callers. Without one, hundreds of short-lived function
+instances each open a Postgres connection, and Postgres runs out.
 
 ### 3.6 Postgres and Redis: the right jobs
+
+> 💬 **In plain words:** Postgres keeps anything you must not lose. Redis holds fast, temporary
+> things that you could rebuild if they disappeared.
 
 ```
    POSTGRES (durable truth)                    REDIS (fast, disposable)
@@ -250,16 +286,22 @@ function instances each opening a Postgres connection will exhaust it.
 The test for Redis: **if Redis is wiped, does anyone lose data they care about?** The answer
 must be no. Conversations and approvals belong in Postgres.
 
-Verified APIs: Python `PostgresSaver.from_conn_string(...)` is a context manager (as SQLite's
-was on Day 20) with `.setup()` and `.delete_thread()`; `AsyncPostgresSaver` for async
-servers; `PostgresStore` is available. JS `PostgresSaver.fromConnString(...)` returns the saver
-directly, with `setup()`, `deleteThread()` and `end()`; `PostgresStore` lives at
-`@langchain/langgraph-checkpoint-postgres/store`.
+Verified APIs:
+
+- **Python:** `PostgresSaver.from_conn_string(...)` is a context manager (as SQLite's was on
+  Day 20) with `.setup()` and `.delete_thread()`. Use `AsyncPostgresSaver` for async servers.
+  `PostgresStore` is available.
+- **JS:** `PostgresSaver.fromConnString(...)` returns the saver directly, with `setup()`,
+  `deleteThread()` and `end()`. `PostgresStore` lives at
+  `@langchain/langgraph-checkpoint-postgres/store`.
 
 ### 3.7 Capacity arithmetic
 
-Model calls are I/O-bound: a worker spends almost all its time waiting on the provider. So the
-constraint is rarely CPU — it's **provider rate limits, concurrent connections and tokens**.
+> 💬 **In plain words:** before buying servers, multiply out your numbers. The limit is usually
+> the model provider's rate limit or your token bill, not your computers.
+
+Model calls are **I/O-bound**: a worker spends almost all its time waiting on the provider. So
+the constraint is rarely CPU. It's **provider rate limits, concurrent connections and tokens**.
 
 ```
    1,000,000 registered students
@@ -274,19 +316,23 @@ constraint is rarely CPU — it's **provider rate limits, concurrent connections
 
 What that tells you:
 
-- **100 concurrent runs is small** for async workers — a handful of processes. Compute is not
+- **100 concurrent runs is small** for async workers: a handful of processes. Compute is not
   the problem.
 - **50 model calls/second is the real constraint.** It must fit inside your provider's rate
-  limits — which is why Day 24's rate limiter, fallback provider and queue matter.
+  limits. That is why Day 24's rate limiter, fallback provider and queue matter.
 - **1.6 billion tokens a day is the bill.** Day 25's per-request token metrics and Day 18's
-  "keep state small" are the cost levers; so is routing easy questions to a cheaper model.
-- **Checkpoint writes:** ~4 per run (Day 20) × 400,000 = 1.6 million writes/day ≈ 70/s at
-  peak — comfortable for Postgres *if state is small*. With 2 MB of state, it isn't.
+  "keep state small" are the cost levers. So is routing easy questions to a cheaper model.
+- **Checkpoint writes:** about 4 per run (Day 20) × 400,000 runs = 1.6 million writes/day, or
+  about 70/s at peak. That is comfortable for Postgres *if state is small*. With 2 MB of
+  state, it isn't.
 
 Do this arithmetic with your own numbers before choosing infrastructure. It changes the
 conversation from "will it scale?" to "which of these three numbers is the bottleneck?".
 
 ### 3.8 Configuration and secrets
+
+> 💬 **In plain words:** settings, secrets and per-user details each live in a different place.
+> Pin your library versions so an upgrade never surprises you.
 
 ```
    CONFIG (per environment)     model names, limits, feature flags, POSTGRES_URI host
@@ -294,9 +340,9 @@ conversation from "will it scale?" to "which of these three numbers is the bottl
    CONTEXT (per request)        user id, tier, thread id (Day 18) — never in env vars
 ```
 
-And pin versions. LangChain, LangGraph and the provider SDKs move quickly; this book found
+And pin versions. LangChain, LangGraph and the provider SDKs change quickly. This book found
 behaviour differences between minor versions and between languages. A lockfile plus the Day 25
-evaluation suite in CI is what makes an upgrade a routine task instead of an incident.
+evaluation suite in CI makes an upgrade a routine task instead of an incident.
 
 ---
 
@@ -343,13 +389,13 @@ export function getGraph() {
 }
 ```
 
-The `??=` memoisation matters: building the graph and opening a pool per request is the
-classic serverless connection leak.
+The `??=` memoisation (build once, then reuse) matters. Building the graph and opening a pool
+per request is the classic serverless connection leak.
 
 ### 4.2 Option B — your own service with background runs
 
-The full service, verified (the test harness is at the bottom of the source this was run
-from; in production `RUNS` is a Postgres table and the checkpointer is `PostgresSaver`):
+Here is the full service, verified. The test harness is at the bottom of the source this was
+run from. In production, `RUNS` is a Postgres table and the checkpointer is `PostgresSaver`:
 
 ```js
 import http from "node:http";
@@ -444,13 +490,15 @@ process.on("SIGTERM", () =>
 );
 ```
 
-> 🔒 **Omitted for length, required in production:** authentication, and checking that the
-> authenticated user owns `:tid` before every read, run or resume (Day 20's IDOR warning, and
-> Day 21's interrupt-id staleness check on resume).
+> 🔒 **Omitted for length, required in production:**
+>
+> - authentication;
+> - checking that the authenticated user owns `:tid` before every read, run or resume. This is
+>   Day 20's IDOR warning, plus Day 21's check on resume that the interrupt id isn't stale.
 
 This keeps runs in the API process. It survives client disconnects and long runs, but not a
-process crash mid-run (the checkpoint survives; the *task* doesn't). §4.4 moves execution to
-workers so a crash only costs a retry from the last checkpoint.
+process crash mid-run. (The checkpoint survives; the *task* doesn't.) §4.4 moves execution to
+workers, so a crash only costs a retry from the last checkpoint.
 
 ### 4.3 Option C — the LangGraph server and its client
 
@@ -516,12 +564,13 @@ const state = await client.threads.getState(thread.thread_id);
 
 All of those calls were verified against a running server. The client also exposes
 `threads.getHistory`, `threads.updateState`, `runs.cancel`, `assistants.getGraph` and cron
-jobs — Days 20–21's features, over HTTP.
+jobs (scheduled runs). These are Days 20–21's features, over HTTP.
 
 ### 4.4 Workers and a queue
 
-When runs are long or bursty, separate *accepting* work from *doing* it. The contract is small
-and the implementation depends on your queue (BullMQ, SQS, Postgres `SKIP LOCKED`, …):
+When runs are long or arrive in bursts, separate *accepting* work from *doing* it. The
+contract is small. The implementation depends on your queue (BullMQ, SQS, Postgres
+`SKIP LOCKED`, …):
 
 ```js
 // api.js — enqueue and return
@@ -552,10 +601,10 @@ queue.process("run", CONCURRENCY, async ({ runId, threadId, text }) => {
 
 Why this is robust:
 
-- **A worker crash loses nothing.** The checkpoint has every completed step; the queue
-  redelivers the job; `invoke(null, config)` resumes from the last checkpoint (Day 20).
-- **`CONCURRENCY` is your provider-rate-limit valve.** Queue depth absorbs bursts instead of
-  429s.
+- **A worker crash loses nothing.** The checkpoint has every completed step. The queue
+  delivers the job again. `invoke(null, config)` resumes from the last checkpoint (Day 20).
+- **`CONCURRENCY` is your provider-rate-limit valve.** Bursts wait in the queue instead of
+  turning into 429 (rate-limit) errors.
 - **The idempotency key** turns a client's retried POST into the same run, not a second one.
 
 ### 4.5 Docker for a self-hosted service
@@ -618,11 +667,12 @@ if (url.pathname === "/readyz") {
 }
 ```
 
-Keep liveness cheap (a slow database shouldn't get healthy processes restarted); make
-readiness honest (a process that can't reach Postgres shouldn't receive traffic). And handle
-`SIGTERM` as in §4.2: stop accepting, drain in-flight runs up to a deadline, close pools. On
-a rolling deploy, that's the difference between "deploys are invisible" and "every deploy
-drops conversations".
+**Liveness** asks "is the process alive?" and **readiness** asks "can it take traffic now?".
+Keep liveness cheap: a slow database shouldn't get healthy processes restarted. Make
+readiness honest: a process that can't reach Postgres shouldn't receive traffic. And handle
+`SIGTERM` (the stop signal) as in §4.2: stop accepting, finish in-flight runs up to a
+deadline, close pools. On a rolling deploy, that's the difference between "deploys are
+invisible" and "every deploy drops conversations".
 
 ---
 
@@ -651,13 +701,13 @@ async def chat(body: ChatBody, user=Depends(require_user)):
     # ...stream app.state.graph.astream(...) as SSE, exactly as Day 23 §5.6
 ```
 
-`from_conn_string` is a context manager (verified), so the lifespan is the right place for it:
-entered once at startup, closed at shutdown.
+`from_conn_string` is a context manager (verified). So the lifespan is the right place for
+it: entered once at startup, closed at shutdown.
 
 ### 5.2 Option B — your own service with background runs
 
-Verified (with `InMemorySaver` and FastAPI's `TestClient`; swap in `AsyncPostgresSaver` and a
-runs table for production):
+Verified with `InMemorySaver` and FastAPI's `TestClient`. For production, swap in
+`AsyncPostgresSaver` and a runs table:
 
 ```python
 import asyncio, os, uuid
@@ -771,9 +821,9 @@ async def health():
 ```
 
 > ⚠️ **Keep a reference to background tasks.** `asyncio.create_task` holds only a weak
-> reference; a task nobody references can be garbage-collected mid-run. The `tasks` set plus
-> `add_done_callback(discard)` is the standard fix — and it's also what graceful shutdown
-> waits on.
+> reference. A task nobody references can be garbage-collected (deleted from memory) mid-run.
+> The `tasks` set plus `add_done_callback(discard)` is the standard fix. It's also what
+> graceful shutdown waits on.
 
 Same security note as JS: authenticate, and check thread ownership on every route.
 
@@ -863,8 +913,8 @@ async def handle_run(run_id: str, thread_id: str, text: str | None):
 ```
 
 Celery, RQ, Arq, SQS consumers or a Postgres `SKIP LOCKED` loop all fit this shape. The
-properties are the same as in JS: crash-safe via checkpoints, concurrency as a rate-limit
-valve, idempotent submission.
+properties are the same as in JS: crash-safe through checkpoints, concurrency as a rate-limit
+valve, and idempotent submission (sending the same job twice creates only one run).
 
 ### 5.5 Docker for a self-hosted service
 
@@ -882,9 +932,9 @@ HEALTHCHECK CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.reque
 CMD ["uvicorn", "service:api", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-Pin exact versions in `requirements.txt` (or use `uv`/`poetry` lockfiles). Run the uvicorn
-process count according to your CPU, not your expected concurrency: async workers already
-handle many in-flight runs each.
+Pin exact versions in `requirements.txt` (or use `uv`/`poetry` lockfiles). Set the number of
+uvicorn processes by your CPU, not by your expected concurrency. Each async worker already
+handles many in-flight runs.
 
 ### 5.6 Health, readiness and shutdown
 
@@ -902,8 +952,8 @@ async def readyz():
         raise HTTPException(503, "not ready")
 ```
 
-Shutdown is handled by the lifespan in §5.2: uvicorn stops accepting on `SIGTERM`, the lifespan
-waits for in-flight tasks up to a deadline, and exiting the `async with` closes the pool.
+The lifespan in §5.2 handles shutdown. Uvicorn stops accepting on `SIGTERM`. The lifespan
+waits for in-flight tasks up to a deadline. Exiting the `async with` closes the pool.
 
 ### 5.7 The JS ↔ Python translation for today
 
@@ -938,9 +988,9 @@ waits for in-flight tasks up to a deadline, and exiting the `async with` closes 
    streaming         runs publish events; runs.stream / runs.join subscribe
 ```
 
-That's the architecture of §4.4 — API, queue, workers, Postgres — packaged. Knowing it lets you
+That's the architecture of §4.4 (API, queue, workers, Postgres), packaged. Knowing it lets you
 reason about the server the same way you'd reason about your own: queue depth, worker
-concurrency, Postgres load.
+concurrency and Postgres load.
 
 ### 6.2 A database schema for option B
 
@@ -980,9 +1030,9 @@ CREATE TABLE approvals (                          -- Day 21: who approved what
 );
 ```
 
-`conversations.thread_id` is where ownership lives — the IDOR check is a join against it.
-Deleting a user cascades to their conversations and runs; delete their checkpoints
-(`delete_thread`) and their store namespace in the same job (Day 20's GDPR note).
+`conversations.thread_id` is where ownership lives. The IDOR check is a join against it.
+Deleting a user also deletes (cascades to) their conversations and runs. Delete their
+checkpoints (`delete_thread`) and their store namespace in the same job (Day 20's GDPR note).
 
 ### 6.3 Where time goes in a run
 
@@ -993,10 +1043,14 @@ Deleting a user cascades to their conversations and runs; delete their checkpoin
    your code             ▏                                   <1%
 ```
 
-That's why horizontal scaling of *workers* rarely helps latency, and why the real levers are:
-fewer model calls (Day 22's measurements), smaller prompts (Day 18), parallel tool calls
-(Day 19 and 22), streaming for perceived speed (Day 23), and faster or cheaper models where
-quality allows (Day 25 tells you where it does).
+That's why adding more *workers* (horizontal scaling) rarely helps latency. The real levers
+are:
+
+- fewer model calls (Day 22's measurements),
+- smaller prompts (Day 18),
+- parallel tool calls (Day 19 and 22),
+- streaming, so it feels faster (Day 23),
+- faster or cheaper models where quality allows (Day 25 tells you where it does).
 
 ### 6.4 Scaling milestones
 
@@ -1013,7 +1067,7 @@ quality allows (Day 25 tells you where it does).
                       for history views, retention jobs for checkpoints.
 ```
 
-Each step adds something because a number from §3.7 forced it — not because a diagram said so.
+Each step adds something because a number from §3.7 forced it, not because a diagram said so.
 
 ---
 
@@ -1064,9 +1118,9 @@ On serverless this exhausts Postgres connections within minutes of real traffic.
 
 ### ❌ 6. No graceful shutdown
 
-Every rolling deploy kills in-flight runs. Handle `SIGTERM`: stop accepting, drain up to a
-deadline, close pools. With checkpoints, even a hard kill is recoverable — but only if
-something re-queues the run.
+Every rolling deploy kills in-flight runs. Handle `SIGTERM`: stop accepting, finish current
+runs up to a deadline, close pools. With checkpoints, even a hard kill is recoverable, but
+only if something re-queues the run.
 
 ### ❌ 7. Secrets in images or `langgraph.json`
 
@@ -1083,13 +1137,13 @@ limits, caches: yes. Checkpoints and audit logs: Postgres.
 ### ❌ 9. Scaling compute to fix a provider bottleneck
 
 Adding workers when the constraint is 50 model calls/second against a rate limit only produces
-more 429s. Do §3.7's arithmetic first; the bottleneck is usually the provider, tokens or
-state size — not CPU.
+more 429s. Do §3.7's arithmetic first. The bottleneck is usually the provider, tokens or
+state size, not CPU.
 
 ### ❌ 10. Liveness checks that touch dependencies
 
-A slow database makes `/healthz` fail, the orchestrator restarts every healthy process, and a
-blip becomes an outage. Liveness: cheap. Readiness: checks dependencies.
+A slow database makes `/healthz` fail. The orchestrator then restarts every healthy process,
+and a short blip becomes an outage. Liveness: cheap. Readiness: checks dependencies.
 
 ### ❌ 11. Unpinned dependencies
 
@@ -1103,8 +1157,8 @@ unpinned deploy is an unreviewed upgrade.
 
 ### ❌ 12. Trusting a client-supplied `thread_id` in the API
 
-Still the most common vulnerability in agent backends (Day 20). Every route that takes a
-thread or run id checks ownership.
+This is still the most common vulnerability in agent backends (Day 20). Every route that
+takes a thread or run id must check ownership.
 
 ---
 
@@ -1112,9 +1166,13 @@ thread or run id checks ownership.
 
 ### Exercise 1 — Start, poll, resume ●●○○○
 
-Build option B's service with a graph that pauses for approval. Test it end to end (no API key,
-no network): start a run, poll until it's no longer running, show the pending interrupt,
-resume it, and confirm a run can't be read through a different thread.
+Build option B's service with a graph that pauses for approval. Test it end to end, with no
+API key and no network:
+
+1. Start a run.
+2. Poll until it's no longer running.
+3. Show the pending interrupt, and resume it.
+4. Confirm a run can't be read through a different thread.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1182,11 +1240,11 @@ after resume:  { status: "success", next: [], pending: [], last_message: "echo: 
 wrong thread -> 404
 ```
 
-**What to notice.** The status comes from *your* runs table; `next` and `pending` come from the
-*checkpointer*. Two sources of truth that agree: the runs table answers "what happened to this
-job?", the checkpoint answers "where is the conversation?". The 404 on the wrong thread is the
-ownership rule expressed in the URL structure — and in production it's joined against the
-authenticated user, too.
+**What to notice.** The status comes from *your* runs table. `next` and `pending` come from the
+*checkpointer*. These are two sources of truth that agree. The runs table answers "what
+happened to this job?". The checkpoint answers "where is the conversation?". The 404 on the
+wrong thread is the ownership rule expressed in the URL structure. In production, it's also
+joined against the authenticated user.
 </details>
 
 ---
@@ -1339,14 +1397,14 @@ created: pending
 joined: success
 ```
 
-**Step 4 — compiled with a checkpointer:** the server refuses to load the graph —
+**Step 4 — compiled with a checkpointer:** the server refuses to load the graph with
 `ValueError: Heads up! Your graph 'graph' from './graph.py' includes a custom checkpointer (type
-InMemorySaver). With LangGraph API, persistence is handled automatically by the platform…` — and
+InMemorySaver). With LangGraph API, persistence is handled automatically by the platform…`. It
 points you to `POSTGRES_URI`.
 
 **What you got for free:** per-thread persistence, interrupts over HTTP, streaming, background
-runs and joins — exactly what Exercise 1 made you build by hand. That trade (features vs another
-runtime to operate) is the whole A/B/C decision.
+runs and joins. That is exactly what Exercise 1 made you build by hand. The whole A/B/C
+decision is this trade: more features, but another runtime to operate.
 </details>
 
 ---
@@ -1375,8 +1433,8 @@ Predict, then check your reasoning.
 | 4 | `too many connections` errors from Postgres, then total failure | each invocation opens its own pool | memoise per instance + a connection pooler |
 | 5 | 40 runs die mid-step; users see errors or stuck "running" statuses | the process is killed with work in flight | drain on `SIGTERM`; mark orphaned runs and re-queue from the last checkpoint |
 
-**Repro for #1 (no servers needed)** — two "instances" are just two graphs with separate
-in-memory checkpointers, alternating:
+**Repro for #1 (no servers needed).** Two "instances" are just two graphs with separate
+in-memory checkpointers, taking turns:
 
 ```js
 import { StateGraph, MessagesAnnotation, MemorySaver, START, END } from "@langchain/langgraph";
@@ -1418,12 +1476,13 @@ for turn in range(3):
     print(f"turn {turn + 1} (instance {turn % 2}):", out["messages"][-1].content)
 ```
 
-Replace both `MemorySaver`s with one shared checkpointer object (standing in for Postgres) and
-every turn sees the full history. That one-line change is the whole golden rule.
+Replace both `MemorySaver`s with one shared checkpointer object (standing in for Postgres).
+Now every turn sees the full history. That one-line change is the whole golden rule.
 
-**Ranking.** #4 is loud. #1, #3 and #5 are intermittent, which makes them hard to reproduce and
-easy to blame on "the AI". #2 costs money quietly. All five are prevented by the same short list:
-**shared state, decoupled runs, idempotent submission, referenced tasks, graceful shutdown.**
+**Ranking.** #4 is loud. #1, #3 and #5 happen only sometimes, which makes them hard to
+reproduce and easy to blame on "the AI". #2 costs money quietly. The same short list prevents
+all five: **shared state, decoupled runs, idempotent submission, referenced tasks, graceful
+shutdown.**
 </details>
 
 ---
@@ -1456,9 +1515,12 @@ Write the deployment design for StudyBuddy at 100,000 students, as a short desig
    checkpoints: 204,000 runs × ~4 writes            ≈ 820,000 writes/day (~35/s peak)
 ```
 
-Conclusions: compute is small; the provider's rate limit (≈25 calls/s at peak, with headroom
-for retries) and the token bill are the constraints; Postgres load is modest *if state stays
-small*.
+Conclusions:
+
+- Compute is small.
+- The constraints are the provider's rate limit (about 25 calls/s at peak, with headroom for
+  retries) and the token bill.
+- Postgres load is modest *if state stays small*.
 
 **2 — Serving**
 
@@ -1481,14 +1543,15 @@ small*.
 
 **4 — Reliability and cost**
 
-- Provider: client retries on 429/5xx only; fallback to a second provider (Day 24); a shared
-  limiter sized at 80% of quota; worker concurrency as the valve for long runs.
+- Provider: client retries on 429/5xx only. Fall back to a second provider (Day 24). Use a
+  shared limiter sized at 80% of quota, and worker concurrency as the valve for long runs.
 - Agents: model-call limits (chat 6, study plans 20), tool retries only on idempotent tools,
-  PII redaction, approval gates on anything that posts or emails.
-- Cost: per-run token metrics labelled with prompt version and model (Day 25); route easy
-  questions to a cheaper model after evals show no quality loss; alert at 2× baseline cost per
-  conversation.
-- Quality: the eval suite gates deploys; online groundedness sampling; thumbs-down → dataset.
+  PII redaction, and approval gates on anything that posts or emails.
+- Cost: per-run token metrics labelled with prompt version and model (Day 25). Route easy
+  questions to a cheaper model after evals show no quality loss. Alert at 2× baseline cost
+  per conversation.
+- Quality: the eval suite gates deploys. Sample online groundedness. Every thumbs-down goes
+  into the dataset.
 
 **5 — `compose.yaml`** (production-like local stack for option A + Postgres + Redis)
 
@@ -1521,14 +1584,17 @@ volumes:
   pgdata:
 ```
 
-> The environment variable names the LangGraph server image reads (`POSTGRES_URI`, the Redis
-> URI, and any licence or LangSmith keys a self-hosted deployment needs) vary by version and
-> deployment type — confirm them in the docs for the version you run. `POSTGRES_URI` is the one
-> the server's own error message pointed to in our test.
+> The LangGraph server image reads some environment variables: `POSTGRES_URI`, the Redis URI,
+> and any licence or LangSmith keys a self-hosted deployment needs. Their names vary by version
+> and deployment type, so confirm them in the docs for the version you run. `POSTGRES_URI` is
+> the one the server's own error message pointed to in our test.
 
-**Why this design holds up in review:** every component exists because a number in part 1 or a
-failure from this week forced it; the interactive path stays simple; the durable path uses the
-runtime built for it; and cost, quality and reliability each have a metric and an owner.
+**Why this design holds up in review:**
+
+- Every component exists because a number in part 1, or a failure from this week, forced it.
+- The interactive path stays simple.
+- The durable path uses the runtime built for it.
+- Cost, quality and reliability each have a metric and an owner.
 </details>
 
 ---
@@ -1552,8 +1618,8 @@ slow."* Review it.
 | 5 | (implicit) a pool per invocation | connection exhaustion under load | memoised clients + a pooler |
 | 6 | (implicit) no idempotency | retries after timeouts double-grade and double-post | idempotency keys on run creation and on posting grades |
 
-**What to keep from the proposal:** serverless is a good fit for the *interactive API* — chat
-turns, starting runs, reading status, resuming approvals. Those are short and bursty.
+**What to keep from the proposal:** serverless is a good fit for the *interactive API*: chat
+turns, starting runs, reading status, resuming approvals. Those are short and come in bursts.
 
 **The corrected shape**
 
@@ -1566,9 +1632,10 @@ turns, starting runs, reading status, resuming approvals. Those are short and bu
 ```
 
 **On "Postgres is slow".** Ask what's slow. If checkpoint writes are slow, state is almost
-certainly too big — retrieved essays, rubric text or full grading transcripts in graph state
-(Day 18). Store the essay once, keep its id in state, and a checkpoint write is a few kilobytes.
-Swapping to an in-memory store to hide that trades a performance problem for a data-loss one.
+certainly too big: retrieved essays, rubric text or full grading transcripts in graph state
+(Day 18). Store the essay once and keep its id in state. Then a checkpoint write is a few
+kilobytes. Swapping to an in-memory store to hide the problem trades a performance problem for
+a data-loss one.
 </details>
 
 ---
@@ -1579,26 +1646,27 @@ Swapping to an in-memory store to hide that trades a performance problem for a d
 
 **Q1. What does "stateless compute, state in a database" mean for an agent?**
 
-No conversation or run state lives in the process: the graph is built once per process, and
-every request loads and saves state through a shared checkpointer keyed by `thread_id`. Then any
-instance can serve any turn, deploys don't lose conversations, and you scale by adding instances.
+No conversation or run state lives in the process. The graph is built once per process. Every
+request loads and saves state through a shared checkpointer keyed by `thread_id`. Then any
+instance can serve any turn, deploys don't lose conversations, and you scale by adding
+instances.
 
 ---
 
 **Q2. Why shouldn't a long agent run be tied to an HTTP request?**
 
-Requests have timeouts (load balancers, serverless limits, clients), disconnects cancel work,
-and retries duplicate it. Decouple: start the run and return 202 with a run id, then stream or
-poll its status, and resume interrupts with a separate request.
+Requests have timeouts (load balancers, serverless limits, clients). Disconnects cancel work,
+and retries duplicate it. Decouple instead. Start the run and return 202 with a run id. Then
+stream or poll its status, and resume interrupts with a separate request.
 
 ---
 
 **Q3. What is the LangGraph server?**
 
-A runtime that serves compiled graphs described in `langgraph.json` as an HTTP API: assistants,
-threads with built-in persistence, blocking/streaming/background runs, interrupts and resume,
-state history, crons. You run it locally with `langgraph dev` and talk to it with
-`@langchain/langgraph-sdk` or `langgraph_sdk`.
+A runtime that serves compiled graphs described in `langgraph.json` as an HTTP API. The API
+covers assistants, threads with built-in persistence, and blocking, streaming and background
+runs. It also covers interrupts and resume, state history and crons. You run it locally with
+`langgraph dev` and talk to it with `@langchain/langgraph-sdk` or `langgraph_sdk`.
 
 ---
 
@@ -1612,8 +1680,9 @@ telling you to remove it. Export `builder.compile()` without one.
 
 **Q5. What belongs in Postgres and what in Redis?**
 
-Postgres: durable truth — checkpoints, long-term store, conversations, runs, approvals, audit.
-Redis: fast and disposable — queues, rate limits, locks, circuit-breaker state, pub/sub, caches.
+Postgres holds durable truth: checkpoints, long-term store, conversations, runs, approvals,
+audit. Redis holds fast, disposable things: queues, rate limits, locks, circuit-breaker state,
+pub/sub, caches.
 The test: wiping Redis must not lose anything a user cares about.
 
 ---
@@ -1622,29 +1691,34 @@ The test: wiping Redis must not lose anything a user cares about.
 
 **Q6. Serverless for an agent — yes or no?**
 
-Yes for the interactive API: short streamed chat turns, starting runs, status, resuming approvals
-— as long as state is in a shared checkpointer and clients are memoised with a connection pooler.
-No for long runs, waiting on humans, stdio MCP subprocesses, or background work after the
-response. The common split: serverless API, dedicated workers or the LangGraph server for runs.
+Yes for the interactive API: short streamed chat turns, starting runs, status, resuming
+approvals. That holds as long as state is in a shared checkpointer and clients are memoised
+with a connection pooler. No for long runs, waiting on humans, stdio MCP subprocesses, or
+background work after the response. The common split: a serverless API, with dedicated workers
+or the LangGraph server for runs.
 
 ---
 
 **Q7. Walk me through the start/poll/resume API.**
 
-`POST /threads/:tid/runs` validates ownership, records a run (with an idempotency key), enqueues
-it and returns 202 + run id. `GET /threads/:tid/runs/:rid` returns the run's status from the runs
-table and `next`/pending interrupts from the checkpoint. `POST /threads/:tid/resume` enqueues a
-run with `Command(resume=…)` after checking the interrupt id. Workers execute runs; a crash is
-recovered by re-queuing and resuming from the last checkpoint with a null input.
+- `POST /threads/:tid/runs` validates ownership and records a run (with an idempotency key). It
+  enqueues the run and returns 202 + run id.
+- `GET /threads/:tid/runs/:rid` returns the run's status from the runs table, and
+  `next`/pending interrupts from the checkpoint.
+- `POST /threads/:tid/resume` enqueues a run with `Command(resume=…)` after checking the
+  interrupt id.
+
+Workers execute runs. To recover from a crash, re-queue the run and resume from the last
+checkpoint with a null input.
 
 ---
 
 **Q8. How do you handle graceful shutdown?**
 
 On `SIGTERM`: stop accepting new work, let in-flight runs finish up to a deadline, then close
-database pools. In Python keep references to background tasks so you can wait on them. Anything
-still running at the deadline is recoverable because of checkpoints — mark those runs so a worker
-re-queues them.
+database pools. In Python, keep references to background tasks so you can wait on them.
+Anything still running at the deadline is recoverable because of checkpoints. Mark those runs
+so a worker re-queues them.
 
 ---
 
@@ -1658,18 +1732,24 @@ dependencies like Postgres, so the load balancer routes around instances that ca
 
 **Q10. What usually limits an LLM application's scale?**
 
-Rarely CPU: runs spend most of their time waiting on model providers. The limits are provider rate
-limits (calls and tokens per minute), token cost, connection counts to databases, and state size
-driving checkpoint write volume. Do the arithmetic — runs per second at peak, model calls per run,
-tokens per run — before choosing infrastructure.
+Rarely CPU: runs spend most of their time waiting on model providers. The limits are:
+
+- provider rate limits (calls and tokens per minute),
+- token cost,
+- connection counts to databases,
+- state size, which drives checkpoint write volume.
+
+Do the arithmetic before choosing infrastructure: runs per second at peak, model calls per
+run, tokens per run.
 
 ---
 
 **Q11. How do you make run submission idempotent?**
 
-Clients send an `Idempotency-Key` header; the API stores it with a unique constraint on the runs
-table and returns the existing run id on a repeat. Side-effecting tools get their own idempotency
-keys derived from the action (Day 24), so a retried or replayed step can't double-post.
+Clients send an `Idempotency-Key` header. The API stores it with a unique constraint on the runs
+table, and returns the existing run id on a repeat. Tools with side effects get their own
+idempotency keys derived from the action (Day 24). So a retried or replayed step can't post
+twice.
 
 ---
 
@@ -1677,46 +1757,62 @@ keys derived from the action (Day 24), so a retried or replayed step can't doubl
 
 **Q12. Design the deployment for an agent product at a million users.**
 
-Start from arithmetic: daily actives, runs per user, peak factor, model calls and tokens per run —
-that tells you the provider budget and rate limits dominate. Serve interactive chat from a
-stateless, horizontally scaled API with streaming and cancellation; run long and human-gated work
-through a queue and workers or the LangGraph server; keep checkpoints, store, runs and audit in
-Postgres (pooled, with read replicas for history views and retention jobs); use Redis for queues,
-rate limits and breaker state. Multiple providers or reserved capacity with fallback and
-per-tenant limits; model routing to cheaper models where evals allow; strict state and prompt size
-discipline; regional deployments if latency or data residency demand it; tracing, cost and quality
-dashboards; and an evaluation gate on every deploy.
+Start from arithmetic: daily actives, runs per user, peak factor, model calls and tokens per
+run. That tells you the provider budget and rate limits dominate. Then:
+
+- Serve interactive chat from a stateless, horizontally scaled API with streaming and
+  cancellation.
+- Run long and human-gated work through a queue and workers, or the LangGraph server.
+- Keep checkpoints, store, runs and audit in Postgres. Pool connections, and add read replicas
+  for history views and retention jobs.
+- Use Redis for queues, rate limits and breaker state.
+- Use multiple providers or reserved capacity, with fallback and per-tenant limits.
+- Route to cheaper models where evals allow.
+- Keep state and prompt sizes strictly small.
+- Deploy per region if latency or data residency demand it.
+- Add tracing, cost and quality dashboards, and an evaluation gate on every deploy.
 
 ---
 
 **Q13. A worker crashes halfway through a 12-step run. What happens in a well-designed system?**
 
-The checkpoint holds every completed superstep. The queue's visibility timeout expires and the job
-is redelivered (or a reaper marks runs stuck in `running` and re-queues them). The worker calls
-`invoke(null, config)` for that thread, which resumes from the last checkpoint — the completed
-steps aren't re-executed or re-billed. Side effects in the interrupted step are protected by
-idempotency keys. The runs table records the retry for observability.
+The checkpoint holds every completed superstep. The queue's visibility timeout expires and the
+job is delivered again. (Or a reaper, a clean-up job, marks runs stuck in `running` and
+re-queues them.) The worker calls `invoke(null, config)` for that thread, which resumes from
+the last checkpoint. The completed steps aren't re-executed or re-billed. Side effects in the
+interrupted step are protected by idempotency keys. The runs table records the retry for
+observability.
 
 ---
 
 **Q14. When would you choose your own service over the LangGraph server?**
 
-When you need something the server doesn't fit: an existing platform with its own job system,
-strict infrastructure or compliance constraints, a very simple workload where the extra runtime
-isn't worth operating, or tight integration with an existing API and auth layer. The trade is that
-you build run management, streaming, interrupt endpoints and background execution yourself. If you
-find yourself re-implementing most of the server's API, that's the signal to use the server.
+When you need something the server doesn't fit:
+
+- an existing platform with its own job system,
+- strict infrastructure or compliance constraints,
+- a very simple workload where the extra runtime isn't worth operating,
+- tight integration with an existing API and auth layer.
+
+The trade is that you build run management, streaming, interrupt endpoints and background
+execution yourself. If you find yourself re-implementing most of the server's API, that's the
+signal to use the server.
 
 ---
 
 **Q15. How do you roll out a new prompt or model safely?**
 
-Treat it as a deploy. Pin it as a versioned config value; run the offline evaluation suite against
-it (Day 25); ship behind a flag to a small percentage of traffic with the version in every run's
-metadata; compare online quality, cost and latency by version; then ramp up or roll back by
-flipping the flag. Because checkpointed threads outlive deploys, make sure a conversation that
-started on the old version behaves sensibly on the new one — or pin a thread's version until it
-ends.
+Treat it as a deploy:
+
+1. Pin it as a versioned config value.
+2. Run the offline evaluation suite against it (Day 25).
+3. Ship behind a flag to a small percentage of traffic, with the version in every run's
+   metadata.
+4. Compare online quality, cost and latency by version.
+5. Ramp up or roll back by flipping the flag.
+
+Checkpointed threads outlive deploys. So make sure a conversation that started on the old
+version behaves sensibly on the new one, or pin a thread's version until it ends.
 
 ---
 
@@ -1725,8 +1821,8 @@ ends.
 ### What you learned
 
 - ✅ The golden rule: **stateless compute, state in a database**
-- ✅ Three ways to ship: **in your app · your own service · the LangGraph server**
-- ✅ Decouple long or human-gated runs: **start (202) → poll/stream → resume**
+- ✅ Three ways to ship: **in your app, as your own service, or on the LangGraph server**
+- ✅ Decouple long or human-gated runs: **start (202), then poll or stream, then resume**
 - ✅ Verified: the self-hosted pattern behaves identically in JS and Python, with ownership checks per thread
 - ✅ Verified: the LangGraph server serves threads, interrupts, resume, streaming and background runs — to both SDKs
 - ✅ The server **rejects graphs compiled with a checkpointer**; it uses `POSTGRES_URI`
@@ -1750,10 +1846,10 @@ ends.
 
 ### Tomorrow
 
-**[Day 28 — Capstones & Interview Crash Course](day-28-capstones-and-interviews.md)**: the last
-day. Twelve capstone projects from beginner to advanced, each mapped to the days it exercises,
-and an interview crash course: the questions that come up most, how to structure system-design
-answers, and three mock interviews with model answers.
+**[Day 28 — Capstones & Interview Crash Course](day-28-capstones-and-interviews.md)**: the
+mid-course checkpoint. You get twelve capstone projects from beginner to advanced, each mapped to the days it
+exercises. You also get an interview crash course: the questions that come up most, how to
+structure system-design answers, and three mock interviews with model answers.
 
 ### Quick self-check
 
@@ -1765,20 +1861,22 @@ answers, and three mock interviews with model answers.
 <details>
 <summary>Answers</summary>
 
-1. State in the process — an in-memory checkpointer or a global dictionary, lost on restart and
-   split across instances — and no graceful shutdown, so in-flight runs were killed. Also check
-   whether `thread_id` is stable across requests (derived from the user and chat, not generated
-   per request).
+1. First, state in the process: an in-memory checkpointer or a global dictionary, lost on
+   restart and split across instances. Second, no graceful shutdown, so in-flight runs were
+   killed. Also check whether `thread_id` is stable across requests (derived from the user and
+   chat, not generated per request).
 
 2. The graph was compiled with its own checkpointer. The server manages persistence itself and
    rejects the graph with "includes a custom checkpointer … please remove" (verified). Export
    `builder.compile()` without a checkpointer and configure the database with `POSTGRES_URI`.
 
-3. More workers make it worse: the constraint is the provider's rate limit, not compute, so more
-   concurrency means more 429s and more retries. Instead: a shared rate limiter sized to the
-   quota, worker concurrency as a valve with a queue absorbing bursts, retries with jitter at one
-   layer only, a fallback provider, fewer model calls per run, and a quota increase or second
-   provider if the arithmetic says demand genuinely exceeds capacity.
+3. More workers make it worse. The constraint is the provider's rate limit, not compute, so
+   more concurrency means more 429s and more retries. Instead:
+   - a shared rate limiter sized to the quota;
+   - worker concurrency as a valve, with a queue absorbing bursts;
+   - retries with jitter at one layer only;
+   - a fallback provider and fewer model calls per run;
+   - a quota increase or second provider, if the arithmetic says demand truly exceeds capacity.
 </details>
 
 ---

@@ -1,10 +1,25 @@
 # Day 04 — LangChain Models: invoke, stream, batch & Message Types
 
-> ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 03](day-03-js-python-essentials-and-why-langchain.md) · 🧩 **Difficulty:** ●●○○○
+> ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 03](day-03-choosing-a-model-and-why-langchain.md) · 🧩 **Difficulty:** ●●○○○
 
-**Today you learn:** your first real LangChain code. The chat-model interface, every
-constructor parameter, `invoke` / `stream` / `batch`, the four message types, token usage,
-provider swapping in one line, and a multi-turn chatbot with proper history handling.
+**Today you learn:** every provider has its own request and response shape, so moving from Groq
+to Gemini means rewriting your code. Today you write your first real LangChain code: one
+chat-model interface, with the same settings and methods for every provider. You call it with
+`invoke` / `stream` / `batch`, use the four message types, read token usage and swap providers in
+one line. Then you build StudyBuddy v0, a chatbot that keeps and trims its own history.
+
+> 📖 **Words you'll meet today**
+>
+> - **Chat model** — a model that takes a list of messages with roles and replies with one message.
+> - **Provider** — the company or tool that runs the model for you, such as Groq, Gemini or Ollama.
+> - **Message types** — labels for who is speaking: system (instructions), human, AI, or tool.
+> - **invoke / stream / batch** — get one full answer; get it in pieces as it is written; send
+>   many unrelated inputs at once.
+> - **Stream chunk** — one small piece of a streamed answer. Chunks add together into the full
+>   message.
+> - **Token usage** — how many tokens a request read and wrote. It decides the cost.
+> - **Concurrency** — running several requests at the same time instead of one after another.
+> - **Trimming** — dropping older messages so each request stays within a token budget.
 
 ---
 
@@ -23,9 +38,9 @@ r.response.text()
 r.content[0].text
 ```
 
-Now imagine you built a summariser on Groq, and your PM says *"can we try Gemini, it's cheaper
-at our volume?"* You go and change every call site, every response accessor, every streaming
-loop, every tool-calling block.
+Now imagine you built a summariser on Groq. Your product manager asks: *"can we try Gemini? It's
+cheaper at our volume."* So you change every place you call the model, every line that reads a
+response, every streaming loop and every tool-calling block.
 
 **The chat-model abstraction fixes exactly this.** One interface, one message type, one
 response shape — and the provider becomes a one-line config change.
@@ -81,40 +96,67 @@ And the four message types — the vocabulary of every conversation:
 
 ### 3.1 Two ways to create a model
 
+> 💬 **In plain words:** you can build a model from its own class, or from a "provider:model"
+> string. Use the string when you want to change models through config instead of code.
+
 **Direct class** — explicit, gives you provider-specific options:
 
 ```js
 import { ChatGroq } from "@langchain/groq";
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile" });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b" });
 ```
 
 **`initChatModel` / `init_chat_model`** — the universal loader. Provider becomes a string:
 
 ```js
 import { initChatModel } from "langchain";
-const model = await initChatModel("groq:llama-3.3-70b-versatile");
+const model = await initChatModel("groq:openai/gpt-oss-120b");
 ```
 
 Use the direct class when you want provider-specific parameters or clarity. Use the universal
-loader when the provider should be **configuration** — e.g. read from an env var so ops can
-switch models without a deploy.
+loader when the provider should be **configuration**. For example, read it from an environment
+variable, so the operations team can switch models without a new deploy.
 
-> ⚠️ **JS gotcha:** `initChatModel` is `await`ed (it lazily imports the provider package);
-> Python's `init_chat_model` is not.
+> ⚠️ **JS gotcha:** `initChatModel` is `await`ed, because it loads the provider package only when
+> it is needed (a "lazy" import). Python's `init_chat_model` is not.
+
+Groq's model id contains a slash. That is fine. In `"groq:openai/gpt-oss-120b"`, the part
+before the first colon is the provider (`groq`). The rest is Groq's own model id. Both loaders
+handled it in our runs (§4.5 and §5.5).
+
+> 📦 **Model names change — checked 7 October 2026.** This course was checked against Groq's
+> model list on 7 October 2026. If a name 404s, open
+> [console.groq.com/docs/models](https://console.groq.com/docs/models) and pick a current
+> production model. It has already happened once. The course's old default now fails like this:
+>
+> ```
+> 404 The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.
+> ```
+>
+> The error code is `model_not_found`. So every example moved to **`openai/gpt-oss-120b`**,
+> and the small model to **`openai/gpt-oss-20b`**.
+> [Day 03 §3.11](day-03-choosing-a-model-and-why-langchain.md) tells the story. Keep model
+> names in config, not scattered through your code.
 
 ### 3.2 The constructor parameters — every one explained
+
+> 💬 **In plain words:** these are the settings you can give a model when you create it. Only
+> the model name is required; the rest control randomness, length, retries and tracing.
 
 ```js
 new ChatGroq({
   // ─── Identity ──────────────────────────────────────────────────────────
-  model: "llama-3.3-70b-versatile",  // REQUIRED. Which model.
+  model: "openai/gpt-oss-120b",      // REQUIRED. Which model.
   apiKey: process.env.GROQ_API_KEY,  // Optional — read from env by convention.
 
   // ─── Sampling (see Day 01) ─────────────────────────────────────────────
   temperature: 0.7,      // 0–2. Randomness. 0 for extraction, 0.7 for chat.
   topP: 1,               // Nucleus sampling. Tune this OR temperature.
-  maxTokens: 1024,       // Cap on OUTPUT tokens. Truncates; doesn't summarise.
+  maxTokens: 1024,       // Cap on OUTPUT tokens, hidden reasoning included (§3.9).
   stop: ["\n\n"],        // Stop sequences. Generation halts before these.
+
+  // ─── Reasoning models only (§3.9) ──────────────────────────────────────
+  reasoningEffort: "low", // How hard to "think" first. "low" = fewer hidden tokens.
 
   // ─── Reliability ───────────────────────────────────────────────────────
   maxRetries: 2,         // Automatic retries on transient errors. Default 2.
@@ -129,10 +171,14 @@ new ChatGroq({
 });
 ```
 
-**Naming reminder from Day 01:** LangChain **JS uses camelCase** (`maxTokens`), LangChain
-**Python uses snake_case** (`max_tokens`). The raw provider SDKs use snake_case in both.
+**Naming reminder from Day 01:** LangChain **JS uses camelCase** (`maxTokens`,
+`reasoningEffort`), LangChain **Python uses snake_case** (`max_tokens`, `reasoning_effort`).
+The raw provider SDKs use snake_case in both.
 
 ### 3.3 The three core methods
+
+> 💬 **In plain words:** use `invoke` for one answer, `stream` to show the answer as it is
+> written, and `batch` to send many unrelated questions at once.
 
 | Method | Input | Output | Use when |
 |---|---|---|---|
@@ -140,9 +186,9 @@ new ChatGroq({
 | `stream` | one input | async iterator of chunks | You want tokens as they arrive |
 | `batch` | array of inputs | array of `AIMessage` | Many **independent** inputs |
 
-**`batch` is not just a loop.** It runs requests concurrently with a configurable concurrency
-limit, so you get parallelism without hand-rolling `Promise.all` + a semaphore (which you did
-on Day 03).
+**`batch` is not just a loop.** It runs requests at the same time, up to a concurrency limit
+you set. So you get parallelism without writing your own `Promise.all` plus a semaphore, as you
+did on [Day 0B](../week-00-start-here/day-00b-programming-for-ai.md).
 
 ```js
 // These are equivalent in result, but batch handles concurrency for you:
@@ -153,6 +199,9 @@ await model.batch(["a", "b", "c"], { maxConcurrency: 2 });
 > depends on the last. Never use `batch` for chat turns.
 
 ### 3.4 What `invoke` accepts
+
+> 💬 **In plain words:** you can pass a plain string, plain objects, message classes or
+> role-and-text pairs. They all become the same list of messages.
 
 All four of these work:
 
@@ -166,10 +215,14 @@ await model.invoke([                                             // 4. tuples (J
 ]);
 ```
 
-A bare string is sugar for `[new HumanMessage(str)]`. Use message classes when you need
-type safety, tool calls, or multimodal content; use plain objects for quick scripts.
+A bare string is a shortcut ("syntactic sugar") for `[new HumanMessage(str)]`. Use message
+classes when you need type safety, tool calls, or multimodal content (images or audio as well
+as text). Use plain objects for quick scripts.
 
 ### 3.5 What you get back: `AIMessage`
+
+> 💬 **In plain words:** every call gives back an `AIMessage`. Read the reply from `.text`,
+> which is always a string.
 
 ```js
 const res = await model.invoke("Say hello");
@@ -178,15 +231,18 @@ res.content            // "Hello!" — string, OR an array of content blocks (mu
 res.text                // always a string, even when content is blocks ← prefer this
 res.tool_calls          // [] or [{ name, args, id }]  (Day 15)
 res.usage_metadata      // { input_tokens, output_tokens, total_tokens }
-res.response_metadata   // provider-specific: finish_reason, model name, logprobs...
+res.response_metadata   // provider-specific: finish_reason and other details
 res.id                  // message id
 ```
 
 > 🔑 **Prefer `.text` over `.content`.** With multimodal models `content` can be an *array* of
-> blocks (`[{type:"text",...}, {type:"image",...}]`), so `res.content.toUpperCase()` explodes.
+> blocks (`[{type:"text",...}, {type:"image",...}]`), so `res.content.toUpperCase()` crashes.
 > `.text` always gives you the concatenated text.
 
 ### 3.6 Streaming
+
+> 💬 **In plain words:** streaming hands you the answer in small pieces. Add the pieces together
+> to get the full message and its token counts.
 
 ```js
 const stream = await model.stream("Count to 5");
@@ -209,7 +265,17 @@ console.log(full.usage_metadata);  // usage arrives in the FINAL chunk
 > ⚠️ `usage_metadata` is `undefined` on early chunks — token counts only arrive at the end.
 > If you need usage while streaming, accumulate chunks and read it from the total.
 
+> ⚠️ **JS with Groq (checked October 2026):** with `@langchain/groq` 1.3.1, streamed chunks
+> carry **no** `usage_metadata` at all, not even the last one. The counts are in
+> `full.response_metadata.usage` instead. There, `input_tokens` and `output_tokens` were right,
+> but `total_tokens` came out doubled, because two chunks carry it and `concat` adds them up.
+> Python's `ChatGroq` fills `usage_metadata` normally. So the JS code in §4 reads
+> `full.usage_metadata ?? full.response_metadata.usage` and adds input and output itself.
+
 ### 3.7 Memory = re-sending history (Day 01, now with types)
+
+> 💬 **In plain words:** the model remembers nothing between calls. You give it memory by sending
+> the whole conversation every time, including its own replies.
 
 ```js
 const history = [new SystemMessage("You are a helpful tutor.")];
@@ -225,22 +291,78 @@ async function chat(userText) {
 The two mistakes people make here:
 
 1. **Forgetting to push the AI response.** The model then can't see what it said, and repeats itself.
-2. **Never trimming.** Turn 50 sends 50 turns of tokens. See §4.6.
+2. **Never trimming.** Turn 50 sends 50 turns of tokens. See section 4.6.
 
 ### 3.8 Swapping providers
 
+> 💬 **In plain words:** every model has the same methods and returns the same message type. So
+> changing provider means changing only the line that creates the model.
+
 ```js
 const model =
-  provider === "groq"   ? new ChatGroq({ model: "llama-3.3-70b-versatile" }) :
-  provider === "gemini" ? new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash" }) :
+  provider === "groq"   ? new ChatGroq({ model: "openai/gpt-oss-120b" }) :
+  provider === "gemini" ? new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash" }) :
                           new ChatOllama({ model: "llama3.2" });
 
 // EVERYTHING downstream is identical.
 await model.invoke(history);
 ```
 
-**This is the payoff.** Not "less code" — *isolation*. The provider decision stops leaking into
-every file.
+**This is the payoff.** Not "less code" but *isolation*: the choice of provider no longer
+spreads into every file.
+
+### 3.9 Reasoning models: the parameters that surprise you
+
+> 💬 **In plain words:** GPT-OSS models "think" in hidden tokens before they answer. Those hidden
+> tokens count against your limits and your bill, and a few old parameters no longer work.
+
+Both Groq models in this course are **reasoning models**
+([Day 03 §3.4](day-03-choosing-a-model-and-why-langchain.md)). Before the visible answer, they
+write hidden "thinking" tokens. You never see them in `.text`,
+but they are output tokens. That changes four things. We ran the same question, "What is
+2+2? Answer with the number only.", against `openai/gpt-oss-120b` (§4.7 and §5.7):
+
+| Setting | Visible answer | Output tokens | `finish_reason` |
+|---|---|---|---|
+| `maxTokens: 20` / `max_tokens=20` | `""` — **empty** | 20 | `length` |
+| default | `"4"` | 46 (JS run), 47 (Python run) | `stop` |
+| `reasoningEffort: "low"` / `reasoning_effort="low"` | `"4"` | 16 | `stop` |
+
+**1. A small `maxTokens` can return nothing.** The limit covers thinking **and** answer. With
+20 tokens, the model spent them all on thinking. It returned an empty string with
+`finish_reason: "length"`, and no error. On a reasoning model, keep `maxTokens` generous (512
+or more) and control length in the prompt instead.
+
+**2. `reasoningEffort` controls the thinking.** `"low"` cut this answer from 46 output tokens to
+16. That is cheaper and faster. Use it for simple jobs, and keep the default for hard ones.
+
+**3. Where the thinking shows up depends on the language.**
+
+| | JavaScript (`@langchain/groq` 1.3.1) | Python (`langchain-groq` 1.1.3) |
+|---|---|---|
+| The thinking text | not exposed | `res.additional_kwargs["reasoning_content"]` |
+| The thinking token count | not exposed | `res.usage_metadata["output_token_details"]["reasoning"]` |
+
+In our Python run with low effort, the thinking text was `'Just answer 4.'` and it used 6
+tokens. In JS, `additional_kwargs` held only `tool_calls`, and `usage_metadata` had no
+reasoning details. If you need the thinking in JS, call the raw `groq-sdk`, where it is
+`message.reasoning`.
+
+**4. Some parameters are rejected.** Current Groq models refuse two settings that older
+tutorials use:
+
+```
+logprobs: true  →  400 `logprobs` is not supported with this model
+n: 2            →  400 'n' : number must be at most 1
+```
+
+`logprobs` asks for the probability of each token (Day 01). Some other providers (for example
+OpenAI) support it; Groq's current models do not. `n` asks for several answers to one prompt.
+To get several answers here, use `batch` with the same input repeated, or a loop.
+
+One more effect appears when you stream. The first chunks of a reasoning model carry no visible
+text. In one JS run, 29 of 41 chunks had empty `content`. So a "time to first token" timer must
+start counting at the first chunk **with text**, as §4.3 does.
 
 ---
 
@@ -258,9 +380,9 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 
 const model = new ChatGroq({
-  model: "llama-3.3-70b-versatile",
+  model: "openai/gpt-oss-120b",
   temperature: 0.7,
-  maxTokens: 500,
+  maxTokens: 500,       // generous: hidden reasoning counts too (§3.9)
 });
 
 const res = await model.invoke("Explain recursion to a 10-year-old in 3 sentences.");
@@ -271,6 +393,20 @@ console.log("tokens:", res.usage_metadata);
 console.log("finish:", res.response_metadata.finish_reason);
 ```
 
+Output from a real run (October 2026 — your wording will differ):
+
+```
+Recursion is like a story that tells itself a smaller version of the same story over and over until it reaches a simple ending. Imagine a set of Russian nesting dolls: each doll opens to reveal a smaller doll inside, and you keep opening them until you get to the tiniest one that can’t be opened any more. In programming, a recursive function works the same way—it calls itself with a smaller problem until it hits a base case that stops the repeating.
+---
+tokens: { input_tokens: 84, output_tokens: 151, total_tokens: 235 }
+finish: stop
+```
+
+Two numbers are worth a second look. The question has 13 words, but it was billed as 84 input
+tokens, because the provider wraps every message in its own formatting. And 151 output tokens
+is more than three sentences need: part of it is hidden thinking (§3.9). The Python run in §5.1
+shows how much.
+
 ### 4.2 Message types
 
 ```js
@@ -279,7 +415,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const messages = [
   new SystemMessage(
@@ -306,7 +442,7 @@ await model.invoke([["human", "hi"]]);                     // tuple
 import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 // ── INVOKE ───────────────────────────────────────────────────────────────
 console.log("── invoke ──");
@@ -320,13 +456,15 @@ let firstTokenAt = null;
 let full;
 
 for await (const chunk of await model.stream("List 5 planets, one per line.")) {
-  firstTokenAt ??= Date.now() - t0;
+  if (chunk.content) firstTokenAt ??= Date.now() - t0;   // first VISIBLE token (§3.9)
   process.stdout.write(chunk.content);
   full = full ? full.concat(chunk) : chunk;      // chunks are addable
 }
 
 console.log(`\ntime to first token: ${firstTokenAt}ms | total: ${Date.now() - t0}ms`);
-console.log("usage (from accumulated chunks):", full.usage_metadata);
+// @langchain/groq 1.3.1 puts streamed counts in response_metadata.usage (§3.6)
+const u = full.usage_metadata ?? full.response_metadata.usage;
+console.log("usage (from accumulated chunks):", { input: u.input_tokens, output: u.output_tokens });
 
 // ── BATCH ────────────────────────────────────────────────────────────────
 console.log("\n── batch ──");
@@ -343,6 +481,29 @@ console.log(answers.map((a) => a.text.trim()));
 console.log(`batch of ${questions.length} took ${Date.now() - t1}ms`);
 ```
 
+Output from a real run (October 2026 — timings change on every run):
+
+```
+── invoke ──
+Mars
+
+── stream ──
+Mercury  
+Venus  
+Earth  
+Mars  
+Jupiter
+time to first token: 399ms | total: 427ms
+usage (from accumulated chunks): { input: 80, output: 52 }
+
+── batch ──
+[ 'Tokyo', 'Paris', 'Lima.', 'Nairobi' ]
+batch of 4 took 1232ms
+```
+
+The usage line needed the `response_metadata.usage` fallback from §3.6. With plain
+`full.usage_metadata`, the same run printed `undefined`.
+
 ### 4.4 Provider swapping in one line
 
 ```js
@@ -354,8 +515,8 @@ import { ChatOllama } from "@langchain/ollama";
 
 function getModel(name = process.env.MODEL_PROVIDER ?? "groq") {
   switch (name) {
-    case "groq":   return new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
-    case "gemini": return new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", temperature: 0 });
+    case "groq":   return new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
+    case "gemini": return new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash", temperature: 0 });
     case "ollama": return new ChatOllama({ model: "llama3.2", temperature: 0 });
     default: throw new Error(`Unknown provider: ${name}`);
   }
@@ -371,6 +532,27 @@ for (const name of ["groq", "gemini", "ollama"]) {
   }
 }
 ```
+
+Output from our run (October 2026), with no Ollama server running and a busy Gemini key:
+
+```
+groq     → ready
+gemini   → skipped ([GoogleGenerativeAI Error]: Error fetching from ht)
+ollama   → skipped (fetch failed)
+```
+
+The 50-character cut hides the reason. The full Gemini message was
+`[429 Too Many Requests] You exceeded your current quota, please check your plan and billing
+details.` Every provider failed in its own way, but the same `try` / `catch` handled all three.
+That is the abstraction again.
+
+> ⚠️ **Gemini: busy models and changing names.** `gemini-3.8-flash` is the current Flash model
+> for new keys (checked 7 October 2026). Google answers older Flash names with a 404 that says
+> the model is "no longer available to new users". A busy model can also fail with
+> `503 This model is currently experiencing high demand`, and a free key that has used its quota
+> gets the `429` above. The JS client retries these by default, so our Gemini call took over two
+> minutes before it gave up. Retry later, or fall back to another provider (Exercise 3 here, and
+> Day 24).
 
 <details>
 <summary>💳 Same thing with OpenAI / Anthropic</summary>
@@ -396,19 +578,39 @@ import "dotenv/config";
 import { initChatModel } from "langchain";
 
 // Provider is now a STRING — perfect for env-driven config.
-const model = await initChatModel(process.env.MODEL ?? "groq:llama-3.3-70b-versatile", {
+const model = await initChatModel(process.env.MODEL ?? "groq:openai/gpt-oss-120b", {
   temperature: 0,
-  maxTokens: 200,
+  maxTokens: 512,       // not 200: hidden reasoning counts toward the cap (§3.9)
 });
 
 console.log((await model.invoke("Say READY")).text);
 
 // Runtime-configurable: pick the model per call.
-const flexible = await initChatModel(undefined, { configurableFields: ["model"] });
+// JS needs a default model and the provider up front (see the warning below).
+const flexible = await initChatModel("openai/gpt-oss-120b", {
+  modelProvider: "groq",
+  configurableFields: ["model"],
+});
 console.log((await flexible.invoke("Say A", {
-  configurable: { model: "groq:llama-3.1-8b-instant" },
+  configurable: { model: "openai/gpt-oss-20b" },   // a plain model id, no "groq:" prefix
 })).text);
 ```
+
+Output from a real run:
+
+```
+READY
+A
+```
+
+> ⚠️ **JS trap (`langchain` 1.5.15):** older examples write
+> `initChatModel(undefined, { configurableFields: ["model"] })`. That line now throws at once:
+> `TypeError: Cannot read properties of undefined (reading 'startsWith')`, because JS builds
+> the default model straight away and there is no name to read. Give it a default model and a
+> `modelProvider`, as above. And per call, JS wants the plain id: `"groq:openai/gpt-oss-20b"`
+> there was sent to Groq unchanged, and Groq answered with a 404: that model "does not exist".
+> Python's `init_chat_model(configurable_fields=["model"])` has neither
+> problem, and it accepts `"groq:openai/gpt-oss-20b"` per call (§5.5).
 
 ### 4.6 StudyBuddy v0 — a chatbot with real history handling
 
@@ -419,7 +621,7 @@ import readline from "node:readline/promises";
 import { ChatGroq } from "@langchain/groq";
 import { SystemMessage, HumanMessage, trimMessages } from "@langchain/core/messages";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.6 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.6 });
 
 const SYSTEM = new SystemMessage(
   "You are StudyBuddy, a patient tutor. Explain simply, use analogies, and end every " +
@@ -433,7 +635,7 @@ const trim = (msgs) =>
   trimMessages(msgs, {
     maxTokens: 800,
     strategy: "last",              // keep the most RECENT messages
-    tokenCounter: model,           // ask the model to count accurately
+    tokenCounter: model,           // an estimate: GPT-2's tokenizer (see §5.6)
     includeSystem: true,           // never drop the system prompt
     startOn: "human",              // a valid history starts on a human turn
   });
@@ -458,7 +660,8 @@ while (true) {
     process.stdout.write(chunk.content);
     full = full ? full.concat(chunk) : chunk;
   }
-  console.log(`\n      [${full.usage_metadata?.total_tokens ?? "?"} tokens]\n`);
+  const u = full.usage_metadata ?? full.response_metadata.usage;   // JS + Groq: §3.6
+  console.log(`\n      [${u ? u.input_tokens + u.output_tokens : "?"} tokens]\n`);
 
   history.push(full);                     // ⚠️ remember what the AI said
 }
@@ -467,6 +670,64 @@ rl.close();
 
 Try it: ask a question, then say *"simpler"*, then *"what did I first ask you?"*. Then run 20
 turns and watch `stats` — trimming keeps history bounded instead of growing forever.
+
+### 4.7 Reasoning parameters, measured
+
+This script produces the numbers in §3.9. Run it once and keep the output. It is your proof of
+how your model handles `maxTokens`, `reasoningEffort`, `logprobs` and `n` today.
+
+```js
+// day04-reasoning.js
+import "dotenv/config";
+import { ChatGroq } from "@langchain/groq";
+
+const MODEL = "openai/gpt-oss-120b";
+const Q = "What is 2+2? Answer with the number only.";
+
+// 1. A small maxTokens on a reasoning model: the hidden thinking uses it up.
+const tiny = new ChatGroq({ model: MODEL, maxTokens: 20 });
+const r1 = await tiny.invoke(Q);
+console.log("maxTokens 20   →", JSON.stringify(r1.text), r1.response_metadata.finish_reason,
+  r1.usage_metadata.output_tokens, "output tokens");
+
+// 2. Default effort vs low effort.
+const normal = new ChatGroq({ model: MODEL });
+const r2 = await normal.invoke(Q);
+console.log("default effort →", JSON.stringify(r2.text), r2.usage_metadata.output_tokens, "output tokens");
+
+const quick = new ChatGroq({ model: MODEL, reasoningEffort: "low" });
+const r3 = await quick.invoke(Q);
+console.log("effort low     →", JSON.stringify(r3.text), r3.usage_metadata.output_tokens, "output tokens");
+
+// 3. Where is the reasoning? Not on the JS message.
+console.log("additional_kwargs keys:", Object.keys(r3.additional_kwargs));
+console.log("usage_metadata:", r3.usage_metadata);
+
+// 4. Parameters the current Groq models reject.
+for (const [label, extra] of [["logprobs", { logprobs: true }], ["n: 2", { n: 2 }]]) {
+  try {
+    await new ChatGroq({ model: MODEL, ...extra }).invoke("Hi");
+    console.log(label, "→ accepted");
+  } catch (e) {
+    console.log(label.padEnd(8), "→", e.message.split("\n")[0].slice(0, 90));
+  }
+}
+```
+
+Output from a real run (October 2026; token counts move a little between runs):
+
+```
+maxTokens 20   → "" length 20 output tokens
+default effort → "4" 46 output tokens
+effort low     → "4" 16 output tokens
+additional_kwargs keys: [ 'tool_calls' ]
+usage_metadata: { input_tokens: 84, output_tokens: 16, total_tokens: 100 }
+logprobs → 400 {"error":{"message":"`logprobs` is not supported with this model","type":"invalid_requ
+n: 2     → 400 {"error":{"message":"'n' : number must be at most 1","type":"invalid_request_error"}}
+```
+
+The first line is the trap from §3.9: no error, no text, just `length`. If an answer is ever
+mysteriously empty, check `finish_reason` before anything else.
 
 ---
 
@@ -486,9 +747,9 @@ from langchain_groq import ChatGroq
 load_dotenv()
 
 model = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-120b",
     temperature=0.7,
-    max_tokens=500,
+    max_tokens=500,       # generous: hidden reasoning counts too (§3.9)
 )
 
 res = model.invoke("Explain recursion to a 10-year-old in 3 sentences.")
@@ -499,6 +760,18 @@ print("tokens:", res.usage_metadata)
 print("finish:", res.response_metadata.get("finish_reason"))
 ```
 
+Output from a real run (October 2026 — your wording will differ):
+
+```
+Imagine you have a set of Russian nesting dolls, and each doll opens to reveal a smaller doll that looks just like the one before it. Recursion is like a computer program that solves a problem by doing the same thing over and over, but each time with a smaller piece of the problem, just like opening the next smaller doll. The program keeps repeating this until it reaches the tiniest doll (the simplest case), and then it puts all the answers together to finish the whole task.
+---
+tokens: {'input_tokens': 84, 'output_tokens': 156, 'total_tokens': 240, 'output_token_details': {'reasoning': 49}}
+finish: stop
+```
+
+Python shows what JS hides: 49 of the 156 output tokens were hidden reasoning. You pay for
+them, but you never see them in the answer.
+
 > ⚠️ **Python detail:** on some versions `text` is a *property* and on others a *method*.
 > If `res.text` prints `<bound method ...>`, call it: `res.text()`. `res.content` always works
 > for text-only models.
@@ -506,13 +779,13 @@ print("finish:", res.response_metadata.get("finish_reason"))
 ### 5.2 Message types
 
 > 📦 **Import paths.** This book imports messages from **`langchain_core.messages`** (Python)
-> and **`@langchain/core/messages`** (JS). These are the canonical paths and work on both
+> and **`@langchain/core/messages`** (JS). These are the standard paths and work on both
 > LangChain 1.x and 0.3.
 >
-> LangChain 1.x *also* re-exports them from the top-level package — you'll see
+> LangChain 1.x *also* re-exports them from the top-level package. You'll see
 > `from langchain.messages import HumanMessage` in the 1.x docs, and `from "langchain"` in the
-> JS docs. Both are correct on 1.x; the `core` paths are correct on more versions, so that's
-> what we use. (`initChatModel` is the exception — it genuinely lives in the `langchain` root.)
+> JS docs. Both are correct on 1.x. The `core` paths are correct on more versions, so that's
+> what we use. (`initChatModel` is the exception — it really does live in the `langchain` root.)
 
 ```python
 # day04_messages.py
@@ -521,7 +794,7 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 messages = [
     SystemMessage(
@@ -550,7 +823,7 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 # ── INVOKE ───────────────────────────────────────────────────────────────
 print("── invoke ──")
@@ -563,8 +836,8 @@ first_token_at = None
 full = None
 
 for chunk in model.stream("List 5 planets, one per line."):
-    if first_token_at is None:
-        first_token_at = time.time() - t0
+    if chunk.content and first_token_at is None:
+        first_token_at = time.time() - t0        # first VISIBLE token (§3.9)
     print(chunk.content, end="", flush=True)
     full = chunk if full is None else full + chunk      # chunks are addable
 
@@ -586,6 +859,29 @@ print([a.content.strip() for a in answers])
 print(f"batch of {len(questions)} took {(time.time() - t1) * 1000:.0f}ms")
 ```
 
+Output from a real run (October 2026 — timings change on every run):
+
+```
+── invoke ──
+Mars
+
+── stream ──
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+time to first token: 772ms | total: 799ms
+usage (from accumulated chunks): {'input_tokens': 80, 'output_tokens': 48, 'total_tokens': 128, 'output_token_details': {'reasoning': 27}}
+
+── batch ──
+['Tokyo', 'Paris', 'Lima.', 'Nairobi']
+batch of 4 took 933ms
+```
+
+Notice `'Lima.'` with a full stop, even at temperature 0. "One word" in a prompt is a request,
+not a rule. Day 06 shows how to force a format.
+
 ### 5.4 Provider swapping in one line
 
 ```python
@@ -601,9 +897,9 @@ load_dotenv()
 def get_model(name=None):
     name = name or os.getenv("MODEL_PROVIDER", "groq")
     if name == "groq":
-        return ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+        return ChatGroq(model="openai/gpt-oss-120b", temperature=0)
     if name == "gemini":
-        return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        return ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0)
     if name == "ollama":
         return ChatOllama(model="llama3.2", temperature=0)
     raise ValueError(f"Unknown provider: {name}")
@@ -616,6 +912,17 @@ for name in ("groq", "gemini", "ollama"):
     except Exception as e:
         print(f"{name:<8} → skipped ({str(e)[:50]})")
 ```
+
+Output from our run (October 2026), again with no Ollama and a Gemini key over its quota:
+
+```
+groq     → ready
+gemini   → skipped (Error calling model 'gemini-3.8-flash' (RESOURCE_E)
+ollama   → skipped ([WinError 10061] No connection could be made becau)
+```
+
+`RESOURCE_EXHAUSTED` is Google's name for the same 429 quota error. `WinError 10061` is Windows
+saying nothing is listening on Ollama's port; on macOS or Linux the text differs.
 
 <details>
 <summary>💳 Same thing with OpenAI / Anthropic</summary>
@@ -644,9 +951,9 @@ load_dotenv()
 
 # Provider is now a STRING — perfect for env-driven config. (No await in Python.)
 model = init_chat_model(
-    os.getenv("MODEL", "groq:llama-3.3-70b-versatile"),
+    os.getenv("MODEL", "groq:openai/gpt-oss-120b"),
     temperature=0,
-    max_tokens=200,
+    max_tokens=512,       # not 200: hidden reasoning counts toward the cap (§3.9)
 )
 print(model.invoke("Say READY").content)
 
@@ -654,8 +961,15 @@ print(model.invoke("Say READY").content)
 flexible = init_chat_model(configurable_fields=["model"])
 print(flexible.invoke(
     "Say A",
-    config={"configurable": {"model": "groq:llama-3.1-8b-instant"}},
+    config={"configurable": {"model": "groq:openai/gpt-oss-20b"}},
 ).content)
+```
+
+Output from a real run:
+
+```
+READY
+A
 ```
 
 ### 5.6 StudyBuddy v0 — a chatbot with real history handling
@@ -665,9 +979,10 @@ print(flexible.invoke(
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage, trim_messages
+from langchain_core.messages.utils import count_tokens_approximately
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.6)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.6)
 
 SYSTEM = SystemMessage(
     "You are StudyBuddy, a patient tutor. Explain simply, use analogies, and end every "
@@ -682,7 +997,7 @@ def trim(msgs):
         msgs,
         max_tokens=800,
         strategy="last",             # keep the most RECENT messages
-        token_counter=model,         # ask the model to count accurately
+        token_counter=count_tokens_approximately,   # ~4 characters per token (below)
         include_system=True,         # never drop the system prompt
         start_on="human",            # a valid history starts on a human turn
     )
@@ -712,6 +1027,69 @@ while True:
     history.append(full)                    # ⚠️ remember what the AI said
 ```
 
+> ⚠️ **Why `count_tokens_approximately`?** It guesses about four characters per token, plus a
+> few tokens per message, so it needs no download, and a guess is all a budget needs. You may
+> see `token_counter=model` in older code. With `ChatGroq` that is a guess too, and a slow one:
+> Groq's model has no tokenizer in LangChain, so it printed `UserWarning: Using fallback GPT-2
+> tokenizer for token counting`, needed the `transformers` package, and downloaded GPT-2 (one
+> turn took 82 s in our tests). JavaScript's `tokenCounter: model` also uses GPT-2's tokenizer,
+> fetched once from the web (under a second in our run), so it is an estimate as well. Treat
+> `max_tokens=800` as a rough budget. The real count is in `usage_metadata` after each call
+> (618 tokens for our first turn).
+
+### 5.7 Reasoning parameters, measured
+
+```python
+# day04_reasoning.py
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+
+load_dotenv()
+MODEL = "openai/gpt-oss-120b"
+Q = "What is 2+2? Answer with the number only."
+
+# 1. A small max_tokens on a reasoning model: the hidden thinking uses it up.
+tiny = ChatGroq(model=MODEL, max_tokens=20)
+r1 = tiny.invoke(Q)
+print("max_tokens 20  →", repr(r1.content), r1.response_metadata.get("finish_reason"),
+      r1.usage_metadata["output_tokens"], "output tokens")
+
+# 2. Default effort vs low effort.
+r2 = ChatGroq(model=MODEL).invoke(Q)
+print("default effort →", repr(r2.content), r2.usage_metadata["output_tokens"], "output tokens")
+
+quick = ChatGroq(model=MODEL, reasoning_effort="low")
+r3 = quick.invoke(Q)
+print("effort low     →", repr(r3.content), r3.usage_metadata["output_tokens"], "output tokens")
+
+# 3. Where is the reasoning? Python exposes it.
+print("reasoning_content:", repr(r3.additional_kwargs.get("reasoning_content")))
+print("usage_metadata:", r3.usage_metadata)
+
+# 4. Parameters the current Groq models reject.
+#    (Python's ChatGroq has no logprobs field, so it goes through model_kwargs.)
+for label, extra in [("logprobs", {"model_kwargs": {"logprobs": True}}), ("n=2", {"n": 2})]:
+    try:
+        ChatGroq(model=MODEL, **extra).invoke("Hi")
+        print(label, "→ accepted")
+    except Exception as e:
+        print(f"{label:<8} →", str(e).splitlines()[0][:90])
+```
+
+Output from a real run (October 2026; token counts move a little between runs):
+
+```
+max_tokens 20  → '' length 20 output tokens
+default effort → '4' 47 output tokens
+effort low     → '4' 16 output tokens
+reasoning_content: 'Just answer 4.'
+usage_metadata: {'input_tokens': 84, 'output_tokens': 16, 'total_tokens': 100, 'output_token_details': {'reasoning': 6}}
+logprobs → Error code: 400 - {'error': {'message': '`logprobs` is not supported with this model', 'ty
+n=2      → Error code: 400 - {'error': {'message': "'n' : number must be at most 1", 'type': 'invalid
+```
+
+Python shows the hidden thinking: `'Just answer 4.'`, counted as 6 of the 16 output tokens.
+
 ### 🔁 JS ↔ Python differences you just saw
 
 | | JavaScript | Python |
@@ -722,8 +1100,13 @@ while True:
 | Batch concurrency | `{ maxConcurrency: 2 }` | `config={"max_concurrency": 2}` |
 | Message import | `from "@langchain/core/messages"` | `from langchain_core.messages import ...` |
 | Trimming | `trimMessages(msgs, {...})` | `trim_messages(msgs, ...)` |
+| Token counter (an estimate either way) | `tokenCounter: model` (GPT-2's tokenizer) | `token_counter=count_tokens_approximately` |
 | Text accessor | `res.text` | `res.content` (or `res.text` / `res.text()`) |
 | Async variants | none — always async | `ainvoke`, `astream`, `abatch` |
+| Reasoning effort | `reasoningEffort: "low"` | `reasoning_effort="low"` |
+| Hidden reasoning (Groq) | not exposed | `additional_kwargs["reasoning_content"]`, `usage_metadata["output_token_details"]["reasoning"]` |
+| Streamed usage (Groq) | `response_metadata.usage` — `usage_metadata` is missing (§3.6) | `usage_metadata`, as normal |
+| Model chosen per call | `initChatModel("openai/gpt-oss-120b", { modelProvider: "groq", configurableFields: ["model"] })`, then `{ model: "openai/gpt-oss-20b" }` | `init_chat_model(configurable_fields=["model"])`, then `{"model": "groq:openai/gpt-oss-20b"}` |
 
 ---
 
@@ -765,15 +1148,16 @@ model.invoke(messages)
   8. Return AIMessage
 ```
 
-**Steps 4 and 6 are the entire value proposition.** Notice Anthropic puts `system` in a
-*separate top-level field*, not in the messages array. LangChain hides that. If you swapped
-providers by hand, that's the kind of detail that bites you.
+**Steps 4 and 6 are the whole value of the abstraction.** Step 4 turns your messages into the
+provider's *wire format* — the exact request shape it expects over the network. Notice
+Anthropic puts `system` in a *separate top-level field*, not in the messages array. LangChain
+hides that. If you swapped providers by hand, details like this are what cause bugs.
 
 ### Why `AIMessageChunk` supports `+` / `.concat()`
 
-Streaming produces partial messages. Merging them is fiddly: concatenate `content`, but *merge*
-tool-call fragments by index (a tool call's JSON arguments arrive across many chunks), and
-take usage from whichever chunk has it.
+Streaming produces partial messages, and merging them is tricky. You join the `content` text.
+But you must *merge* tool-call fragments by index, because a tool call's JSON arguments arrive
+across many chunks. And you take usage from whichever chunk has it.
 
 ```js
 chunk1: { content: "Hel", tool_calls: [] }
@@ -799,8 +1183,9 @@ batch(["a","b","c","d","e"], { maxConcurrency: 2 })
    Preserves input order in the output array, regardless of completion order.
 ```
 
-It also propagates per-item callbacks so tracing works, and (in Python) exposes
-`batch_as_completed` if you want results as they finish rather than in order.
+It also passes callbacks (hooks that fire at each step) through for every item, so tracing
+works. In Python it also offers `batch_as_completed`, if you want results as they finish rather
+than in order.
 
 ### Legacy note
 
@@ -832,7 +1217,7 @@ history.push(new HumanMessage(input));
 const res = await model.invoke(history);
 // forgot: history.push(res)
 ```
-The model can't see its own previous answers → it repeats itself and contradicts itself.
+The model can't see its own previous answers, so it repeats itself and contradicts itself.
 ✅ Push both sides of every turn.
 
 ---
@@ -842,7 +1227,7 @@ The model can't see its own previous answers → it repeats itself and contradic
 ```js
 await model.batch([turn1, turn2, turn3]);   // three INDEPENDENT calls
 ```
-These run concurrently and share no context. ✅ `batch` = independent inputs only.
+These run concurrently and share no context. ✅ Use `batch` for independent inputs only.
 
 ---
 
@@ -869,7 +1254,7 @@ the list form.
 ```python
 ChatGroq(model="...", maxTokens=500)   # ❌ silently ignored or errors
 ```
-✅ `max_tokens` in Python, `maxTokens` in LangChain JS, `max_tokens` in raw SDKs both languages.
+✅ `max_tokens` in Python, `maxTokens` in LangChain JS, `max_tokens` in raw SDKs in both languages.
 
 ---
 
@@ -880,15 +1265,29 @@ app.post("/chat", async (req, res) => {
   const model = new ChatGroq({ ... });   // new HTTP client per request
 });
 ```
-✅ Create once at module scope and reuse — connection pooling matters under load.
+✅ Create once at module scope (the top level of the file) and reuse it. Connection pooling —
+reusing open network connections — matters under load.
 
 ---
 
 **❌ Assuming every provider supports every parameter**
 
-`frequency_penalty` doesn't exist on Anthropic; `top_k` doesn't exist on OpenAI. LangChain
-passes unknown params through, and the provider may error or silently ignore them.
+`frequency_penalty` doesn't exist on Anthropic, and `top_k` doesn't exist on OpenAI. LangChain
+passes unknown parameters through, and the provider may return an error or silently ignore them.
+Current Groq models, for example, reject `logprobs` and any `n` above 1 with a `400` (§3.9).
 ✅ Check the integration docs when you leave the common set (temperature, max tokens, top_p).
+
+---
+
+**❌ A small `maxTokens` on a reasoning model**
+
+```js
+new ChatGroq({ model: "openai/gpt-oss-120b", maxTokens: 20 });   // ❌ answers ""
+```
+The hidden thinking used all 20 tokens. The reply was an empty string with
+`finish_reason: "length"`, and there was no error (§4.7). ✅ Keep `maxTokens` at 512 or more on
+a reasoning model. For simple jobs, add `reasoningEffort: "low"`, and ask for a short answer in
+the prompt.
 
 ---
 
@@ -896,9 +1295,10 @@ passes unknown params through, and the provider may error or silently ignore the
 
 ### Exercise 1 — Model report card ●○○○○
 
-Write a script that asks the same question to 3 models (two Groq models + Gemini or Ollama) and
-prints a table: model, answer, input tokens, output tokens, latency in ms. Which is the best
-value for a simple factual question?
+Write a script that asks the same question to 3 models: two Groq models (GPT-OSS 120B and
+20B), plus Gemini or Ollama.
+Print a table with the model, answer, input tokens, output tokens and latency (response time)
+in ms. Which is the best value for a simple factual question?
 
 <details>
 <summary>✅ Solution</summary>
@@ -910,9 +1310,9 @@ import { ChatGroq } from "@langchain/groq";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
 const MODELS = {
-  "llama-70b": new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 }),
-  "llama-8b":  new ChatGroq({ model: "llama-3.1-8b-instant",    temperature: 0 }),
-  "gemini":    new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", temperature: 0 }),
+  "oss-120b": new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 }),
+  "oss-20b":  new ChatGroq({ model: "openai/gpt-oss-20b",  temperature: 0 }),
+  "gemini":   new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash", temperature: 0 }),
 };
 
 const Q = "In one sentence, what causes the seasons on Earth?";
@@ -947,9 +1347,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 load_dotenv()
 
 MODELS = {
-    "llama-70b": ChatGroq(model="llama-3.3-70b-versatile", temperature=0),
-    "llama-8b":  ChatGroq(model="llama-3.1-8b-instant",    temperature=0),
-    "gemini":    ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0),
+    "oss-120b": ChatGroq(model="openai/gpt-oss-120b", temperature=0),
+    "oss-20b":  ChatGroq(model="openai/gpt-oss-20b",  temperature=0),
+    "gemini":   ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0),
 }
 
 Q = "In one sentence, what causes the seasons on Earth?"
@@ -969,9 +1369,26 @@ for name, model in MODELS.items():
         print(f"{name:<10} | error: {str(e)[:60]}")
 ```
 
-**What to notice:** the 8B model is often 3–5× faster and just as correct on simple factual
-questions. Reflexively reaching for the biggest model is one of the most common ways teams
-overspend. Pick the smallest model that passes your eval set (Exercise 5 on Day 02).
+Output of the JavaScript run (October 2026):
+
+```
+model      | ms    | in  | out | answer
+------------------------------------------------------------------------------------------
+oss-120b   | 570   | 82  | 89  | The seasons occur because Earth’s axis is tilted about 23.5°
+oss-20b    | 398   | 82  | 115 | The seasons on Earth are caused by the planet’s axial tilt r
+gemini     | error: [GoogleGenerativeAI Error]: Error fetching from https://gene
+```
+
+The Python run gave the same token counts (82 in; 89 and 115 out) and the same answers, with
+times of 2,050 ms and 656 ms. Gemini failed in both runs with the quota error from §4.4.
+
+**What to notice:** both GPT-OSS models were correct, and the 20B model was faster in both
+runs. But it wrote **more** output tokens (115 against 89), because it spent more on hidden
+thinking. At the prices in Day 03 §3.11, the 20B call cost about $0.000041 and the 120B call
+about $0.000066. The small model is still cheaper, but by less than its price per token
+suggests. Choosing the biggest model out of habit is one of the most common ways teams
+overspend. Pick the smallest model that passes your eval set (Exercise 5 on Day 02), and
+measure its real token use.
 </details>
 
 ---
@@ -979,8 +1396,8 @@ overspend. Pick the smallest model that passes your eval set (Exercise 5 on Day 
 ### Exercise 2 — Streaming with stats ●●○○○
 
 Build `streamWithStats(model, prompt)` that streams to stdout while measuring: time to first
-token, total time, token count, and tokens/second. Compare a 70B and an 8B model — is
-time-to-first-token or tokens/sec the bigger difference?
+token (TTFT), total time, token count, and tokens per second. Compare the 120B and the 20B
+model. Is time-to-first-token or tokens/sec the bigger difference?
 
 <details>
 <summary>✅ Solution</summary>
@@ -996,14 +1413,15 @@ async function streamWithStats(model, prompt, label) {
 
   process.stdout.write(`\n── ${label} ──\n`);
   for await (const chunk of await model.stream(prompt)) {
-    ttft ??= Date.now() - t0;
+    if (chunk.content) ttft ??= Date.now() - t0;   // first VISIBLE token (§3.9)
     chunks++;
     process.stdout.write(chunk.content);
     full = full ? full.concat(chunk) : chunk;
   }
 
   const total = Date.now() - t0;
-  const out = full.usage_metadata?.output_tokens ?? chunks;
+  // JS + Groq: streamed counts live in response_metadata.usage (§3.6)
+  const out = (full.usage_metadata ?? full.response_metadata.usage)?.output_tokens ?? chunks;
   return {
     label,
     ttftMs: ttft,
@@ -1015,7 +1433,7 @@ async function streamWithStats(model, prompt, label) {
 
 const PROMPT = "Explain how a rainbow forms, in about 120 words.";
 const stats = [];
-for (const [label, id] of [["70B", "llama-3.3-70b-versatile"], ["8B", "llama-3.1-8b-instant"]]) {
+for (const [label, id] of [["120B", "openai/gpt-oss-120b"], ["20B", "openai/gpt-oss-20b"]]) {
   stats.push(await streamWithStats(new ChatGroq({ model: id, temperature: 0 }), PROMPT, label));
 }
 console.log("\n");
@@ -1036,8 +1454,8 @@ def stream_with_stats(model, prompt, label):
 
     print(f"\n── {label} ──")
     for chunk in model.stream(prompt):
-        if ttft is None:
-            ttft = time.time() - t0
+        if chunk.content and ttft is None:
+            ttft = time.time() - t0              # first VISIBLE token (§3.9)
         chunks += 1
         print(chunk.content, end="", flush=True)
         full = chunk if full is None else full + chunk
@@ -1055,7 +1473,7 @@ def stream_with_stats(model, prompt, label):
 PROMPT = "Explain how a rainbow forms, in about 120 words."
 stats = [
     stream_with_stats(ChatGroq(model=mid, temperature=0), PROMPT, label)
-    for label, mid in [("70B", "llama-3.3-70b-versatile"), ("8B", "llama-3.1-8b-instant")]
+    for label, mid in [("120B", "openai/gpt-oss-120b"), ("20B", "openai/gpt-oss-20b")]
 ]
 
 print("\n")
@@ -1063,9 +1481,34 @@ for s in stats:
     print(s)
 ```
 
-**What you'll find:** the 8B model wins hugely on **tokens/sec** but the gap in
-**time-to-first-token** is smaller. TTFT is dominated by queueing and prompt processing;
-throughput is dominated by model size.
+Output from our runs (October 2026). The answers are left out here; both were about 120
+words. JavaScript:
+
+```
+┌─────────┬────────┬────────┬─────────┬──────────────┬──────────────┐
+│ (index) │ label  │ ttftMs │ totalMs │ outputTokens │ tokensPerSec │
+├─────────┼────────┼────────┼─────────┼──────────────┼──────────────┤
+│ 0       │ '120B' │ 610    │ 967     │ 233          │ 241          │
+│ 1       │ '20B'  │ 1429   │ 1589    │ 1136         │ 714.9        │
+└─────────┴────────┴────────┴─────────┴──────────────┴──────────────┘
+```
+
+Python:
+
+```
+{'label': '120B', 'ttft_ms': 945, 'total_ms': 1308, 'output_tokens': 233, 'tokens_per_sec': 178.1}
+{'label': '20B', 'ttft_ms': 1421, 'total_ms': 1609, 'output_tokens': 973, 'tokens_per_sec': 604.6}
+```
+
+**What you'll find:** the 20B model wins clearly on **tokens per second**, as Groq's published
+speeds suggest. But its first visible token came **later** (about 1.4 s against 0.6–0.9 s).
+It also wrote four or five times as many output tokens for an answer of the same length.
+Almost all of the extra was hidden thinking, and that thinking is why the first visible token
+was late. Tokens per second here counts the thinking too.
+
+So for this prompt the "cheap" model cost more: 973 output tokens at $0.30 per million is
+more than 233 at $0.60 (Day 03 §3.11 prices). With reasoning models, smaller is not
+automatically cheaper. Measure it on your own prompts.
 
 **Why it matters:** for a chat UI, TTFT is what users perceive as "fast". For a batch
 summarisation job, throughput is what matters. Optimise the metric your product actually feels.
@@ -1075,9 +1518,9 @@ summarisation job, throughput is what matters. Optimise the metric your product 
 
 ### Exercise 3 — Fallback chain ●●●○○
 
-Build `resilientModel()` that tries Groq → Gemini → Ollama and returns the first success, using
-LangChain's built-in `.withFallbacks()` / `.with_fallbacks()`. Prove it works by giving the
-primary model an invalid API key. Then do it *manually* too, and compare the code.
+Build `resilientModel()` that tries Groq, then Gemini, then Ollama, and returns the first
+success. Use LangChain's built-in `.withFallbacks()` / `.with_fallbacks()`. Prove it works by
+giving the primary model an invalid API key. Then do it *manually* too, and compare the code.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1090,10 +1533,10 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOllama } from "@langchain/ollama";
 
 // ── The LangChain way ────────────────────────────────────────────────────
-const broken = new ChatGroq({ model: "llama-3.3-70b-versatile", apiKey: "gsk_invalid" });
+const broken = new ChatGroq({ model: "openai/gpt-oss-120b", apiKey: "gsk_invalid" });
 
 const resilient = broken.withFallbacks([
-  new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash" }),
+  new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash" }),
   new ChatOllama({ model: "llama3.2" }),
 ]);
 
@@ -1113,7 +1556,7 @@ async function manualFallback(models, input) {
 }
 
 const res = await manualFallback(
-  [broken, new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash" })],
+  [broken, new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash" })],
   "Say READY"
 );
 console.log("manual    →", res.text.trim());
@@ -1129,10 +1572,10 @@ from langchain_ollama import ChatOllama
 load_dotenv()
 
 # ── The LangChain way ────────────────────────────────────────────────────
-broken = ChatGroq(model="llama-3.3-70b-versatile", api_key="gsk_invalid")
+broken = ChatGroq(model="openai/gpt-oss-120b", api_key="gsk_invalid")
 
 resilient = broken.with_fallbacks([
-    ChatGoogleGenerativeAI(model="gemini-2.5-flash"),
+    ChatGoogleGenerativeAI(model="gemini-3.8-flash"),
     ChatOllama(model="llama3.2"),
 ])
 
@@ -1149,20 +1592,25 @@ def manual_fallback(models, user_input):
     raise RuntimeError("All models failed:\n  " + "\n  ".join(errors))
 
 res = manual_fallback(
-    [broken, ChatGoogleGenerativeAI(model="gemini-2.5-flash")],
+    [broken, ChatGoogleGenerativeAI(model="gemini-3.8-flash")],
     "Say READY",
 )
 print("manual    →", res.content.strip())
 ```
 
-**The real insight:** `.withFallbacks()` returns a **`Runnable`**, so it composes. You can
-attach it to a whole chain, not just a model — `(prompt | model | parser).with_fallbacks([...])`
-falls back the *entire pipeline*. Your manual version only works on one model call and would
-have to be rewritten for every new composition. That's the `Runnable` interface paying rent.
+> Not re-run after the October 2026 model change: our Gemini key was over its free quota
+> (§4.4), so there was nothing healthy to fall back to. Only the model names changed here.
 
-**Production caveat:** fall back across *providers*, not just models, or a single provider
-outage takes down every option. And log which fallback fired — silent degradation to a weaker
-model is how quality regressions hide.
+**The real insight:** `.withFallbacks()` returns a **`Runnable`**, so it composes. (A Runnable
+is LangChain's shared interface for anything you can invoke, stream or batch — Day 07.) You can
+attach it to a whole chain, not just a model. `(prompt | model | parser).with_fallbacks([...])`
+falls back the *entire pipeline*. Your manual version only works on one model call, and you
+would have to rewrite it for every new composition. That's the benefit of the `Runnable`
+interface.
+
+**Production caveat:** fall back across *providers*, not just models. Otherwise a single
+provider outage takes down every option. And log which fallback fired. If the app silently
+drops to a weaker model, drops in quality go unnoticed.
 </details>
 
 ---
@@ -1186,7 +1634,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { SystemMessage, HumanMessage, trimMessages } from "@langchain/core/messages";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const SYSTEM = new SystemMessage("You are a concise assistant. Answer in one short sentence.");
 
 const TURNS = [
@@ -1247,9 +1695,10 @@ import re
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage, trim_messages
+from langchain_core.messages.utils import count_tokens_approximately
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 SYSTEM = SystemMessage("You are a concise assistant. Answer in one short sentence.")
 
 TURNS = [
@@ -1272,7 +1721,7 @@ STRATEGIES = {
     "window4": lambda msgs: [msgs[0]] + msgs[1:][-4:],
     "trimmed": lambda msgs: trim_messages(
         msgs, max_tokens=300, strategy="last",
-        token_counter=model, include_system=True, start_on="human",
+        token_counter=count_tokens_approximately, include_system=True, start_on="human",
     ),
 }
 
@@ -1293,7 +1742,8 @@ for name, strategy in STRATEGIES.items():
           f"remembered={'✅' if remembered else '❌'}  \"{last_answer[:55]}\"")
 ```
 
-**Typical result:**
+**Typical result** (illustrative — your token counts will differ by model and by how long the
+answers are; the *ordering* is what matters):
 
 | Strategy | Tokens | Remembered "teal"? |
 |---|---|---|
@@ -1302,9 +1752,13 @@ for name, strategy in STRATEGIES.items():
 | trimmed | ~2,600 | ❌ or ✅ (borderline) |
 
 **The lesson — and it's the whole reason Day 14 and Day 20 exist:** trimming trades memory for
-cost, and there is no window size that's both cheap and remembers everything. The real fix
-isn't a better trimming rule; it's a *different mechanism* — summarise old turns into a running
-summary, or store facts in a vector store / long-term memory and retrieve the relevant ones.
+cost. No window size is both cheap and remembers everything. The real fix isn't a better
+trimming rule. It's a *different mechanism*:
+
+- summarise old turns into a running summary, or
+- store facts in a vector store (a database that finds text by meaning) or long-term memory,
+  and retrieve the relevant ones.
+
 Both are Week 2/3 topics. You've now felt exactly why they're needed.
 </details>
 
@@ -1312,10 +1766,13 @@ Both are Week 2/3 topics. You've now felt exactly why they're needed.
 
 ### Exercise 5 — StudyBuddy v0.5 ●●●●○
 
-Upgrade the StudyBuddy chatbot with: (a) a `/level <beginner|intermediate|expert>` command that
-rewrites the system message, (b) `/model <groq|gemini|ollama>` to hot-swap providers mid-chat
-with history intact, (c) a `/cost` command showing cumulative tokens and estimated USD,
-(d) graceful error handling that doesn't crash the loop.
+Upgrade the StudyBuddy chatbot with:
+
+- (a) a `/level <beginner|intermediate|expert>` command that rewrites the system message;
+- (b) `/model <groq|gemini|ollama>` to switch providers in the middle of a chat, keeping the
+  history;
+- (c) a `/cost` command showing total tokens so far and the estimated cost in USD;
+- (d) error handling that reports the error and doesn't crash the loop.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1330,10 +1787,11 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOllama } from "@langchain/ollama";
 import { SystemMessage, HumanMessage, trimMessages } from "@langchain/core/messages";
 
-// Rough public rates per 1M tokens (USD). Update for your provider.
+// US$ per 1M tokens. Groq = GPT-OSS 120B, read from console.groq.com/docs/models
+// on 7 Oct 2026. Gemini = ILLUSTRATIVE: copy the real price from Google's pricing page.
 const PRICING = {
-  groq:   { in: 0.59, out: 0.79 },
-  gemini: { in: 0.075, out: 0.30 },
+  groq:   { in: 0.15, out: 0.60 },
+  gemini: { in: 0.30, out: 2.50 },
   ollama: { in: 0, out: 0 },
 };
 
@@ -1344,8 +1802,8 @@ const LEVELS = {
 };
 
 const makeModel = (name) => ({
-  groq:   () => new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.6 }),
-  gemini: () => new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", temperature: 0.6 }),
+  groq:   () => new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.6 }),
+  gemini: () => new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash", temperature: 0.6 }),
   ollama: () => new ChatOllama({ model: "llama3.2", temperature: 0.6 }),
 }[name]());
 
@@ -1428,8 +1886,9 @@ while (true) {
     console.log("\n");
 
     history.push(full);
-    usage.in  += full.usage_metadata?.input_tokens  ?? 0;
-    usage.out += full.usage_metadata?.output_tokens ?? 0;
+    const u = full.usage_metadata ?? full.response_metadata.usage ?? {};   // JS + Groq: §3.6
+    usage.in  += u.input_tokens  ?? 0;
+    usage.out += u.output_tokens ?? 0;
   } catch (err) {
     console.log(`\n  ⚠️ ${err.message.slice(0, 100)}`);
     console.log("  (try /model gemini to switch providers)\n");
@@ -1447,13 +1906,15 @@ from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_core.messages import SystemMessage, HumanMessage, trim_messages
+from langchain_core.messages.utils import count_tokens_approximately
 
 load_dotenv()
 
-# Rough public rates per 1M tokens (USD). Update for your provider.
+# US$ per 1M tokens. Groq = GPT-OSS 120B, read from console.groq.com/docs/models
+# on 7 Oct 2026. Gemini = ILLUSTRATIVE: copy the real price from Google's pricing page.
 PRICING = {
-    "groq":   {"in": 0.59,  "out": 0.79},
-    "gemini": {"in": 0.075, "out": 0.30},
+    "groq":   {"in": 0.15,  "out": 0.60},
+    "gemini": {"in": 0.30,  "out": 2.50},
     "ollama": {"in": 0.0,   "out": 0.0},
 }
 
@@ -1465,8 +1926,8 @@ LEVELS = {
 
 def make_model(name):
     return {
-        "groq":   lambda: ChatGroq(model="llama-3.3-70b-versatile", temperature=0.6),
-        "gemini": lambda: ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.6),
+        "groq":   lambda: ChatGroq(model="openai/gpt-oss-120b", temperature=0.6),
+        "gemini": lambda: ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0.6),
         "ollama": lambda: ChatOllama(model="llama3.2", temperature=0.6),
     }[name]()
 
@@ -1535,7 +1996,7 @@ while True:
     # System message is rebuilt every turn so /level takes effect immediately.
     to_send = trim_messages(
         [system_for(level)] + history,
-        max_tokens=1000, strategy="last", token_counter=model,
+        max_tokens=1000, strategy="last", token_counter=count_tokens_approximately,
         include_system=True, start_on="human",
     )
 
@@ -1563,10 +2024,10 @@ while True:
    because `BaseMessage` is provider-neutral. Try that with raw SDKs and you'd be rewriting the
    whole history into a different shape.
 2. **The system message is rebuilt every turn** rather than stored in `history`. Prompt state
-   and conversation state are different things — conflating them is why `/level` would
-   otherwise need a history rewrite.
+   and conversation state are different things. If you mixed them up, `/level` would need a
+   history rewrite.
 3. **`history.pop()` on error.** If the call fails, the user's message is still in history with
-   no answer after it. Next turn you'd send two consecutive human messages, which some providers
+   no answer after it. Next turn you'd send two human messages in a row, which some providers
    reject outright. Small detail; real production bug.
 </details>
 
@@ -1580,10 +2041,11 @@ while True:
 <summary><b>Q: Difference between `invoke`, `stream` and `batch`?</b></summary>
 
 `invoke` sends one input and returns one complete `AIMessage`. `stream` sends one input and
-returns an async iterator of `AIMessageChunk`s as they're generated — same total time, much
-better perceived latency. `batch` sends *multiple independent* inputs concurrently (with a
-configurable concurrency cap) and returns results in input order. Use `batch` only for
-independent inputs — never for conversation turns, which are sequentially dependent.
+returns an async iterator of `AIMessageChunk`s as they're generated. The total time is the same,
+but perceived latency (how fast it *feels*) is much better. `batch` sends *multiple independent*
+inputs concurrently, with a concurrency cap you can set, and returns results in input order.
+Use `batch` only for independent inputs. Never use it for conversation turns, because each turn
+depends on the one before.
 </details>
 
 <details>
@@ -1603,8 +2065,9 @@ formatting tokens at request time.
 
 An LLM (`BaseLLM`) takes a string and returns a string — the old completion-model interface.
 A Chat model (`BaseChatModel`) takes a **list of messages** and returns an `AIMessage`, so it
-understands roles, tool calls and multimodal content. Nearly every modern provider is chat-only;
-chat models are what you should use. LLM-style classes remain mostly for legacy compatibility.
+understands roles, tool calls and multimodal content. Nearly every modern provider is chat-only,
+so chat models are what you should use. LLM-style classes remain mostly so old code keeps
+working.
 </details>
 
 <details>
@@ -1613,7 +2076,9 @@ chat models are what you should use. LLM-style classes remain mostly for legacy 
 Read `usage_metadata` on the response — `{ input_tokens, output_tokens, total_tokens }`,
 normalised across providers. When streaming, usage arrives in the **final** chunk, so accumulate
 chunks (`concat` / `+`) and read it from the total. To count *before* sending, use
-`getNumTokens` / `get_num_tokens` on the model, or the provider's tokenizer directly.
+`getNumTokens` / `get_num_tokens` on the model, or the provider's tokenizer directly. For
+Groq's models both fall back to GPT-2's tokenizer, so they are estimates; for a budget, Python's
+cheaper `count_tokens_approximately` is enough.
 </details>
 
 ### Intermediate
@@ -1621,47 +2086,54 @@ chunks (`concat` / `+`) and read it from the total. To count *before* sending, u
 <details>
 <summary><b>Q: Why do `AIMessageChunk`s support addition?</b></summary>
 
-Because reassembling a streamed response is non-trivial: text content concatenates, but tool
-calls arrive as *fragments* that must be merged by index (a single tool call's JSON arguments
-are split across many chunks), and usage metadata appears only in the final chunk. Making
-chunks addable puts that merge logic in one tested place, so `full = full.concat(chunk)` gives
-you a correct complete message including assembled tool calls.
+Because putting a streamed response back together is harder than it looks. Text content simply
+joins up. But tool calls arrive as *fragments* that must be merged by index, because a single
+tool call's JSON arguments are split across many chunks. And usage metadata appears only in the
+final chunk. Making chunks addable puts that merge logic in one tested place. So
+`full = full.concat(chunk)` gives you a correct complete message, including assembled tool
+calls.
 </details>
 
 <details>
 <summary><b>Q: How does LangChain make providers interchangeable when their APIs differ so much?</b></summary>
 
-Each integration package implements `BaseChatModel` with two translation layers: outbound,
-converting `BaseMessage[]` into that provider's wire format (Anthropic takes `system` as a
-separate top-level field, Gemini uses `contents`/`parts`, OpenAI-style uses a flat `messages`
-array); and inbound, normalising the response into `AIMessage` with consistent `content`,
-`tool_calls` and `usage_metadata`. Your code only ever sees the normalised types, so provider
-choice stops leaking into call sites. The trade-off is that provider-specific features need
-either explicit support or an escape hatch (`modelKwargs` / `model_kwargs`).
+Each integration package implements `BaseChatModel` with two translation layers:
+
+- **Outbound:** it converts `BaseMessage[]` into that provider's wire format (the exact request
+  shape it expects). Anthropic takes `system` as a separate top-level field. Gemini uses
+  `contents`/`parts`. OpenAI-style APIs use a flat `messages` array.
+- **Inbound:** it normalises the response into `AIMessage`, with consistent `content`,
+  `tool_calls` and `usage_metadata`.
+
+Your code only ever sees the normalised types, so the provider choice stays out of your calling
+code. The trade-off: provider-specific features need either explicit support or an escape hatch
+(`modelKwargs` / `model_kwargs`).
 </details>
 
 <details>
 <summary><b>Q: What is `initChatModel` / `init_chat_model` and when would you use it?</b></summary>
 
-A universal factory that takes a `"provider:model"` string and returns the right chat model,
-lazily importing the integration package. Use it when the provider should be *configuration*
-rather than code — e.g. `MODEL=groq:llama-3.3-70b-versatile` in env, so ops can switch models
-without a deploy. It also supports `configurableFields`, letting you pick the model per call at
-runtime. Use the direct class when you need provider-specific constructor options or want the
+A universal factory that takes a `"provider:model"` string and returns the right chat model. It
+loads the integration package only when needed (a lazy import). Use it when the provider should
+be *configuration* rather than code. For example, set `MODEL=groq:openai/gpt-oss-120b` in
+the environment, so the operations team can switch models without a deploy. That matters more
+than it sounds: model names get retired, and a config change is faster than a code release. It also supports
+`configurableFields`, letting you pick the model per call at runtime. Use the direct class when you need provider-specific constructor options or want the
 dependency to be explicit. Note the JS version is awaited; the Python one isn't.
 </details>
 
 <details>
 <summary><b>Q: How would you implement conversation memory with just a chat model?</b></summary>
 
-Keep an array of messages; append the `HumanMessage` before each call and the returned
-`AIMessage` after. Send the whole array each turn. Then bound it, because cost is O(n²) over a
-conversation: a sliding window, or `trimMessages`/`trim_messages` with a token budget that
-preserves the system message and starts on a human turn.
+Keep an array of messages. Append the `HumanMessage` before each call and the returned
+`AIMessage` after. Send the whole array each turn. Then put a limit on it, because cost is O(n²)
+over a conversation: it grows with the square of the number of turns. Use a sliding window, or
+`trimMessages`/`trim_messages` with a token budget that keeps the system message and starts on a
+human turn.
 
-The important caveat: trimming *loses* information — no window size is both cheap and
-remembers everything. The real solutions are summarising older turns into a rolling summary, or
-storing facts externally and retrieving the relevant ones. Persisting across sessions needs a
+The important caveat: trimming *loses* information. No window size is both cheap and remembers
+everything. The real solutions are summarising older turns into a rolling summary, or storing
+facts externally and retrieving the relevant ones. Persisting across sessions needs a
 store — which is what LangGraph checkpointers provide.
 </details>
 
@@ -1682,27 +2154,28 @@ store — which is what LangGraph checkpointers provide.
 7. **Callback dispatch** — `on_llm_end` (or `on_llm_error`).
 8. **Return.**
 
-Steps 4 and 6 are where the abstraction earns its keep; step 3/7 are why tracing works without
-you instrumenting anything.
+Steps 4 and 6 are where the abstraction proves its value. Steps 3 and 7 are why tracing works
+without you adding any instrumentation.
 </details>
 
 <details>
 <summary><b>Q: Design a model layer for a product serving 3 tiers: free, pro, enterprise.</b></summary>
 
-**Routing by tier** — free gets a small fast model (8B), pro gets a mid-tier, enterprise gets
-the frontier model plus a dedicated-capacity provider. Implement as a factory keyed by tier so
-the choice lives in one place.
+**Routing by tier** — free gets a small fast model (such as a 20B model), and pro gets a
+mid-tier model.
+Enterprise gets the frontier model (the newest, most capable one) plus a dedicated-capacity
+provider. Implement it as a factory keyed by tier, so the choice lives in one place.
 
 **Reliability** — every tier gets `.withFallbacks()` across *providers*, not just models, so one
-provider outage doesn't take you down. Log every fallback: silent degradation to a weaker model
-is how quality regressions hide.
+provider outage doesn't take you down. Log every fallback. If the app silently drops to a weaker
+model, drops in quality go unnoticed.
 
-**Cost control** — per-tenant token budgets tracked from `usage_metadata`; a hard cap that
-returns a friendly error rather than a surprise bill. Cache identical requests. Trim history
-aggressively on free tier, generously on enterprise.
+**Cost control** — track per-tenant (per-customer) token budgets from `usage_metadata`. Add a
+hard cap that returns a friendly error rather than a surprise bill. Cache identical requests.
+Trim history hard on the free tier and lightly on enterprise.
 
-**Latency** — stream everywhere for perceived speed. Route by task, not just tier: even
-enterprise should use the 8B model for classification and routing, reserving the big model for
+**Latency** — stream everywhere for perceived speed. Route by task, not just tier. Even
+enterprise should use the small model for classification and routing, and keep the big model for
 generation. Most overspending comes from using one big model for everything.
 
 **Observability** — tags/metadata on every call (`tenant`, `tier`, `feature`) so you can slice
@@ -1724,11 +2197,16 @@ Separate the three contributors:
    processing dominates: trim history, retrieve fewer chunks, prune unused tools.
 3. **Your transport** — a buffering proxy, compression, or a framework that batches the
    response will hide chunks that already arrived. Verify with `curl -N` directly against the
-   provider vs against your endpoint. Check `Cache-Control: no-transform` and disable buffering
-   for SSE.
+   provider, then against your endpoint. Check `Cache-Control: no-transform` and disable
+   buffering for SSE (Server-Sent Events, the usual streaming format).
 
-Common real causes, in the order I'd check: response buffering in the reverse proxy; awaiting
-the *whole* response server-side then re-emitting it; a large prompt; and a cold model.
+Common real causes, in the order I'd check them:
+
+- response buffering in the reverse proxy;
+- awaiting the *whole* response on the server, then re-emitting it;
+- a large prompt;
+- a cold model (one that has to start up before it can answer).
+
 Fixes: stream end-to-end (never `await` the full response), shrink the prompt, use a smaller
 model for the first-response path, and send an early keepalive so the connection opens fast.
 </details>
@@ -1743,8 +2221,10 @@ model for the first-response path, and send an early keepalive so the connection
 - ✅ Four message types: System, Human, AI, Tool — a conversation is an ordered array of them
 - ✅ `AIMessage` gives `.text`, `.tool_calls`, `.usage_metadata`, `.response_metadata`
 - ✅ Stream chunks are addable; usage arrives in the final chunk
-- ✅ Memory = re-sending history; `trimMessages` bounds the cost but loses information
+- ✅ Memory means re-sending history; `trimMessages` limits the cost but loses information
 - ✅ Swapping providers is one line — that isolation is the point, not the brevity
+- ✅ Reasoning models (GPT-OSS) think in hidden tokens: they count toward `maxTokens` and the bill; use `reasoningEffort: "low"` for simple jobs
+- ✅ Groq's current models reject `logprobs` and `n` above 1; model names change, so keep them in config
 
 ### Tomorrow
 
@@ -1762,8 +2242,8 @@ templates fix that — and they're `Runnable`s, which sets up Day 07's LCEL.
 <details>
 <summary>Answers</summary>
 
-1. `batch` runs inputs concurrently and independently — no shared context. Conversation turns
-   are sequentially dependent: turn 2 needs turn 1's answer in its input.
+1. `batch` runs inputs concurrently and independently, with no shared context. Conversation
+   turns depend on each other in order: turn 2 needs turn 1's answer in its input.
 2. Expected. Token usage arrives in the final chunk. Accumulate chunks with `concat`/`+` and
    read `usage_metadata` from the total.
 3. Swap the model constructor (`new ChatGroq(...)` → `new ChatGoogleGenerativeAI(...)`). It
@@ -1771,3 +2251,11 @@ templates fix that — and they're `Runnable`s, which sets up Day 07's LCEL.
    (`BaseMessage[]`), same output type (`AIMessage`), same methods. The provider's wire-format
    differences are handled inside the integration package.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 03 — Choosing a Model](day-03-choosing-a-model-and-why-langchain.md)** · **[Week 1 index](README.md)** · **[Day 05 — Prompts & Templates →](day-05-prompts-and-templates.md)**
+
+</div>

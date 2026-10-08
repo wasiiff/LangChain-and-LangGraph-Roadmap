@@ -2,10 +2,27 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 16](day-16-agents.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** why a graph beats a `while` loop for agent control flow. `StateGraph`,
-state channels, nodes, edges, `START` / `END`, `compile()`, and your first conditional edge.
-By the end, the ~120-line agent loop you hand-wrote yesterday will be **20 lines of graph** —
-and it will draw its own diagram.
+**Today you learn:** yesterday's agent kept everything in local variables inside a `while`
+loop, so you cannot pause it, save it, or draw it. Today you move that data into a graph's
+state and build StudyBuddy graphs from nodes, edges, reducers and a conditional edge. By the
+end, the ~120-line agent loop you hand-wrote yesterday will be **20 lines of graph** — and it
+will draw its own diagram.
+
+> 📖 **Words you'll meet today**
+>
+> - **State** — the shared data that travels through a graph, like a clipboard passed down a line.
+> - **Channel** — one named field in the state, with its own rule for accepting new values.
+> - **Node** — one step in the graph: a function that reads the state and returns what it changed.
+> - **Edge** — a link that says which node runs next. `START` / `END` mark where a run begins and
+>   stops.
+> - **Conditional edge** — an edge that calls a small function to choose the next node while the
+>   graph runs.
+> - **Reducer** — the rule that merges a node's update into a channel, such as "overwrite" or
+>   "append".
+> - **Superstep** — one round of work: the ready nodes run, their updates merge, then edges pick
+>   the next nodes.
+> - **`StateGraph` and `compile()`** — the builder you add nodes and edges to, and the call that
+>   checks the wiring and makes it runnable.
 
 ---
 
@@ -53,9 +70,9 @@ It runs. But now your manager asks for five very reasonable things:
 | "Retry only the tool step, not the whole thing" | Wrap in another `try` inside the `for` inside the `while` |
 | "Draw me a diagram of what this thing does" | You draw it by hand, in Figma, and it's wrong within a week |
 
-Every single one of those is hard for the **same reason**: your program's state lives in
-**local variables inside a running function**. Local variables cannot be paused, saved,
-inspected, resumed, or drawn.
+Every one of those is hard for the **same reason**. Your program's state lives in **local
+variables inside a running function**. Local variables cannot be paused, saved, inspected,
+resumed, or drawn.
 
 ### The real-life version
 
@@ -150,8 +167,8 @@ Four pieces, and that's the whole framework:
 ```
 
 This is why nodes are easy to test: a node is a **pure-ish function from state to a small
-patch**. You can call it directly with a fake state object and assert on the patch, with no
-graph involved at all.
+patch**. Its result depends (almost) only on the state you pass in. You can call it directly
+with a fake state object and assert on the patch, with no graph involved at all.
 
 ### Where "state" beats "local variables"
 
@@ -168,15 +185,24 @@ graph involved at all.
 ```
 
 Once your state is a plain object that the framework owns, **every hard feature becomes
-free**: persistence is "save the object", human-in-the-loop is "stop and hold the object",
-time travel is "keep every version of the object", streaming is "emit the object after each
-node". Days 18–21 are, honestly, just four consequences of this one design choice.
+free**:
+
+- **Persistence** (keeping progress after a restart) is "save the object".
+- **Human-in-the-loop** (a person approves a step) is "stop and hold the object".
+- **Time travel** (going back to an earlier point) is "keep every version of the object".
+- **Streaming** (showing progress live) is "emit the object after each node".
+
+The rest of Week 3 (persistence on Day 20, human-in-the-loop on Day 21) and streaming on Day 23
+are, honestly, just consequences of this one design choice.
 
 ---
 
 ## 3. First principles — how it actually works
 
 ### 3.1 State is a set of *channels*, not one blob
+
+> 💬 **In plain words:** state is a set of separate named slots. Each slot has its own rule for
+> what happens when a node writes to it.
 
 When you declare state, you're not declaring a class. You're declaring **independent named
 channels**, each with its own rule for accepting writes.
@@ -197,6 +223,9 @@ This is the single most important idea in LangGraph and the source of nearly eve
 bug. We'll come back to it in §7 with the exact failure.
 
 ### 3.2 Execution happens in *supersteps*, not statements
+
+> 💬 **In plain words:** the graph runs in rounds. Nodes in the same round all see the same data,
+> and their changes are merged together at the end of the round.
 
 LangGraph does not walk your graph one node at a time like a debugger. It runs in rounds,
 called **supersteps** (the model is borrowed from Google's Pregel, which is why the compiled
@@ -222,31 +251,38 @@ Each superstep is three phases:
                no active nodes → the graph halts and returns the state
 ```
 
-Two consequences you must internalise:
+Two consequences you must remember:
 
 - **Nodes in the same superstep cannot see each other's writes.** They all got the *same*
   snapshot. If `x` and `y` both run in superstep 2, `y` cannot read what `x` just produced.
 - **If two nodes in the same superstep write the same channel, the reducer must be able to
-  combine them.** With the default "last write wins", one silently clobbers the other. This
-  is why fan-out almost always needs an append reducer.
+  combine them.** With the default "last write wins", one silently overwrites the other. This
+  is why fan-out (several nodes running in parallel from one point) almost always needs an
+  append reducer.
 
 ### 3.3 `START` and `END` are real nodes
+
+> 💬 **In plain words:** the start and end points are real nodes with reserved names. You must
+> connect your first node to the start yourself.
 
 ```
    __start__  ──► your entry node
    your exit node ──► __end__
 ```
 
-They're actual sentinel nodes in the graph (you saw the literal strings `__start__` and
-`__end__` if you've peeked at a mermaid diagram). That's why:
+They're actual sentinel nodes — special marker nodes — in the graph (you saw the literal
+strings `__start__` and `__end__` if you've peeked at a mermaid diagram). That's why:
 
-- `addEdge(START, "outline")` is how the graph knows where to begin — there is no "first
+- `addEdge(START, "makeOutline")` is how the graph knows where to begin — there is no "first
   node added wins".
 - Reaching `END` means "this branch is finished", not "the whole graph is finished". Other
   branches may still be running.
 - You cannot name your own node `__start__` or `__end__`; they're reserved.
 
 ### 3.4 `compile()` is a validation step, and it returns a Runnable
+
+> 💬 **In plain words:** compiling checks your wiring for mistakes before anything runs. What you
+> get back is an ordinary Runnable, so it works like any LCEL chain.
 
 ```
    StateGraph            .compile()            CompiledStateGraph
@@ -256,7 +292,7 @@ They're actual sentinel nodes in the graph (you saw the literal strings `__start
    .addEdge()                                  .batch()  .pipe()
 ```
 
-`compile()` checks the things it can check statically:
+`compile()` checks the things it can check statically — that is, before the graph runs:
 
 | Check | What you get if you break it (JS) | (Python) |
 |---|---|---|
@@ -265,9 +301,9 @@ They're actual sentinel nodes in the graph (you saw the literal strings `__start
 | Node names are unique | `Error: Node \`z\` already present.` (at `addNode` time) | `ValueError: Node \`z\` already present.` |
 | Reserved names | `Error: Node \`__start__\` is reserved.` | `ValueError: Node \`__start__\` is reserved.` |
 
-> 💡 Note the JS/Python difference on the first row — the two implementations noticed the same
-> mistake from opposite ends (JS: "this node is orphaned"; Python: "you never told me where to
-> start"). Same bug, different message. Don't be thrown by it.
+> 💡 Note the JS/Python difference on the first row. The two implementations notice the same
+> mistake from opposite ends. JS says "this node is orphaned" (nothing leads to it). Python says
+> "you never told me where to start". Same bug, different message — don't let it confuse you.
 
 The critical payoff: **a compiled graph is a Runnable.** Everything you learned on [Day 07](../week-01-foundations/day-07-lcel-and-runnables.md)
 applies. It has `.invoke()`, `.stream()`, `.batch()`, and you can `.pipe()` it into an LCEL
@@ -275,6 +311,9 @@ chain or drop it in as a step inside a bigger chain. A graph is not a separate u
 LCEL — it's a Runnable with a very sophisticated inside.
 
 ### 3.5 What actually happens on `invoke`
+
+> 💬 **In plain words:** a run repeats one loop: run nodes, merge their changes, pick the next
+> nodes. It stops when nothing is left to run or a safety cap is reached.
 
 ```
    app.invoke({ topic: "photosynthesis" })
@@ -295,8 +334,9 @@ LCEL — it's a Runnable with a very sophisticated inside.
        └─ 4. return the final state object
 ```
 
-Step 3's loop counter is capped by `recursionLimit` / `recursion_limit`, **default 25**. It
-counts supersteps, not nodes. Hit it and you get a `GraphRecursionError`, which is the
+Step 3's loop counter is capped by `recursionLimit` / `recursion_limit`. The default differs:
+**25 in JavaScript**, but **10,007 in Python** (langgraph 1.2.x, re-verified October 2026), so in
+Python you should always set it yourself. It counts supersteps, not nodes. Hit it and you get a `GraphRecursionError`, which is the
 framework's version of yesterday's `MAX_STEPS` guard — built in, so you can't forget it.
 
 ---
@@ -352,7 +392,7 @@ import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
 import { ChatGroq } from "@langchain/groq";
 
 const model = new ChatGroq({
-  model: "llama-3.3-70b-versatile",
+  model: "openai/gpt-oss-120b",
   temperature: 0.3,
 });
 
@@ -380,10 +420,10 @@ async function explain(state) {
 }
 
 const app = new StateGraph(StudyState)
-  .addNode("outline", outline)
+  .addNode("makeOutline", outline)
   .addNode("explain", explain)
-  .addEdge(START, "outline")
-  .addEdge("outline", "explain")   // ← explain runs AFTER outline, and can read its output
+  .addEdge(START, "makeOutline")
+  .addEdge("makeOutline", "explain")   // ← explain runs AFTER outline, and can read its output
   .addEdge("explain", END)
   .compile();
 
@@ -408,6 +448,12 @@ const model = new ChatAnthropic({ model: "claude-sonnet-5", temperature: 0.3 });
 Nothing else in the file changes. The graph doesn't know or care which model you used —
 that's the point of the model abstraction from [Day 04](../week-01-foundations/day-04-langchain-models.md).
 </details>
+
+> ⚠️ **A node can't share a name with a channel (JavaScript).** The node is called
+> `makeOutline`, not `outline`, because `outline` is already a channel. langgraph JS 1.4.20
+> refuses the clash as soon as you call `addNode`: `Error: outline is already being used as a
+> state attribute (a.k.a. a channel), cannot also be used as a node name.` Python 1.2.14
+> accepted the same graph, but the course uses distinct names in both languages.
 
 Notice what you did *not* write: no variable to carry the outline from step 1 to step 2, no
 `await` ordering to get right, no `if (!outline) throw`. The edge `outline → explain` **is**
@@ -453,7 +499,7 @@ console.log(result.trace);
 // [ 'outline: wrote 3 bullets', 'explain: wrote lesson' ]
 ```
 
-Two things to burn in:
+Two things to remember:
 
 ```
    ❌  return { trace: state.trace.concat(["outline: ..."]) }   // WRONG — double-appends
@@ -536,9 +582,10 @@ Two rules this demonstrates:
 2. **Multiple edges into one node = a join.** `summarise` runs once, after all three finish —
    not three times.
 
-> ⚠️ Swap `notes` to a plain `Annotation()` (last write wins) and this graph silently keeps
-> **one** review and throws away two. No error, no warning. Fan-out demands a combining
-> reducer. This is the #2 bug in production LangGraph code.
+> ⚠️ Swap `notes` to a plain `Annotation()` (last write wins) and this graph stops. Langgraph
+> JS 1.4.20 raises `InvalidUpdateError: Invalid update for channel "notes" … LastValue can only
+> receive one value per step.` Fan-out demands a combining reducer. This is the #2 bug in
+> production LangGraph code.
 
 ### 4.5 Your first conditional edge — and your first loop
 
@@ -628,7 +675,7 @@ const add = tool(async ({ a, b }) => `${a + b}`, {
 });
 
 const tools = [add];
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile" }).bindTools(tools);
+const model = new ChatGroq({ model: "openai/gpt-oss-120b" }).bindTools(tools);
 
 const app = new StateGraph(MessagesAnnotation)
   .addNode("agent", async (state) => ({ messages: [await model.invoke(state.messages)] }))
@@ -638,15 +685,20 @@ const app = new StateGraph(MessagesAnnotation)
   .addEdge("tools", "agent")
   .compile();
 
-const out = await app.invoke({ messages: [new HumanMessage("What is 2 + 3?")] });
+const out = await app.invoke({ messages: [new HumanMessage("Use the add tool: what is 2 + 3?")] });
 console.log(out.messages.map((m) => `${m.getType()}: ${m.content}`));
-// [ 'human: What is 2 + 3?',
+// [ 'human: Use the add tool: what is 2 + 3?',
 //   'ai: ',                      ← empty content, carries tool_calls
 //   'tool: 5',
-//   'ai: The answer is 5.' ]
+//   'ai: The sum of 2 and 3 is **5**.' ]
 ```
 
-**Twenty lines.** Compare it to the `while` loop at the top of this file, and notice what
+That output is from a real run (`openai/gpt-oss-120b`, 7 October 2026). Why "Use the add tool"?
+Asked plainly "What is 2 + 3?", the model answered `2 + 3 = 5.` itself and called no tool. The
+graph was correct — `toolsCondition` simply routed straight to `END`. A model only calls a tool
+when it decides it needs one, so the demo asks for it.
+
+**Twenty lines.** Compare it with the `while` loop at the top of this file. Notice what
 vanished:
 
 | Day 16, by hand | Day 17, as a graph |
@@ -660,16 +712,17 @@ vanished:
 Three pieces are doing the work:
 
 - **`MessagesAnnotation`** — a prebuilt state with exactly one channel, `messages`, whose
-  reducer is `addMessages`. It appends; it also **upserts by ID** (re-sending a message with
-  an existing ID replaces it rather than duplicating), which is what makes editing history
-  possible on Day 21.
+  reducer is `addMessages`. It appends. It also **upserts by ID** ("update or insert"):
+  re-sending a message with an existing ID replaces it rather than duplicating it. That is
+  what makes editing history possible on Day 21.
 - **`ToolNode(tools)`** — a node that reads the last AI message, runs every tool call in it
   (in parallel), and returns the `ToolMessage`s. In JS it catches tool errors and returns them
   as message content instead of throwing, exactly as you hand-coded yesterday. **Python's
-  `ToolNode` is stricter:** by default it only turns invalid-argument errors into content and
-  *re-raises* exceptions thrown inside the tool — pass `ToolNode(tools, handle_tool_errors=True)`
-  (or a message string) to get the JS behaviour. [Day 24](../week-04-production-projects-and-interviews/day-24-reliability.md)
-  covers this in depth.
+  `ToolNode` is stricter.** By default it only turns invalid-argument errors into content.
+  Exceptions thrown inside the tool are *re-raised* (thrown on to your code). To get the JS
+  behaviour, pass `ToolNode(tools, handle_tool_errors=True)` (or a message string).
+  [Day 24](../week-04-production-projects-and-interviews/day-24-reliability.md) covers this in
+  depth.
 - **`toolsCondition`** — a prebuilt router. Verified behaviour:
   ```js
   toolsCondition({ messages: [aiMessageWithToolCalls] })  // → "tools"
@@ -722,14 +775,15 @@ that node returned:
 
 ```js
 for await (const chunk of await app.stream(
-  { messages: [new HumanMessage("What is 2 + 3?")] },
+  { messages: [new HumanMessage("Use the add tool: what is 2 + 3?")] },
   { streamMode: "updates" }
 )) {
   console.log(Object.keys(chunk)[0], "→", chunk);
 }
+// abridged — the final wording varies from run to run
 // agent → { agent: { messages: [ AIMessage {...tool_calls} ] } }
 // tools → { tools: { messages: [ ToolMessage { content: '5' } ] } }
-// agent → { agent: { messages: [ AIMessage { content: 'The answer is 5.' } ] } }
+// agent → { agent: { messages: [ AIMessage { content: 'The sum of 2 and 3 is **5**.' } ] } }
 ```
 
 The key of each chunk is **the node name**. That is your "searching… / reading… / writing…"
@@ -783,7 +837,7 @@ from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 
 class StudyState(TypedDict):
     topic: str
@@ -806,10 +860,10 @@ def explain(state: StudyState) -> dict:
     return {"lesson": res.content}
 
 builder = StateGraph(StudyState)
-builder.add_node("outline", outline)
+builder.add_node("make_outline", outline)
 builder.add_node("explain", explain)
-builder.add_edge(START, "outline")
-builder.add_edge("outline", "explain")   # explain runs AFTER outline
+builder.add_edge(START, "make_outline")
+builder.add_edge("make_outline", "explain")   # explain runs AFTER outline
 builder.add_edge("explain", END)
 app = builder.compile()
 
@@ -833,7 +887,8 @@ model = ChatAnthropic(model="claude-sonnet-5", temperature=0.3)
 </details>
 
 > 💡 **Node names default to the function name.** `builder.add_node(outline)` works and
-> registers a node called `"outline"`. I'll keep writing the name explicitly, because your
+> registers a node called `"outline"` — Python allows that even though `outline` is also a
+> channel; JavaScript does not (§4.2). I'll keep writing the name explicitly, because your
 > edges refer to strings and renaming a function shouldn't silently break a graph.
 
 ### 5.3 Accumulating state: a `trace` channel
@@ -926,8 +981,9 @@ print(out["notes"])
 # ['[clarity] ...', '[accuracy] ...', '[length] ...', '[verdict] ...']
 ```
 
-> ⚠️ Change `notes` to a plain `list[str]` (no `Annotated`) and this graph keeps **one**
-> review and silently discards two. Fan-out demands a combining reducer.
+> ⚠️ Change `notes` to a plain `list[str]` (no `Annotated`) and this graph stops with
+> `InvalidUpdateError: At key 'notes': Can receive only one value per step.` (re-verified October
+> 2026). Fan-out demands a combining reducer.
 
 ### 5.5 Your first conditional edge — and your first loop
 
@@ -979,9 +1035,9 @@ print(f'score {out["score"]} after {out["revisions"]} revision(s)')
 ```
 
 > 🔀 **Python's third argument is more flexible than JS's.** Python accepts either a **list**
-> of possible destinations (as above) or a **dict** mapping the router's return value to a
-> node name — `{"yes": "write", "no": END}` — which lets the router return arbitrary labels
-> instead of node names. Python also lets you omit it entirely; JS requires the array when
+> of possible destinations (as above) or a **dict**. The dict maps the router's return value
+> to a node name — `{"yes": "write", "no": END}`. That lets the router return any labels you
+> like instead of node names. Python also lets you omit it entirely; JS requires the array when
 > the targets aren't otherwise inferable. Using the explicit form in both languages keeps
 > your diagrams accurate.
 
@@ -1008,7 +1064,7 @@ def add(a: int, b: int) -> str:
     return str(a + b)
 
 tools = [add]
-model = ChatGroq(model="llama-3.3-70b-versatile").bind_tools(tools)
+model = ChatGroq(model="openai/gpt-oss-120b").bind_tools(tools)
 
 builder = StateGraph(MessagesState)
 builder.add_node("agent", lambda s: {"messages": [model.invoke(s["messages"])]})
@@ -1018,14 +1074,18 @@ builder.add_conditional_edges("agent", tools_condition)
 builder.add_edge("tools", "agent")
 app = builder.compile()
 
-out = app.invoke({"messages": [HumanMessage("What is 2 + 3?")]})
+out = app.invoke({"messages": [HumanMessage("Use the add tool: what is 2 + 3?")]})
 for m in out["messages"]:
     print(f"{m.type}: {m.content!r}")
-# human: 'What is 2 + 3?'
+# human: 'Use the add tool: what is 2 + 3?'
 # ai: ''            ← empty content, carries tool_calls
 # tool: '5'
-# ai: 'The answer is 5.'
+# ai: 'The sum of 2\u202f+\u202f3 is **5**.'
 ```
+
+A real run (`openai/gpt-oss-120b`, 7 October 2026). The `\u202f` characters are narrow spaces
+the model chose to write; `!r` shows them. As in §4.6, a plain "What is 2 + 3?" got a direct
+answer with no tool call.
 
 `MessagesState` is the Python twin of `MessagesAnnotation`: a `TypedDict` with exactly one
 key, `messages`, reduced by `add_messages`. Extend it when you need more:
@@ -1046,7 +1106,7 @@ with open("graph.png", "wb") as f:
     f.write(app.get_graph().draw_mermaid_png())
 ```
 
-Note the API-name difference, which trips people moving between the two languages:
+Note the API-name difference. It often confuses people who move between the two languages:
 
 | | JavaScript | Python |
 |---|---|---|
@@ -1057,12 +1117,14 @@ Note the API-name difference, which trips people moving between the two language
 ### 5.8 Watch it run
 
 ```python
-for chunk in app.stream({"messages": [HumanMessage("What is 2 + 3?")]}, stream_mode="updates"):
+for chunk in app.stream({"messages": [HumanMessage("Use the add tool: what is 2 + 3?")]},
+                        stream_mode="updates"):
     node = next(iter(chunk))
     print(node, "→", chunk[node])
+# abridged — the final wording varies from run to run
 # agent → {'messages': [AIMessage(... tool_calls=[...])]}
 # tools → {'messages': [ToolMessage(content='5')]}
-# agent → {'messages': [AIMessage(content='The answer is 5.')]}
+# agent → {'messages': [AIMessage(content='The sum of 2 and 3 is **5**.')]}
 ```
 
 ### 5.9 The full JS ↔ Python translation for today
@@ -1089,10 +1151,10 @@ for chunk in app.stream({"messages": [HumanMessage("What is 2 + 3?")]}, stream_m
 | recursion cap | `{ recursionLimit: 50 }` | `{"recursion_limit": 50}` |
 | diagram | `(await app.getGraphAsync()).drawMermaid()` | `app.get_graph().draw_mermaid()` |
 
-Chaining differs slightly too: JS `.addNode()` returns the builder so you can chain the whole
-thing fluently. Python's methods return the builder as well and *can* be chained, but the
-idiomatic style is one statement per line — that's what the docs use and what your reviewers
-will expect.
+Chaining differs slightly too. JS `.addNode()` returns the builder, so you can chain every call
+into one statement. Python's methods return the builder as well, so they *can* be chained. But
+the usual Python style is one statement per line. That's what the docs use, and what your
+reviewers will expect.
 
 ---
 
@@ -1162,8 +1224,8 @@ Point 3 is why nodes are safe to write casually. `return { score: 7 }` cannot de
 `draft` — there's no code path where omitting a key clears it.
 
 > ⚠️ **The flip side:** if a node returns *only* keys that aren't declared in your state, the
-> writes go nowhere. Verified behaviour — a node returning `{ nokey: 1 }` on a state that has
-> no `nokey` channel produces **no error at all**, and if nothing else ever wrote to a
+> writes go nowhere. Verified behaviour: a node returning `{ nokey: 1 }` on a state that has
+> no `nokey` channel produces **no error at all**. And if nothing else ever wrote to a
 > channel, `invoke` returns `undefined` (JS) / `None` (Python). Silent. Typo a channel name
 > and this is exactly what you'll see. See §7 mistake #3.
 
@@ -1194,15 +1256,20 @@ the way Pregel ran PageRank.
    recursionLimit / recursion_limit    default: 25
 ```
 
+⚠️ That `25` is the **JavaScript** default. Python's default is **10,007** in langgraph 1.2.x
+(re-verified October 2026) — a runaway Python loop can make thousands of model calls before it
+stops, so pass `{"recursion_limit": 25}` (or your own number) on every Python call.
+
 It counts **supersteps**, not nodes and not model calls. A two-node `agent ⇄ tools` cycle
-burns 2 supersteps per agent turn, so the default allows roughly 12 tool-using turns before:
+uses 2 supersteps per agent turn. So a limit of 25 allows about 12 tool-using turns before you
+see this:
 
 ```
 GraphRecursionError: Recursion limit of 25 reached without hitting a stop condition.
 You can increase the limit by setting the "recursionLimit" config key.
 ```
 
-Raise it per-invocation when you legitimately need more:
+Raise it for a single call when you really need more:
 
 ```js
 await app.invoke(input, { recursionLimit: 50 });      // JS
@@ -1216,7 +1283,7 @@ stuck in a loop, and the fix is a better exit condition in your router — not a
 
 ### 6.5 `ToolNode` is not magic
 
-Roughly what it does, so you're never mystified:
+Here is roughly what it does, so it never feels like a mystery:
 
 ```js
 async function toolNode(state) {
@@ -1236,12 +1303,17 @@ async function toolNode(state) {
 }
 ```
 
-Three details worth having in your head: it runs tool calls **in parallel**; the JS version
-returns errors as message content rather than throwing (so the agent can retry or
-apologise), while Python's re-raises them unless you set `handle_tool_errors` (verified —
-see Day 24); and it sets `tool_call_id` to match, which is what lets the provider pair the request with the
-response. Get that ID wrong by hand and the API rejects the whole conversation — this is the
-single most common cause of "400 invalid messages" when people write the loop themselves.
+Three details worth remembering:
+
+- It runs tool calls **in parallel**.
+- The JS version returns errors as message content rather than throwing, so the agent can
+  retry or apologise. Python's re-raises them unless you set `handle_tool_errors` (verified —
+  see Day 24).
+- It sets `tool_call_id` to match. That is what lets the provider pair the request with the
+  response.
+
+Get that ID wrong by hand and the API rejects the whole conversation. This is the single most
+common cause of "400 invalid messages" when people write the loop themselves.
 
 ### 6.6 Graphs vs LCEL — when to use which
 
@@ -1257,8 +1329,9 @@ Both are Runnables. The rule of thumb:
    per-node streaming / a diagram
 ```
 
-If your flow is a straight line, a graph is ceremony. If it has a cycle *or* you need any of
-the four superpowers (save, pause, rewind, watch), LCEL will fight you and a graph won't.
+If your flow is a straight line, a graph is just ceremony — extra setup that adds nothing. If
+it has a cycle *or* you need any of the four superpowers (save, pause, rewind, watch), LCEL
+will fight you and a graph won't.
 
 ---
 
@@ -1297,15 +1370,23 @@ send the delta; the reducer owns the merge.**
 ```js
 ❌ const S = Annotation.Root({ notes: Annotation() });           // last write wins
    // three parallel nodes each return { notes: [...] }
-   // → two of them are silently discarded
+   // → InvalidUpdateError: the run stops after the first superstep
 
 ✅ const S = Annotation.Root({
      notes: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] }),
    });
 ```
 
-No error. No warning. Just two-thirds of your results gone. The rule: **any channel written
-by more than one node in the same superstep needs a combining reducer.**
+What I got with three parallel writers (langgraph JS 1.4.20):
+
+```
+InvalidUpdateError: Invalid update for channel "notes" with values [["clarity"],["accuracy"],["tone"]]: LastValue can only receive one value per step.
+```
+
+Python (langgraph 1.2.14) gives `InvalidUpdateError: At key 'notes': Can receive only one value
+per step. Use an Annotated key to handle multiple values.` The bug is loud, but it still stops
+your run. The rule: **any channel written by more than one node in the same superstep needs a
+combining reducer.**
 
 ### ❌ 3. Typo'd channel name → silent nothing
 
@@ -1323,8 +1404,10 @@ await app.invoke({});   // → undefined      (Python: None)
 *input* are dropped too. If you ever see `undefined`/`None` come back from `invoke`, the first
 thing to check is whether any node is writing a channel that doesn't exist.
 
-Defend against it by keeping the channel list short and referencing it from a constant, or by
-using TypeScript / Pydantic state so the typo is a compile-time error.
+Defend against it by keeping the channel list short and checking each node's return keys
+against it ([Day 18](day-18-state-and-reducers.md) §4.7 shows a small `patch()` helper). A plain
+object of name constants does not help: `K.SCOER` is just `undefined`. Pydantic state does not
+help either — the same typo in a Pydantic-state graph also returned `None` with no error.
 
 ### ❌ 4. Expecting parallel nodes to see each other
 
@@ -1365,8 +1448,24 @@ supersteps — a crash, not a graceful degradation.
 ✅ trace: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] })
 ```
 
-A shared mutable default leaks state between runs and between conversation threads — user A's
-trace showing up in user B's. Same class of bug as Python's `def f(x=[])`.
+`default` must be a **function** that builds a fresh value. Current langgraph JS (1.4.20)
+rejects the ❌ line as soon as `Annotation.Root` runs:
+
+```
+TypeError: initialValueFactory is not a function
+```
+
+The deeper trap is still worth knowing. A factory that hands back the *same* array each time
+(`const EMPTY = []; … default: () => EMPTY`), combined with a reducer that mutates (`a.push(...b)`),
+leaks state between runs. Two `invoke({})` calls on one graph, verified:
+
+```
+[ 'hi' ]
+[ 'hi', 'hi' ]        ← the second run sees the first run's write
+```
+
+That is user A's trace showing up in user B's. Same class of bug as Python's `def f(x=[])`.
+Return a new value from `default`, and never mutate inside a reducer.
 
 ### ❌ 7. Forgetting the edge from `START`
 
@@ -1422,7 +1521,7 @@ retry, or interrupt.**
 ```
 
 Straight line, no cycles, no persistence needed? That's a chain. Using a graph costs you
-twenty lines of ceremony and buys nothing. Graphs earn their keep at the first cycle or the
+twenty lines of ceremony and buys nothing. Graphs become worth it at the first cycle or the
 first "can we pause here?".
 
 ---
@@ -1517,23 +1616,51 @@ builder.add_edge("join", END)
 print(builder.compile().invoke({}))
 ```
 
-**Output (both languages)**
+**Output — the run stops** (JavaScript shown; langgraph JS 1.4.20)
 
 ```
   a sees log = []          ← superstep 1: EMPTY, even though b also ran
   b sees log = []          ← superstep 1: EMPTY, it cannot see a's write
-  join sees log = ["a","b"]  ← superstep 2: NOW both writes are visible
-{ log: [ 'a', 'b', 'join' ], winner: 'b' }
+InvalidUpdateError: Invalid update for channel "winner" with values ["a","b"]: LastValue can only receive one value per step.
 ```
 
-**What happened to `winner`:** both `a` and `b` wrote it in the same superstep. With no
-reducer, the channel takes the last write it processed, so one value survives and the other
-is **silently discarded** — no error, no warning. Which one wins depends on internal
-ordering, so it is effectively non-deterministic and you must never rely on it.
+Python (langgraph 1.2.14) prints the same two lines, then:
+`InvalidUpdateError: At key 'winner': Can receive only one value per step. Use an Annotated key
+to handle multiple values.`
 
-The fix, if you actually wanted both: give `winner` a combining reducer, or have the two
-nodes write to *different* channels. The lesson: **any channel written by more than one node
-in a single superstep needs a reducer that can merge.**
+**What happens to `winner`:** both `a` and `b` write it in the same superstep, and it has no
+reducer. LangGraph does not pick one value for you. It stops the run at the end of superstep 1,
+so `join` never runs. Two writes to one plain channel in one step is an error, not a race.
+
+**The fix:** give the channel a reducer that can merge, or have the two nodes write to
+*different* channels. Here, `winner` becomes a list called `winners` with a concat reducer:
+
+```js
+const S = Annotation.Root({
+  log: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] }),
+  winners: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] }),
+});
+// a returns { log: ["a"], winners: ["a"] } · b returns { log: ["b"], winners: ["b"] }
+```
+
+```python
+class S(TypedDict):
+    log: Annotated[list[str], operator.add]
+    winners: Annotated[list[str], operator.add]
+# a returns {"log": ["a"], "winners": ["a"]} · b returns {"log": ["b"], "winners": ["b"]}
+```
+
+**Output after the fix** (JavaScript; Python prints the same values as a dict)
+
+```
+  a sees log = []
+  b sees log = []
+  join sees log = ["a","b"]  ← superstep 2: NOW both writes are visible
+{ log: [ 'a', 'b', 'join' ], winners: [ 'a', 'b' ] }
+```
+
+The lesson: **any channel written by more than one node in a single superstep needs a reducer
+that can merge.** Do not rely on the order inside `winners`; it is not guaranteed.
 
 The `log` channel proves fact 3 too — `a` returned `{ log: ["a"] }`, a single-element array,
 yet the final `log` has three items. The node returned a patch; LangGraph did the merging.
@@ -1566,7 +1693,7 @@ Then answer in one sentence: **was this worth doing?**
 import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.4 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.4 });
 
 const S = Annotation.Root({
   topic: Annotation(),
@@ -1634,7 +1761,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.4)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.4)
 
 class S(TypedDict):
     topic: str
@@ -1693,12 +1820,12 @@ Honestly: **not yet.** This is a straight line with no cycles, no persistence, a
 interruption — an LCEL chain would be shorter and just as testable. What you *did* buy is
 the per-node trace, an accurate auto-generated diagram, and per-node stream events.
 
-The real answer is that it becomes worth it the moment someone says "if dedupe removes more
-than 2 cards, generate replacements" — that's a cycle, and the chain version would need a
-manual loop while the graph version needs one conditional edge. Building it as a graph up
-front is a bet that the requirement is coming. Sometimes that bet is wrong; recognising when
-it's wrong is a senior skill, and "we used a graph for a straight line" is a completely
-legitimate code-review comment.
+The real answer: it becomes worth it the moment someone says "if dedupe removes more than 2
+cards, generate replacements". That's a cycle. The chain version would need a hand-written
+loop. The graph version needs one conditional edge. Building it as a graph up front is a bet
+that the requirement is coming. Sometimes that bet is wrong. Recognising when it's wrong is a
+senior skill, and "we used a graph for a straight line" is a completely fair code-review
+comment.
 </details>
 
 ---
@@ -1709,13 +1836,13 @@ Take the working two-node StudyBuddy graph from §4.2/§5.2. Introduce each of t
 at a time. **Predict the symptom before you run it**, then run it and record what actually
 happened.
 
-1. Remove `addEdge(START, "outline")`.
-2. Change `addEdge("outline", "explain")` to `addEdge(START, "explain")` (so both run in
+1. Remove `addEdge(START, "makeOutline")`.
+2. Change `addEdge("makeOutline", "explain")` to `addEdge(START, "explain")` (so both run in
    parallel).
 3. Rename the returned key in `outline` from `outline` to `outlin`.
 4. Add a `trace` channel with an append reducer, then have a node return
    `state.trace.concat([...])`.
-5. Add `addEdge("explain", "outline")` to create a cycle, with no exit condition.
+5. Add `addEdge("explain", "makeOutline")` to create a cycle, with no exit condition.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1724,11 +1851,11 @@ happened.
 
 | # | Symptom | Why |
 |---|---|---|
-| 1 | **JS:** `UnreachableNodeError: Node \`outline\` is not reachable.`<br>**Python:** `ValueError: Graph must have an entrypoint: add at least one edge from START to another node` | Caught at `compile()`, before anything runs. Two implementations, two framings of the same problem — JS complains the node is orphaned, Python complains there's no entry. |
+| 1 | **JS:** `UnreachableNodeError: Node \`makeOutline\` is not reachable.`<br>**Python:** `ValueError: Graph must have an entrypoint: add at least one edge from START to another node` | Caught at `compile()`, before anything runs. Two implementations, two framings of the same problem — JS complains the node is orphaned, Python complains there's no entry. |
 | 2 | No error. `lesson` is written from an **empty/undefined outline** — the model gets `Using this outline:\nundefined`. Garbage lesson, full confidence. | Same superstep = same snapshot. `explain` cannot see what `outline` wrote. **The most dangerous of the five**, because it fails silently and the output still *looks* like a lesson. |
 | 3 | No error. `invoke` returns a state where `outline` is missing and `lesson` was built from nothing. If nothing else wrote a channel either, `invoke` returns `undefined` (JS) / `None` (Python). | Unknown keys in a node's patch are dropped without warning. Verified. |
 | 4 | Duplicated entries: `["outline: ...", "outline: ...", "explain: ..."]` and it compounds every step. | You concatenated, then the reducer concatenated again. Confirmed minimal repro: input `{notes:["seed"]}`, node returns `state.notes.concat(["dup"])`, output is `["seed","seed","dup"]`. |
-| 5 | Runs 25 supersteps then `GraphRecursionError: Recursion limit of 25 reached without hitting a stop condition.` Costs you ~25 model calls first. | The recursion limit is the framework's `MAX_STEPS`. It saves you from an infinite loop but not from the bill. |
+| 5 | **JS:** runs 25 supersteps then `GraphRecursionError: Recursion limit of 25 reached without hitting a stop condition.` Costs you ~25 model calls first. **Python** (default limit 10,007): runs for thousands of supersteps before stopping — set `recursion_limit` yourself. | The recursion limit is the framework's `MAX_STEPS`. It saves you from an infinite loop but not from the bill. |
 
 **The takeaway ranking.** Bugs 1 and 5 are *loud* — a stack trace tells you exactly what's
 wrong. Bugs 2, 3 and 4 are *quiet*: the program completes, returns a plausible-looking
@@ -1736,15 +1863,15 @@ object, and is wrong. Those are the ones to build habits against:
 
 - **Bug 2** → if B needs A's output, draw the edge. Check your mermaid diagram: if two nodes
   hang off `__start__` in parallel, ask whether that's really what you meant.
-- **Bug 3** → keep channel names in one place; use TypeScript or a Pydantic state model so a
-  typo is a compile-time error rather than a silent drop.
+- **Bug 3** → keep channel names in one place and check each node's return keys against them
+  (Day 18 §4.7's `patch()` helper). A Pydantic state model does **not** catch this typo.
 - **Bug 4** → repeat the rule until it's reflex: **send the delta, never the merged value.**
 
 **Reproducing #1 and #5 quickly** (no API key needed):
 
 ```js
 // #1
-try { new StateGraph(S).addNode("outline", () => ({})).compile(); }
+try { new StateGraph(S).addNode("makeOutline", () => ({})).compile(); }
 catch (e) { console.log(e.constructor.name, e.message); }
 
 // #5
@@ -1760,7 +1887,7 @@ catch (e) { console.log(e.constructor.name, e.message); }
 ```python
 # #1
 try:
-    b = StateGraph(S); b.add_node("outline", lambda s: {}); b.compile()
+    b = StateGraph(S); b.add_node("make_outline", lambda s: {}); b.compile()
 except Exception as e:
     print(type(e).__name__, e)
 
@@ -1792,13 +1919,13 @@ Requirements:
 
 - `critique` returns a numeric score **and** written feedback.
 - `revise` rewrites the draft using the feedback.
-- Exit when score ≥ 8 **or** after 3 revisions **or** if the score stops improving
-  (two rounds with no gain — a plateau guard).
+- Exit when the score is 8 or more, **or** after 3 revisions, **or** if the score stops
+  improving (two rounds with no gain — a plateau guard).
 - Track a `history` channel of `{ revision, score }` so you can see the trajectory.
 - Print the diagram and the score history.
 
-The plateau guard is the interesting part: a step cap stops runaway cost, but a plateau guard
-stops *wasted* cost — there's no point paying for revision 3 if revision 2 didn't help.
+The plateau guard is the interesting part. A step cap stops runaway cost. A plateau guard
+stops *wasted* cost: there's no point paying for revision 3 if revision 2 didn't help.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1810,14 +1937,16 @@ import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
 import { ChatGroq } from "@langchain/groq";
 import { z } from "zod";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.4 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.4 });
 
-// structured output so `score` is a real number, not a string we have to parse
+// structured output so `score` is a real number, not a string we have to parse.
+// JSON-schema mode: with GPT-OSS on Groq the default tool-calling mode can fail (Day 06)
 const critic = model.withStructuredOutput(
   z.object({
     score: z.number().min(1).max(10).describe("beginner clarity, 1-10"),
     feedback: z.string().describe("one concrete improvement"),
-  })
+  }),
+  { method: "jsonSchema" }
 );
 
 const S = Annotation.Root({
@@ -1867,11 +1996,11 @@ function route(state) {
 }
 
 const app = new StateGraph(S)
-  .addNode("draft", draft)
+  .addNode("writeDraft", draft)
   .addNode("critique", critique)
   .addNode("revise", revise)
-  .addEdge(START, "draft")
-  .addEdge("draft", "critique")
+  .addEdge(START, "writeDraft")
+  .addEdge("writeDraft", "critique")
   .addConditionalEdges("critique", route, ["revise", END])
   .addEdge("revise", "critique")           // ← the cycle
   .compile();
@@ -1892,13 +2021,14 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.4)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.4)
 
 class Critique(BaseModel):
     score: int = Field(description="beginner clarity, 1-10", ge=1, le=10)
     feedback: str = Field(description="one concrete improvement")
 
-critic = model.with_structured_output(Critique)
+# JSON-schema mode: with GPT-OSS on Groq the default tool-calling mode can fail (Day 06)
+critic = model.with_structured_output(Critique, method="json_schema", strict=True)
 
 class S(TypedDict):
     topic: str
@@ -1942,11 +2072,11 @@ def route(state: S) -> str:
     return "revise"
 
 builder = StateGraph(S)
-builder.add_node("draft", draft)
+builder.add_node("write_draft", draft)
 builder.add_node("critique", critique)
 builder.add_node("revise", revise)
-builder.add_edge(START, "draft")
-builder.add_edge("draft", "critique")
+builder.add_edge(START, "write_draft")
+builder.add_edge("write_draft", "critique")
 builder.add_conditional_edges("critique", route, ["revise", END])
 builder.add_edge("revise", "critique")      # the cycle
 app = builder.compile()
@@ -1958,7 +2088,7 @@ print(f'final score {out["score"]} after {out.get("revisions", 0)} revision(s)')
 print("\n" + app.get_graph().draw_mermaid())
 ```
 
-**Sample trajectory**
+**Sample trajectory** (illustrative — not a measured run; your scores will differ)
 
 ```
 HISTORY: [ { revision: 0, score: 6 },
@@ -1973,7 +2103,9 @@ final score 9 after 2 revision(s)
    "I'd say about 7 out of 10" and you get `NaN`, which fails every comparison and quietly
    loops to the cap. Using `withStructuredOutput` / `with_structured_output` makes `score` a
    real number by construction. This is [Day 06](../week-01-foundations/day-06-output-parsers-structured-output.md)
-   paying off inside a graph.
+   paying off inside a graph. The code asks for JSON-schema mode. With GPT-OSS on Groq, the
+   default tool-calling mode can fail with `400 Tool choice is required, but model did not call
+   a tool`. JSON-schema mode returned a valid critique in both languages (7 October 2026).
 2. **The cycle is `revise → critique`, not `critique → revise → critique`.** The conditional
    edge leaves `critique`; the plain edge comes back to it. Every loop in LangGraph is
    exactly this shape: one conditional edge out, one plain edge back.
@@ -1990,9 +2122,9 @@ final score 9 after 2 revision(s)
 Take the 20-line agent from §4.6/§5.6 and give it two things the prebuilt version doesn't
 have:
 
-1. **A step counter in state** that increments each time the `agent` node runs, and a
-   conditional edge that routes to a `giveUp` node at 5 steps — returning a polite "I couldn't
-   finish this" message instead of a `GraphRecursionError`.
+1. **A step counter in state** that goes up by one each time the `agent` node runs. Add a
+   conditional edge that routes to a `giveUp` node at 5 steps. That node returns a polite "I
+   couldn't finish this" message instead of a `GraphRecursionError`.
 2. **A `toolsUsed` channel** recording every tool name that was called, so you can print an
    audit line at the end.
 
@@ -2047,7 +2179,7 @@ const AgentState = Annotation.Root({
   toolsUsed: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] }),
 });
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile" }).bindTools(tools);
+const model = new ChatGroq({ model: "openai/gpt-oss-120b" }).bindTools(tools);
 
 // ── nodes ────────────────────────────────────────────────────────────────
 async function agent(state) {
@@ -2140,7 +2272,7 @@ class AgentState(TypedDict):
     steps: Annotated[int, operator.add]
     tools_used: Annotated[list[str], operator.add]
 
-model = ChatGroq(model="llama-3.3-70b-versatile").bind_tools(tools)
+model = ChatGroq(model="openai/gpt-oss-120b").bind_tools(tools)
 
 # ── nodes ────────────────────────────────────────────────────────────────
 def agent(state: AgentState) -> dict:
@@ -2213,13 +2345,13 @@ doesn't, you either forgot a destination in the third argument or you have dead 
 | which tools were used | dig through `messages` and filter | `state.toolsUsed` — one channel |
 | add a "give up" behaviour | not a supported option | one node, one router branch |
 
-**Two things to notice about the state design:**
+**Three things to notice about the state design:**
 
 - `steps` counts **agent turns**, not supersteps. That's a more meaningful budget than
   `recursionLimit`, which counts both `agent` and `tools` and so is roughly double.
 - `toolsUsed` is populated in the `agent` node from `ai.tool_calls`, not in the `tools` node.
-  Either works, but recording *intent* at the agent step means a tool that errors still shows
-  up in the audit — which is usually what you want when debugging "why did this go wrong?".
+  Either works. But recording *intent* at the agent step means a tool that errors still shows
+  up in the audit. That is usually what you want when you debug "why did this go wrong?".
 - Notice we had to spell out `messages: Annotation({ reducer: addMessages, default: () => [] })`
   in JS rather than using `MessagesAnnotation`, because we're adding extra channels.
   In Python you can also just subclass: `class AgentState(MessagesState): steps: ...` —
@@ -2248,9 +2380,10 @@ a cycle or need persistence, interruption, or per-node observability.
 
 **Q2. What are the four building blocks of a LangGraph application?**
 
-State (the shared data, defined as named channels), nodes (functions taking state and
-returning a partial update), edges (which node runs next — fixed or conditional), and the
-compiled graph (an executable Runnable with `invoke`/`stream`/`batch`).
+- **State** — the shared data, defined as named channels.
+- **Nodes** — functions that take state and return a partial update.
+- **Edges** — which node runs next, either fixed or conditional.
+- **The compiled graph** — an executable Runnable with `invoke`/`stream`/`batch`.
 
 ---
 
@@ -2282,13 +2415,14 @@ before anything runs.
 
 **Q6. What is a reducer and when do you need a custom one?**
 
-A reducer is a function `(existing, incoming) => merged` attached to a state channel; it
+A reducer is a function `(existing, incoming) => merged` attached to a state channel. It
 decides how a node's write is combined with what's already there. The default is
 last-write-wins.
 
-You need a custom one whenever a channel should **accumulate** (a message list, a trace, a
-counter) or whenever **more than one node writes it in the same superstep** — with
-last-write-wins, parallel writes silently discard all but one, with no error.
+You need a custom one in two cases. The first is whenever a channel should **accumulate** (a
+message list, a trace, a counter). The second is whenever **more than one node writes it in
+the same superstep**. With last-write-wins, parallel writes to one channel are an error:
+current versions raise `InvalidUpdateError` (re-verified October 2026).
 
 ```js
 notes: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] })
@@ -2321,10 +2455,11 @@ A conditional edge out of a node plus a plain edge back into it:
 .addEdge("revise", "critique")
 ```
 
-Every loop needs **at least two exits**: a quality condition (score ≥ 8) *and* a
-budget condition (revisions ≥ 3). The quality condition may never fire. The `recursionLimit`
-(default 25 supersteps) is a backstop that throws `GraphRecursionError` — treat hitting it as
-a bug, not a tuning knob, because by then you've already paid for 25 supersteps.
+Every loop needs **at least two exits**: a quality condition (a score of 8 or more) *and* a
+budget condition (3 or more revisions). The quality condition may never fire. The
+`recursionLimit` (default 25 supersteps in JS; 10,007 in Python, so set it there) is a backstop
+— a last safety net that throws `GraphRecursionError`. Treat hitting it as a bug, not a setting
+to tune. By then you've already paid for every superstep up to the limit.
 
 ---
 
@@ -2346,10 +2481,10 @@ channels in JS.
 `ToolNode(tools)` reads the last AI message, executes every tool call in it **in parallel**,
 and returns matching `ToolMessage`s with the correct `tool_call_id`. In JS it catches tool
 exceptions and returns them as message *content* rather than throwing, so the model can see
-the error and recover. Python's `ToolNode` does that only for invalid arguments by default;
-exceptions raised inside a tool propagate unless you pass `handle_tool_errors=True` or a
-message string — worth mentioning in an interview, because code ported between the two
-languages breaks exactly here.
+the error and recover. Python's `ToolNode` does that only for invalid arguments by default.
+Exceptions raised inside a tool propagate (are passed up to your code) unless you pass
+`handle_tool_errors=True` or a message string. Mention this in an interview: code ported
+between the two languages breaks exactly here.
 
 `toolsCondition` is a router with two outcomes: `"tools"` if the last message has tool calls,
 `END` otherwise. Together they turn the entire ReAct loop into three lines:
@@ -2393,7 +2528,8 @@ control-flow or prompt problem.
    and add a budget node that degrades gracefully instead of throwing (Exercise 5's `giveUp`
    pattern).
 5. **Structural check:** does `recursionLimit` account for the two supersteps per agent turn?
-   25 supersteps is ~12 tool-using turns, which is less than people expect.
+   25 supersteps (the JS default) is ~12 tool-using turns, which is less than people expect.
+   In Python the default is 10,007, so set your own limit.
 
 The meta-point: the recursion limit is a smoke alarm. Turning it up is unplugging the alarm.
 
@@ -2421,9 +2557,10 @@ Day 18 is about.
 
 **Q14. Three parallel nodes write the same channel. One throws. What happens, and how should you design for it?**
 
-Within a superstep, an unhandled exception in one node fails the superstep — the successful
-nodes' writes for that superstep are **not** committed, because the patch application is
-atomic per superstep. You don't get a partial merge.
+Within a superstep, an unhandled exception in one node fails the whole superstep. The
+successful nodes' writes for that superstep are **not** committed (saved). That's because
+patches are applied atomically per superstep — all together or not at all. You don't get a
+partial merge.
 
 Design for it three ways:
 
@@ -2433,9 +2570,9 @@ Design for it three ways:
 3. **Design the reducer to tolerate gaps** — downstream code should handle two notes instead
    of three rather than assuming a fixed count.
 
-The principle carries over from tools on Day 15: in an agentic system, **failures should
-usually become data rather than exceptions**, because the model (or a later node) is often
-capable of routing around them. Exceptions are for bugs; sentinels are for expected failures.
+The principle carries over from tools on Day 15. In an agentic system, **failures should
+usually become data rather than exceptions**. The model (or a later node) can often route
+around them. Exceptions are for bugs; sentinels are for expected failures.
 
 ---
 
@@ -2452,8 +2589,8 @@ capable of routing around them. Exceptions are for bugs; sentinels are for expec
 
 The honest framing: LangGraph earns its complexity when you need **cycles, persistence,
 human-in-the-loop, or per-node observability**. If you need none of those, using it is
-resume-driven development. Saying that in an interview reads as senior; enthusiastically
-graphing everything reads as junior.
+resume-driven development — picking a tool because it looks good on a CV. Saying that in an
+interview sounds senior. Enthusiastically graphing everything sounds junior.
 
 ---
 
@@ -2470,8 +2607,8 @@ Three levels, cheapest first:
    count of `return`s.
 3. **The graph with a fake model.** Substitute an object with an `invoke` that returns
    scripted `AIMessage`s — first a tool call, then a final answer. This is exactly how the
-   snippets in this chapter were verified, and it tests the *wiring* deterministically with no
-   API key and no cost:
+   snippets in this chapter were verified. It tests the *wiring* deterministically (the same
+   result every run), with no API key and no cost:
 
    ```js
    let turn = 0;
@@ -2483,8 +2620,9 @@ Three levels, cheapest first:
    }};
    ```
 
-Add a snapshot test on `drawMermaid()` output and you'll catch accidental topology changes in
-code review. Reserve real-model integration tests for a small suite you run before release.
+Add a snapshot test on `drawMermaid()` output. It catches accidental changes to the graph's
+shape (its topology) in code review. Reserve real-model integration tests for a small suite
+you run before release.
 
 ---
 
@@ -2496,14 +2634,15 @@ code review. Reserve real-model integration tests for a small suite you run befo
   a call stack
 - ✅ A graph is four things: **state, nodes, edges, reducers**
 - ✅ A node returns **only what changed** — a patch, merged by the channel's reducer
-- ✅ Execution runs in **supersteps**: run concurrently → apply patches → route
+- ✅ Execution runs in **supersteps**: run nodes at the same time, then apply patches, then route
 - ✅ Nodes in the same superstep **cannot see each other's writes**
 - ✅ Any channel written by two nodes at once **needs a combining reducer**
 - ✅ `START` / `END` are real sentinel nodes; `compile()` validates reachability statically
 - ✅ A compiled graph **is a Runnable** — LCEL and LangGraph are the same universe
 - ✅ A conditional edge is just **a function returning a node name**
 - ✅ Every loop needs **two exits**: a quality one and a budget one
-- ✅ `MessagesAnnotation` + `ToolNode` + `toolsCondition` = yesterday's agent in **20 lines**
+- ✅ `MessagesAnnotation`, `ToolNode` and `toolsCondition` together rebuild yesterday's agent
+  in **20 lines**
 - ✅ `drawMermaid()` gives you documentation that **cannot drift from the code**
 
 ### The scoreboard
@@ -2521,9 +2660,10 @@ code review. Reserve real-model integration tests for a small suite you run befo
 ### Tomorrow
 
 **[Day 18 — State & Reducers](day-18-state-and-reducers.md)**: today you used reducers as a
-tool; tomorrow you master them. Custom reducers, `addMessages` upsert semantics in detail,
-multiple state schemas (input vs output vs internal), and the distinction that trips up
-everyone in interviews — **state vs memory vs context vs store vs checkpoint**. You'll also
+tool; tomorrow you master them. You'll cover custom reducers and `addMessages` upsert
+semantics in detail. You'll meet multiple state schemas (input vs output vs internal). And
+you'll learn the distinction that confuses almost everyone in interviews: **state vs memory
+vs context vs store vs checkpoint**. You'll also
 learn what should *never* go in state, and why a 2MB document there will destroy your
 throughput.
 
@@ -2539,23 +2679,23 @@ throughput.
 <details>
 <summary>Answers</summary>
 
-1. **`1`** — not `2`. With no reducer the channel is last-write-wins, so one of the two
-   writes is silently discarded. The bug is that a channel written by more than one node in
-   the same superstep must have a combining reducer; here you'd want
+1. **Neither — the run fails.** Current versions raise `InvalidUpdateError` ("can only receive
+   one value per step"), re-verified October 2026 — you don't quietly get `1` or `2`. The bug: a
+   channel written by more than one node in the same superstep must have a combining reducer. Here you'd want
    `reducer: (a, b) => a + b, default: () => 0` (JS) / `Annotated[int, operator.add]`
-   (Python), which would give `2`. And because which write "wins" depends on internal
-   ordering, the wrong version isn't just incorrect — it's non-deterministic.
+   (Python), which would give `2`.
 
 2. **A typo'd channel name.** Writes to channels that aren't declared in your state are
-   dropped silently, and if no declared channel ever received a write, `invoke` returns
+   dropped silently. If no declared channel ever received a write, `invoke` returns
    `undefined` (JS) / `None` (Python) with no exception. Diff the keys your nodes return
    against the keys in your state declaration. Second thing to check: whether every node is
    returning a patch at all rather than mutating state in place.
 
-3. `default: []` creates **one array shared by every run and every conversation thread** —
-   user A's trace leaks into user B's, and the array grows forever across invocations.
-   `default: () => []` is a factory called fresh per run, so each execution gets its own
-   array. It's the same trap as Python's mutable default argument `def f(x=[])`.
+3. `default` must be a factory. Current langgraph JS (1.4.20) rejects `default: []` at once
+   with `TypeError: initialValueFactory is not a function`. `default: () => []` is called fresh
+   per run, so each execution gets its own array. The leak the rule protects against is real:
+   a factory that returns one shared array, plus a reducer that mutates it, lets user A's
+   trace leak into user B's. It's the same trap as Python's mutable default `def f(x=[])`.
 </details>
 
 ---

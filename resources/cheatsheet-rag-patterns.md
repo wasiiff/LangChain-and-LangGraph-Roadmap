@@ -113,7 +113,7 @@ chunks = splitter.split_documents(docs)     # split_documents keeps metadata!
 | Model | Dims | Cost | Note |
 |---|---|---|---|
 | `nomic-embed-text` (Ollama) | 768 | free, local | **Default for this book** |
-| `text-embedding-004` (Google) | 768 | free tier | Python needs `models/` prefix |
+| `gemini-embedding-2` (Google) | 3072 | free tier (check limits) | replaced `text-embedding-004` (shut down Jan 2026); see Day 10 |
 | `text-embedding-3-small` (OpenAI) | 1536 | $0.02/1M | Strong baseline |
 | `text-embedding-3-large` (OpenAI) | 3072 | $0.13/1M | Best general purpose |
 | `BGE-M3` | 1024 | free, local | Multilingual |

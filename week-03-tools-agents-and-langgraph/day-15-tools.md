@@ -2,11 +2,27 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 14](../week-02-data-embeddings-and-rag/day-14-memory.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** how to turn any function into something a model can call — `tool()`,
-schemas, descriptions that actually work, the execution loop, error handling that lets the model
-recover, and the security boundary you must not cross.
+**Today you learn:** a model can only write text — it cannot do sums reliably, see live data or
+take actions. Today you fix that by turning ordinary functions into **tools** the model can ask
+for, using `tool()`, a **schema** and a good **description**. You build a bounded **execution
+loop**, error messages the model can recover from, and the security checks you must never skip.
 
 You built raw tool calling on Day 02. Today you build it *properly*.
+
+> 📖 **Words you'll meet today**
+>
+> - **Tool** — a function the model can ask you to run. It sees only the name, description and
+>   schema.
+> - **Tool call** — the model's structured request to run a tool with given arguments. The model
+>   runs nothing itself.
+> - **Schema** — the shape of a tool's arguments: their names, types and allowed values.
+> - **Description** — text telling the model what a tool does and when to use it. It is prompt
+>   text.
+> - **Execution loop** — call the model, run the tools it asks for, send back results, and repeat.
+> - **`ToolMessage`** — the message carrying a tool's result back to the model, matched by call ID.
+> - **Path traversal** — an attack that uses `..` in a file path to escape a tool's allowed folder.
+> - **Least privilege** — give each tool only the access it needs, such as a read-only database
+>   login.
 
 ---
 
@@ -24,8 +40,8 @@ yesterday. Ask it anything else and it fails:
 
 The model can *reason*. It cannot *act*, *compute reliably*, or *see live data*.
 
-**Tools fix all four** — and the mechanism is simple: the model emits a structured request, and
-**your code** runs the function.
+**Tools fix all four** of the failures above. The mechanism is simple: the model writes a
+structured request, and **your code** runs the function.
 
 ```
    WITHOUT TOOLS                      WITH TOOLS
@@ -56,7 +72,7 @@ That last row is why half of today is about safety.
 ```
 
 **The model never sees your code.** It sees a name, a description and a JSON schema. That's the
-whole interface — which is why a vague description produces wrong tool choices.
+whole interface. This is why a vague description leads to wrong tool choices.
 
 ### The execution loop
 
@@ -96,6 +112,9 @@ whole interface — which is why a vague description produces wrong tool choices
 ## 3. First principles
 
 ### 3.1 Creating a tool
+
+> 💬 **In plain words:** a tool is your normal function plus three labels: a name, a
+> description and a schema. The labels are what the model reads.
 
 ```js
 import { tool } from "@langchain/core/tools";
@@ -139,7 +158,10 @@ def get_weather(city: str) -> str:
 
 ### 3.2 Descriptions are prompts, not documentation
 
-This is the highest-leverage idea today.
+> 💬 **In plain words:** the model chooses a tool by reading its description. Write it as an
+> instruction to the model, not as a note for other developers.
+
+This is the idea with the biggest effect today.
 
 ```js
 // ❌ the model has no idea when to use this
@@ -159,6 +181,9 @@ That third one is what stops the model reaching for a web search to add two numb
 
 ### 3.3 Argument schemas
 
+> 💬 **In plain words:** a tight schema makes bad arguments impossible to send. Fixed choices,
+> defaults and per-field descriptions all guide the model.
+
 Everything from Day 06 applies — the schema *is* the constraint:
 
 ```js
@@ -171,12 +196,15 @@ schema: z.object({
 })
 ```
 
-- **Enums** over free strings — the wrong value becomes unrepresentable
+- **Enums** (a fixed list of allowed values) over free strings — a wrong value cannot be sent
 - **Defaults** so the model can omit optional arguments
 - **Nullable** so "not applicable" is expressible instead of invented
 - **Describe every field** — it's prompt text
 
 ### 3.4 Binding tools to a model
+
+> 💬 **In plain words:** binding tells the model which tools exist. The model then replies with a
+> request to run one — it does not run anything itself.
 
 ```js
 const modelWithTools = model.bindTools([getWeather, calculator]);
@@ -189,6 +217,9 @@ res.tool_calls;
 The model **requests**; nothing has executed yet.
 
 ### 3.5 The execution loop, done right
+
+> 💬 **In plain words:** your code runs the requested tools, sends the results back, and asks the
+> model again. Always cap the number of rounds.
 
 ```js
 const messages = [new HumanMessage(question)];
@@ -219,12 +250,15 @@ for (let step = 0; step < MAX_STEPS; step++) {      // ⚠️ ALWAYS bounded
 Three rules, each one a bug you'd otherwise ship:
 
 1. **Bound the loop.** A confused model calls tools forever, and that's an unbounded bill.
-2. **Push the assistant message verbatim** before the tool results, or the provider rejects it
-   with a 400 (Day 02).
+2. **Push the assistant message verbatim** (exactly as received) before the tool results.
+   Otherwise the provider rejects the request with an HTTP 400 error (Day 02).
 3. **Return errors to the model as content**, don't throw. The model can then correct itself —
    `"Error: city not found"` often produces a retry with a better argument.
 
 ### 3.6 `ToolNode` — the prebuilt executor
+
+> 💬 **In plain words:** LangGraph gives you a ready-made piece that runs the requested tools for
+> you, so you don't write that part of the loop by hand.
 
 LangGraph ships the loop body:
 
@@ -234,11 +268,18 @@ const toolNode = new ToolNode([getWeather, calculator]);
 ```
 
 It takes state containing messages, executes every `tool_call` on the last AI message **in
-parallel**, and returns `ToolMessage`s. It handles errors, unknown tools and ID matching.
+parallel**, and returns `ToolMessage`s with matching IDs.
+
+> ⚠️ **Errors differ by language** (verified — see Day 24): in JavaScript, a tool that throws comes
+> back as an error `ToolMessage` the model can read. In Python, `ToolNode` re-raises the exception
+> unless you pass `handle_tool_errors=True`.
 
 You'll wire this into a graph on Day 17.
 
 ### 3.7 Error handling that helps the model
+
+> 💬 **In plain words:** when a tool fails, tell the model what went wrong and what to try next.
+> A clear error message lets it fix the problem itself.
 
 ```
    error type              what to return to the model
@@ -255,8 +296,11 @@ nothing; `"Error: date must be YYYY-MM-DD, got '14 March'"` gets a correct retry
 
 ### 3.8 The security boundary
 
-Day 02 established that prompt injection is not solvable at the prompt layer. Tools are where
-that stops being theoretical:
+> 💬 **In plain words:** anyone who can put text in front of the model can steer its tool calls.
+> So safety checks must live in your code, not in the prompt.
+
+Day 02 showed that you cannot solve prompt injection (hidden instructions inside untrusted text)
+with prompt wording alone. With tools, this is no longer a theory — it is a real risk:
 
 ```
    ⚠️ Every tool is an ACTION the model can take on your behalf,
@@ -269,7 +313,8 @@ that stops being theoretical:
 
 **The rules:**
 
-1. **Least privilege** — the DB tool gets a read-only connection scoped to the tenant.
+1. **Least privilege** — the DB tool gets a read-only connection limited to the tenant (the
+   customer account the request belongs to).
 2. **Validate inside the tool**, never trust the arguments. The model can emit anything.
 3. **Allow-lists over free text** — an email tool validates recipients against a list; the model
    cannot invent an address.
@@ -297,17 +342,22 @@ const runQuery = tool(
 
 ### 3.9 How many tools?
 
-Every tool's schema is in the prompt on **every** call.
+> 💬 **In plain words:** every tool you add costs tokens on every call and makes the choice
+> harder. Past about 15 tools, show the model only the ones it needs.
+
+Every tool's schema is in the prompt on **every** call. How many tokens that costs varies with
+schema size (long descriptions and nested arguments cost more) — count yours from the usage
+metadata. The figures below are rough guides, not measurements:
 
 | Tools | Overhead | Model accuracy |
 |---|---|---|
 | 1–5 | small | excellent |
-| 5–15 | ~1–3k tokens | good |
+| 5–15 | hundreds to a few thousand tokens | good |
 | 15–30 | noticeable | degrading — similar tools get confused |
 | 30+ | expensive | poor without routing |
 
-**Above ~15, route.** Classify the request first, then bind only the relevant subset — the same
-Day 08 routing idea applied to tools.
+**Above about 15, route.** Classify the request first, then bind only the tools it needs. This is
+the Day 08 routing idea, applied to tools.
 
 ---
 
@@ -397,7 +447,7 @@ import "dotenv/config";
 import { ChatGroq } from "@langchain/groq";
 import { calculator, getWeather } from "./day15-tools.js";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const modelWithTools = model.bindTools([calculator, getWeather]);
 
 for (const q of [
@@ -434,7 +484,7 @@ import { calculator, getWeather } from "./day15-tools.js";
 const TOOLS = [calculator, getWeather];
 const BY_NAME = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 })
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 })
   .bindTools(TOOLS);
 
 async function run(question, maxSteps = 6) {
@@ -480,7 +530,7 @@ async function run(question, maxSteps = 6) {
 
 for (const q of [
   "What's the weather in Lahore, and what is that in Fahrenheit?",
-  "What's the weather in Atlantis?",              // triggers the actionable error
+  "What's the weather in Paris?",                 // triggers the actionable error
   "What is 15% of 8342, plus 991?",
 ]) {
   console.log(`\n${"═".repeat(72)}\n❓ ${q}\n${"═".repeat(72)}`);
@@ -491,8 +541,20 @@ for (const q of [
 }
 ```
 
-Watch the Atlantis case: the tool returns a helpful error, the model reads it and **tells the
-user which cities are available** rather than crashing or inventing weather.
+Watch the Paris case. The tool returns a helpful error, and the model reads it and **tells the
+user which cities are available** rather than crashing or inventing weather. A real run of the
+Python twin in §5.3 (`openai/gpt-oss-120b`, 7 October 2026 — your wording will differ):
+
+```
+  [1] 🔧 get_weather({'city': 'Paris'}) → No weather data for "Paris". Available cities: lahore, londo
+
+  💬 I’m sorry, but I don’t have current weather data for Paris. I can provide the weather for London, Lahore, or Tokyo if that would be helpful. Let me know if you’d like information for one of those cities!
+  (2 model calls)
+```
+
+Why Paris, and not a made-up place like **Atlantis**? Asked about Atlantis, GPT-OSS 120B never
+called the tool: it knew Atlantis is a legend and said so. A model calls a tool only when it decides it needs
+one, so test error paths with inputs the model can't answer alone.
 
 ### 4.4 `ToolNode` — the prebuilt executor
 
@@ -506,7 +568,7 @@ import { calculator, getWeather } from "./day15-tools.js";
 
 const toolNode = new ToolNode([calculator, getWeather]);
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 })
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 })
   .bindTools([calculator, getWeather]);
 
 const ai = await model.invoke([new HumanMessage("Weather in Lahore and London?")]);
@@ -764,7 +826,7 @@ from langchain_groq import ChatGroq
 from day15_tools import calculator, get_weather
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 model_with_tools = model.bind_tools([calculator, get_weather])
 
 for q in [
@@ -797,7 +859,7 @@ load_dotenv()
 TOOLS = [calculator, get_weather]
 BY_NAME = {t.name: t for t in TOOLS}
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0).bind_tools(TOOLS)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0).bind_tools(TOOLS)
 
 def run(question, max_steps=6):
     messages = [
@@ -831,7 +893,7 @@ def run(question, max_steps=6):
 
 for q in [
     "What's the weather in Lahore, and what is that in Fahrenheit?",
-    "What's the weather in Atlantis?",              # triggers the actionable error
+    "What's the weather in Paris?",                 # triggers the actionable error
     "What is 15% of 8342, plus 991?",
 ]:
     print(f"\n{'═' * 72}\n❓ {q}\n{'═' * 72}")
@@ -854,7 +916,7 @@ from day15_tools import calculator, get_weather
 load_dotenv()
 
 tool_node = ToolNode([calculator, get_weather])
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0) \
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0) \
     .bind_tools([calculator, get_weather])
 
 ai = model.invoke([HumanMessage("Weather in Lahore and London?")])
@@ -1067,9 +1129,9 @@ Your tools are serialised into the request as JSON Schema:
 
 **Every word of that is prompt text**, and it's sent on *every* call. Which explains:
 
-- Vague descriptions → wrong tool selection
-- 30 tools → thousands of tokens of overhead per turn, plus confusion between similar tools
-- Field descriptions materially affect argument quality
+- Vague descriptions lead to wrong tool selection
+- 30 tools add thousands of tokens of overhead per turn, plus confusion between similar tools
+- Field descriptions strongly affect argument quality
 - Your function body is completely invisible to the model
 
 ### Why tool calls can be parallel *or* sequential
@@ -1088,8 +1150,8 @@ Your tools are serialised into the request as JSON Schema:
    → final answer                                                round trip 3
 ```
 
-The model decides. Execute all calls in one AI message **in parallel** (as §4.3 does) — they're
-independent by construction, since the model emitted them together.
+The model decides. Execute all calls in one AI message **in parallel** (as §4.3 does). The model
+wrote them together, so none of them can depend on another's result.
 
 This is why `maxSteps` counts **model round trips**, not tool executions.
 
@@ -1135,11 +1197,11 @@ The model **recovered**. That's only possible because the error was information,
    └──────────────────────────────────────────────────────────┘
 ```
 
-Treat `tool_calls` exactly as you'd treat a form submission from the public internet — because
-via prompt injection, that's effectively what it is.
+Treat `tool_calls` exactly as you'd treat a form submission from the public internet. Through
+prompt injection, that is in effect what they are.
 
 **The path-traversal check in §4.5 is the concrete example.** Without
-`full.startsWith(SANDBOX)`, a model that read a poisoned document could be induced to call
+`full.startsWith(SANDBOX)`, a model that read a poisoned document could be tricked into calling
 `read_file("../../.env")`.
 
 <details>
@@ -1213,14 +1275,15 @@ tool(async ({ sql }) => db.execute(sql))     // catastrophic
 
 **❌ Path traversal in a filesystem tool**
 
-`read_file("../../.env")` is one poisoned document away.
+A single poisoned document (one hiding instructions) can make the model call
+`read_file("../../.env")`.
 ✅ Resolve the path, then verify it's still inside the sandbox.
 
 ---
 
 **❌ Returning enormous output**
 
-A tool returning 50,000 characters blows the context window in one step.
+A tool returning 50,000 characters overflows the context window in one step.
 ✅ Truncate, and say so: `"…showing first 10 of 4,382 results"`.
 
 ---
@@ -1258,7 +1321,7 @@ import * as z from "zod";
 import { tool } from "@langchain/core/tools";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const calculator = tool(async ({ expression }) => `${expression} = ...`, {
   name: "calculator",
@@ -1318,7 +1381,7 @@ from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class CalcArgs(BaseModel):
     expression: str = Field(description="An arithmetic expression")
@@ -1375,7 +1438,8 @@ for name, search in VERSIONS.items():
     print(f"{name:<12} {correct}/{len(CASES)}      {', '.join(choices)}")
 ```
 
-**Typical output:**
+**Illustrative output** (the pattern, not a measured run on the current models — run it and
+count your own):
 
 ```
 version      correct  choices
@@ -1481,7 +1545,7 @@ const searchUsers = tool(
 
 const TOOLS = [lookupUser, searchUsers];
 const BY_NAME = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 })
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 })
   .bindTools(TOOLS);
 
 async function run(question, maxSteps = 6) {
@@ -1583,7 +1647,7 @@ def search_users(name: str) -> str:
 
 TOOLS = [lookup_user, search_users]
 BY_NAME = {t.name: t for t in TOOLS}
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0).bind_tools(TOOLS)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0).bind_tools(TOOLS)
 
 def run(question, max_steps=6):
     messages = [
@@ -1620,7 +1684,7 @@ for q in [
     print(f"\n  💬 {run(q)}")
 ```
 
-**What you should observe:**
+**What you should observe** (illustrative — your model's wording and retry count will differ):
 
 ```
 ❓ Look up user 5.
@@ -1647,7 +1711,7 @@ what went wrong, whether it's retryable, and what to try instead. That transform
 dead ends into recoverable steps.
 
 **One production caveat:** transient errors are usually better retried *inside* the tool with
-backoff (Day 03), so the model never sees them. Surface an error to the model only when the model
+backoff (Day 0B), so the model never sees them. Surface an error to the model only when the model
 can do something different — a bad argument, a wrong lookup key, an alternative tool. Making the
 model your retry loop wastes round trips.
 </details>
@@ -1924,10 +1988,10 @@ print(read_file.invoke({"filename": "notes.md"}))
 
 3. **Absolute paths are rejected before resolving.** `SANDBOX / "/etc/passwd"` in Python resolves
    to `/etc/passwd`, silently escaping — so the `isabs` check must come first. This is a real
-   `pathlib` footgun.
+   `pathlib` trap.
 
 4. **Writes are more restricted than reads.** Reads allow nesting; writes are top-level only.
-   Asymmetric permissions are normal — the blast radius of a bad write is larger.
+   Uneven permissions like this are normal, because a bad write does more damage than a bad read.
 
 **The bigger point:** none of this is prompt engineering. You cannot instruct a model into being
 safe, because the arguments it emits are influenced by untrusted text (Day 02). The boundary is
@@ -1953,8 +2017,8 @@ import * as z from "zod";
 import { tool } from "@langchain/core/tools";
 import { ChatGroq } from "@langchain/groq";
 
-const fast = new ChatGroq({ model: "llama-3.1-8b-instant", temperature: 0 });
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const fast = new ChatGroq({ model: "openai/gpt-oss-20b", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 // ── 20 tools across 4 categories ─────────────────────────────────────────
 const mk = (name, description) =>
@@ -2008,7 +2072,8 @@ const Route = z.object({
     .describe("Which tool category this request needs, or 'none' for general questions"),
 });
 
-const router = fast.withStructuredOutput(Route)
+// JSON-schema mode: with GPT-OSS on Groq the default tool-calling mode can fail (Day 06)
+const router = fast.withStructuredOutput(Route, { method: "jsonSchema" })
   .withFallbacks([{ invoke: async () => ({ reasoning: "router failed", category: "none" }) }]);
 
 async function routedInvoke(question) {
@@ -2088,8 +2153,8 @@ from langchain_core.tools import StructuredTool
 from langchain_groq import ChatGroq
 
 load_dotenv()
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class ToolArgs(BaseModel):
     input: str = Field(description="Input")
@@ -2148,7 +2213,8 @@ class Route(BaseModel):
     reasoning: str = Field(description="One sentence. Write this first.")
     category: Literal["finance", "calendar", "documents", "communication", "none"]
 
-router = fast.with_structured_output(Route)
+# JSON-schema mode: with GPT-OSS on Groq the default tool-calling mode can fail (Day 06)
+router = fast.with_structured_output(Route, method="json_schema", strict=True)
 
 def routed_invoke(question):
     r = router.invoke(
@@ -2208,7 +2274,7 @@ print(f"all:    {all_correct}/{len(CASES)} correct, {all_tokens} input tokens")
 print(f"token saving: {100 * (1 - routed_tokens / all_tokens):.0f}%")
 ```
 
-**Typical result:**
+**Typical result** (illustrative — your counts will differ by model and schema size):
 
 ```
 routed: 6/6 correct, 2140 input tokens
@@ -2218,7 +2284,9 @@ token saving: 76%
 
 **Three conclusions:**
 
-1. **~75% fewer input tokens.** Twenty tool schemas is roughly 1,200 tokens *on every call*.
+1. **~75% fewer input tokens in this illustrative result.** The unrouted run pays roughly 1,100
+   extra input tokens per call ((8960 − 2140) ÷ 6) for schemas — it varies by schema size, so
+   count yours.
    At scale that's most of your input bill, paid to describe tools the request will never use.
 
 2. **Accuracy improves too, which surprises people.** With 21 tools bound, models confuse
@@ -2242,9 +2310,13 @@ token saving: 76%
 
 ### Exercise 5 — 🏆 A tool-using research assistant ●●●●●
 
-Build a CLI assistant with 5+ tools (calculator, search or a fake corpus, filesystem, a fake
-database, and one write tool), a bounded execution loop, parallel tool execution, a full trace
-view, cost tracking, and a confirmation prompt before any write action.
+Build a CLI assistant with 5+ tools: a calculator, search (or a fake corpus), a filesystem tool, a
+fake database, and one write tool. It needs:
+
+- a bounded execution loop
+- parallel tool execution
+- a full trace view and cost tracking
+- a confirmation prompt before any write action
 
 <details>
 <summary>✅ Solution</summary>
@@ -2263,7 +2335,7 @@ from langchain_groq import ChatGroq
 
 load_dotenv()
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 SANDBOX = Path("./workspace").resolve()
 MAX_STEPS = 8
@@ -2271,7 +2343,9 @@ MAX_STEPS = 8
 # Tools whose effects are not undoable — these require confirmation.
 WRITE_TOOLS = {"write_file", "send_email"}
 
-PRICING = {"in": 0.59 / 1e6, "out": 0.79 / 1e6}   # llama-3.3-70b, USD per token
+# USD per token for openai/gpt-oss-120b, from Groq's models page on 7 October 2026
+# (see Day 03 §3.11). Prices change — re-check before you trust the /cost figure.
+PRICING = {"in": 0.15 / 1e6, "out": 0.60 / 1e6}
 
 # ══════════════════ TOOLS ════════════════════════════════════════════════
 def safe_path(filename):
@@ -2605,9 +2679,13 @@ bot › Saved to report.md.
    need. Building it in from the start beats adding it during an incident.
 
 **What it can't do yet — the bridge to tomorrow.** This loop is fine, but look at what's
-hard-coded: the step limit, the state (a `messages` array threaded by hand), the confirmation
-flow (a blocking `input()` that would be impossible in a web server), and there's no way to
-*pause* the run, persist it, and resume tomorrow.
+hard-coded:
+
+- the step limit;
+- the state (a `messages` array passed along by hand);
+- the confirmation flow (a blocking `input()` that would be impossible in a web server).
+
+And there's no way to *pause* the run, save it, and resume tomorrow.
 
 Tomorrow you'll build the ReAct pattern that underlies this properly. Then from Day 17 the whole
 loop becomes a **graph**, where state, persistence, and pausing for approval are infrastructure
@@ -2623,9 +2701,13 @@ rather than code you maintain.
 <details>
 <summary><b>Q: What is a tool in LangChain?</b></summary>
 
-A function the model can request, wrapped with three pieces of metadata: a **name** (how the
-model refers to it), a **description** (when to use it — this is prompt text), and a **schema**
-(what arguments it takes). The function body itself is never seen by the model.
+A function the model can request, wrapped with three pieces of metadata:
+
+- a **name** — how the model refers to it;
+- a **description** — when to use it (this is prompt text);
+- a **schema** — what arguments it takes.
+
+The model never sees the function body itself.
 
 Created with `tool(fn, { name, description, schema })` in JS or the `@tool` decorator in Python,
 where the docstring becomes the description and type hints become the schema.
@@ -2658,9 +2740,11 @@ they determine argument quality.
 <details>
 <summary><b>Q: What is `ToolNode`?</b></summary>
 
-A LangGraph prebuilt that executes the tool loop's body: it takes state containing messages,
-finds the `tool_calls` on the last AI message, runs them in parallel, and returns `ToolMessage`s
-with matching IDs. It handles unknown tools and errors for you.
+A LangGraph prebuilt that executes the tool loop's body. It takes state containing messages and
+finds the `tool_calls` on the last AI message. It runs them in parallel and returns
+`ToolMessage`s with matching IDs. Error handling differs by language: in JavaScript a tool
+that throws becomes an error `ToolMessage`; in Python it re-raises unless you pass
+`handle_tool_errors=True`.
 
 It's the ~20 lines of execution code you'd otherwise write by hand, packaged as a graph node.
 </details>
@@ -2671,8 +2755,8 @@ It's the ~20 lines of execution code you'd otherwise write by hand, packaged as 
 <summary><b>Q: How should a tool handle errors?</b></summary>
 
 Return the error **to the model as content**, don't throw. Throwing kills the loop and produces a
-500; returning gives the model a chance to recover — try a different argument, use another tool,
-or explain the limitation to the user.
+500 error. Returning gives the model a chance to recover: it can try a different argument, use
+another tool, or explain the limitation to the user.
 
 The error message is effectively an instruction, so make it actionable: what went wrong, whether
 it's retryable, and what to try instead. `"Error: no user with ID 5. Existing IDs: 1, 2. If you
@@ -2691,11 +2775,15 @@ The critical framing is that **tool arguments are untrusted input**. They're gen
 whose context may contain user text, retrieved documents or web content — so via prompt injection,
 they're effectively attacker-influenceable. You cannot prompt your way to safety.
 
-Concretely: least privilege (read-only, tenant-scoped connections); never accept raw SQL or shell
-commands as arguments — use allow-listed, parameterised operations; validate inside the tool, not
-in the prompt; allow-list destinations for anything that leaves the system, like email recipients;
-resolve-then-verify for filesystem paths to prevent traversal; human approval for irreversible
-actions; and log every call with its arguments for the audit trail.
+Concretely:
+
+- **Least privilege** — read-only connections, limited to one tenant.
+- **No raw SQL or shell commands as arguments** — use allow-listed, parameterised operations.
+- **Validate inside the tool**, not in the prompt.
+- **Allow-list destinations** for anything that leaves the system, like email recipients.
+- **Resolve-then-verify** filesystem paths to prevent traversal.
+- **Human approval** for irreversible actions.
+- **Log every call** with its arguments for the audit trail.
 
 The mental model: treat `tool_calls` exactly as you'd treat a form submission from the public
 internet.
@@ -2705,12 +2793,12 @@ internet.
 <summary><b>Q: What happens with 30 tools bound to a model?</b></summary>
 
 Two problems. **Cost**: every tool's name, description and JSON schema is in the prompt on every
-call — 30 tools is easily 1,500–2,500 tokens of overhead per request, paid whether or not any are
-used. **Accuracy**: models confuse similar tools, so selection quality degrades noticeably beyond
+call. Thirty tools can easily mean a couple of thousand tokens of overhead per request (it varies by
+schema size — count yours), paid whether or not any are used. **Accuracy**: models confuse similar tools, so selection quality degrades noticeably beyond
 roughly 15.
 
 The fix is routing: classify the request with a cheap model, then bind only that category's tools
-plus a small always-available set. In practice this cuts input tokens by ~75% *and* improves
+plus a small always-available set. In Exercise 4's illustrative run this cut input tokens by about three-quarters *and* improved
 selection accuracy, because fewer options means less confusion.
 
 The limitation to acknowledge: cross-category requests ("find my notes and email them") break a
@@ -2741,15 +2829,16 @@ I'd start from the position that the agent must not be able to express a dangero
 all — not that it must be persuaded not to.
 
 **No raw SQL.** The tool takes a query *name* from an enum plus typed parameters, and the SQL
-lives in my code, parameterised. That removes SQL injection and unbounded queries in one move. If
-the product genuinely needs ad-hoc querying, it goes through a generated-SQL path that is parsed,
-validated against an allow-list of tables and operations, forced read-only, and run with a
-statement timeout and row cap — and even then I'd want a human in the loop for anything outside
-a known shape.
+lives in my code, parameterised. That removes SQL injection and unbounded queries in one move.
 
-**Connection scoping.** A read-only replica, a role with SELECT on specific tables only, and
-tenant scoping injected server-side from the authenticated session — never from a tool argument,
-or the model can be talked into reading another tenant's data.
+If the product genuinely needs ad-hoc querying, it goes through a generated-SQL path. That SQL is
+parsed and validated against an allow-list of tables and operations. It is forced read-only and
+run with a statement timeout and row cap. Even then I'd want a human in the loop for anything
+outside a known shape.
+
+**Connection scoping.** A read-only replica and a role with SELECT on specific tables only. The
+tenant is injected server-side from the authenticated session — never from a tool argument.
+Otherwise the model can be talked into reading another tenant's data.
 
 **Result bounding.** Row limits and truncation with an explicit "showing 10 of 4,382" message, so
 a broad query can't blow the context window or the bill.
@@ -2827,7 +2916,7 @@ and promote a step to a tool when you find yourself wanting the model to make th
 
 ## 10. Recap
 
-- ✅ A tool = name + **description** + schema; the model never sees your code
+- ✅ A tool is a name, a **description** and a schema; the model never sees your code
 - ✅ **Descriptions are prompts** — say what, when, and *when not*
 - ✅ The model *requests*; your code *executes*; results go back as `ToolMessage`
 - ✅ Always bound the loop; always push the AI message verbatim before tool results
@@ -2835,14 +2924,16 @@ and promote a step to a tool when you find yourself wanting the model to make th
 - ✅ Execute a message's tool calls in parallel; sequences happen across round trips
 - ✅ `ToolNode` is the prebuilt executor — Day 17 wires it into a graph
 - ✅ Tool arguments are **untrusted input** — validate, scope, allow-list, resolve-then-verify
-- ✅ Above ~15 tools, route — it cuts tokens ~75% *and* improves accuracy
+- ✅ Above about 15 tools, route — it cuts tokens substantially (about 75% in Exercise 4's
+  illustrative result) *and* improves accuracy
 
 ### Tomorrow
 
 **[Day 16 — Agents from first principles](day-16-agents.md)**: you now have tools and a loop.
-Tomorrow you build a **ReAct agent by hand in about 40 lines**, understand the reasoning trace
-that makes it work, then compare against `createAgent` / `create_react_agent` — so the prebuilt
-is never a black box.
+Tomorrow you build a **ReAct agent by hand in about 40 lines** and see the reasoning trace that
+makes it work. Then you compare it with the prebuilt `createAgent` / `create_agent` (older
+tutorials use `create_react_agent`), so it is never a black box (a tool you use without knowing
+how it works).
 
 ### Quick self-check
 
@@ -2854,14 +2945,22 @@ is never a black box.
 <summary>Answers</summary>
 
 1. The exception propagates and **kills the loop** — the user gets an error instead of an answer.
-   Instead, catch it and return an actionable error string as the tool result, so the model can
-   read it and adapt (retry with a corrected argument, use a different tool, or explain the
-   limitation).
-2. **Cost**: all 30 schemas are in the prompt on every call — 1,500+ tokens of overhead per
-   request whether used or not. **Accuracy**: models confuse similar tools, so selection quality
+   Instead, catch it and return an actionable error string as the tool result. The model can then
+   read it and adapt: retry with a corrected argument, use a different tool, or explain the
+   limitation.
+2. **Cost**: all 30 schemas are in the prompt on every call — often a thousand or more tokens
+   of overhead per request (varies by schema size — count yours), whether used or not. **Accuracy**: models confuse similar tools, so selection quality
    degrades. Routing fixes both simultaneously.
 3. **The code** — specifically a resolve-then-verify check confirming the path is still inside the
    sandbox. Prompt instructions cannot prevent this, because tool arguments are influenced by
    untrusted text (a poisoned document can induce the call). The security boundary is in your
    validation function, where it can be unit-tested.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 14 — Memory](../week-02-data-embeddings-and-rag/day-14-memory.md)** · **[Week 3 index](README.md)** · **[Day 16 — Agents From First Principles →](day-16-agents.md)**
+
+</div>

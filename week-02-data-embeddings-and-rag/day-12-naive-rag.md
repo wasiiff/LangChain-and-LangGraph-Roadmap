@@ -2,20 +2,37 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 11](day-11-vector-databases.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** the complete RAG pipeline — PDF → split → embed → store → retrieve → answer
-**with citations** — built from the pieces you already have. Then you deliberately break it six
-ways and diagnose each, because knowing the failure modes is what separates a demo from a system.
+**Today you learn:** Sending a model every page of your documents to answer one question is slow
+and expensive. Today you build **RAG** from the pieces you already have. It loads a file, splits
+it, embeds and stores it, retrieves the few chunks that matter, and answers **with citations**.
+Then you break it six ways on purpose and diagnose each failure, because knowing how it fails is
+what separates a demo from a real system.
 
 This is the most important day of Week 2.
+
+> 📖 **Words you'll meet today**
+>
+> - **RAG (Retrieval-Augmented Generation)** — find the document pieces that match a question,
+>   then let the model answer from those pieces.
+> - **Naive RAG** — the simplest version: retrieve once, then answer. It is what you build today.
+> - **Corpus** — the whole collection of documents your system can search.
+> - **Chunk** — a small piece of a document, sized so it can be searched and fit in a prompt.
+> - **Vector store** — a database of embeddings (lists of numbers that capture meaning) that finds
+>   the ones closest to a question.
+> - **k (top-k)** — how many of the best-matching chunks you retrieve for each question.
+> - **Grounding** — telling the model to answer only from the retrieved text, not from memory.
+> - **Citation** — a marker such as [1] that links a claim in the answer to the chunk it came from.
 
 ---
 
 ## 1. The problem
 
 Day 08 ended with a working document Q&A that answered one question about a tea party by making
-**200 LLM calls** across every chunk in a novel.
+**200 LLM calls** across every chunk in a novel. That approach was *map-reduce*: ask the model
+about every chunk, then combine the partial answers in one final call.
 
-The answer lived in three chunks. You paid for 200.
+The answer lived in three chunks. You paid for 200. The time and token figures below are
+illustrative estimates, not a measured run — the ratio between them is the point:
 
 ```
    DAY 08: map-reduce over everything          TODAY: retrieve, then answer
@@ -27,9 +44,20 @@ The answer lived in three chunks. You paid for 200.
    answer often diluted                        answer grounded + cited
 ```
 
-Same corpus. Same question. **~100× cheaper and better.**
+Same corpus. Same question. **Roughly 90 times fewer tokens in this illustration
+(180,000 ÷ 2,000) — and better.**
 
-That's RAG: don't send the model everything, send it the *right* things.
+That's RAG: don't send the model everything. Send it the *right* things.
+
+### The real-life version
+
+You ask a librarian when the library closes on bank holidays. A bad librarian reads every book
+in the building, then answers. A good librarian walks to one shelf, pulls out the opening-hours
+leaflet, reads you the line, and points at it: "It says so here."
+
+Finding the leaflet is **retrieval**. Reading you the line is **generation**. Pointing at the
+page is the **citation**. And if no leaflet mentions bank holidays, a good librarian says "I
+can't find that" instead of guessing. Today you build the good librarian.
 
 ---
 
@@ -69,9 +97,13 @@ That's RAG: don't send the model everything, send it the *right* things.
    answer + citations
 ```
 
-**The single most important property:** those two halves have completely different cost profiles.
-Ingest is expensive and happens rarely. Query is cheap and happens constantly. Getting this
-separation right is most of what makes RAG practical.
+*Ingest* is the preparation half: reading, splitting, embedding and storing your documents.
+*Query* is the answering half. *Similarity search* finds the stored vectors closest to the
+question's vector, and the *top-k chunks* are the k closest ones.
+
+**The single most important property:** the two halves have completely different costs. Ingest
+is expensive and happens rarely. Query is cheap and happens constantly. Keeping them separate is
+most of what makes RAG practical.
 
 ### The grounding contract
 
@@ -87,9 +119,9 @@ separation right is most of what makes RAG practical.
    └─────────────────────────────────────────────────────────┘
 ```
 
-Rule 3 is the one people leave out, and it's the one that turns a confident hallucination into an
-honest "I don't know". You gave the model permission to fail back on Day 02 — this is where it
-pays off.
+Rule 3 is the one people leave out. It turns a confident hallucination (a fluent answer that is
+simply untrue) into an honest "I don't know". On Day 01 you gave the model permission to fail.
+This is where that permission proves its worth.
 
 ### Where RAG breaks
 
@@ -110,7 +142,10 @@ Six categories. Six different fixes. Today you'll cause and diagnose each one.
 
 ### 3.1 The complete pipeline
 
-Every RAG system is these six steps. Everything in Day 13 is a refinement of one of them.
+> 💬 **In plain words:** RAG is six steps in a row. Learn these six, and every later improvement
+> fits into one of them.
+
+Every RAG system follows these six steps. Everything in Day 13 improves one of them.
 
 | Step | Day | Key decision |
 |---|---|---|
@@ -121,7 +156,13 @@ Every RAG system is these six steps. Everything in Day 13 is a refinement of one
 | 5. Retrieve | 11 | `k`, filters, hybrid fusion |
 | 6. Generate | 08 | Stuff the chunks, ground the prompt, cite |
 
+*Header injection* means adding the section's heading path — a *breadcrumb* such as
+"Acme Support Handbook > Refund Policy" — to the start of each chunk's text.
+
 ### 3.2 Formatting context so citations work
+
+> 💬 **In plain words:** Give every chunk a number before the model sees it. Then the model can
+> point to its sources, and you can check them.
 
 The model can only cite what you let it see:
 
@@ -135,10 +176,18 @@ docs.map((d, i) =>
 ).join("\n\n---\n\n")
 ```
 
-Then map `[1]` back to `docs[0]` when you render the answer. That round trip is what makes
-citations verifiable rather than decorative.
+When you show the answer, map `[1]` back to `docs[0]`. That round trip lets a reader check each
+citation, so the citations are evidence rather than decoration.
+
+> ⚠️ **The model may not copy your marker style.** In our run of §4.1 with `openai/gpt-oss-120b`
+> (October 2026), 2 of the 4 answers wrote `【1】` (wide brackets) instead of `[1]`, in both JS
+> and Python. A regex that looks only for `[1]` would miss them. Accept both forms, or use
+> structured citations (§4.3), which return the source number as a plain integer.
 
 ### 3.3 Choosing `k`
+
+> 💬 **In plain words:** `k` is how many chunks you fetch. Too few can miss the answer. Too many
+> hide it and cost more.
 
 ```
    k too small (1-2)              k too large (20+)
@@ -151,12 +200,19 @@ citations verifiable rather than decorative.
    With reranking (Day 13): retrieve 20, rerank down to 4
 ```
 
-Note the interaction with chunk size: `k=4` at 1000 characters is ~4000 characters of context.
-Your real budget is `k × chunkSize`, and that's what has to fit.
+"Lost in the middle" means the model pays less attention to text in the middle of a long prompt.
+*Reranking* means a second, more accurate model re-scores the retrieved chunks and keeps the best.
+
+Chunk size and `k` work together. With `k=4` and 1000-character chunks, you send about 4000
+characters of context. Your real budget is `k × chunkSize`, and that total has to fit.
 
 ### 3.4 The modern helper: `createRetrievalChain`
 
-LangChain ships a helper that wires retrieval + stuffing together:
+> 💬 **In plain words:** LangChain has a ready-made function that retrieves and answers in one
+> call. It expects the question under the name `input`.
+
+LangChain provides a helper that connects retrieval and *stuffing* (putting all the retrieved
+chunks into one prompt):
 
 ```js
 const combineDocsChain = await createStuffDocumentsChain({ llm, prompt });
@@ -166,14 +222,18 @@ await chain.invoke({ input: "how long for a refund?" });
 // → { input, context: Document[], answer: string }
 ```
 
-Note the variable names — **`input`** for the question, **`context`** for the documents, and the
-result includes the retrieved documents so you can render citations.
+Note the variable names: **`input`** holds the question and **`context`** holds the documents.
+The result also includes the retrieved documents, so you can show citations.
 
-We'll build it by hand first with LCEL so nothing is hidden, then show the helper.
+We'll build it by hand first with LCEL (LangChain Expression Language, from Day 07), so nothing
+is hidden. Then we'll show the helper.
 
 ### 3.5 Handling "the answer isn't here"
 
-The most valuable behaviour in a RAG system, and the easiest to omit:
+> 💬 **In plain words:** Tell the model the exact words to say when the documents don't contain
+> the answer. Then test that it really says them.
+
+This is the most valuable behaviour in a RAG system, and the easiest to leave out:
 
 ```
 System: If the context does not contain the answer, reply exactly:
@@ -181,13 +241,17 @@ System: If the context does not contain the answer, reply exactly:
         Do not use knowledge from outside the context.
 ```
 
-Test this deliberately — ask something your corpus definitely doesn't cover. A system that
-confidently answers from parametric knowledge when retrieval failed is worse than one that
-returns nothing, because you can't tell the difference from the output.
+Test this on purpose: ask something your corpus definitely doesn't cover. Sometimes retrieval
+fails and the system still answers confidently from *parametric knowledge* — facts the model
+memorised during training. That is worse than returning nothing, because the output looks the
+same as a real answer.
 
 ### 3.6 Evaluating RAG: measure the two halves separately
 
-This is the single most important operational habit in RAG.
+> 💬 **In plain words:** Check "did it find the right text?" and "did it answer well?" separately.
+> If the right text is never found, no prompt can fix the answer.
+
+This is the single most important working habit in RAG.
 
 ```
    RETRIEVAL QUALITY                  GENERATION QUALITY
@@ -200,9 +264,13 @@ This is the single most important operational habit in RAG.
                                                      point at the right chunks?
 ```
 
+In plain terms: *recall@k* asks whether the right chunk was among the k you fetched.
+*Precision@k* asks how many of those k chunks were useful. *Faithfulness* asks whether every
+claim in the answer is supported by the retrieved text.
+
 **If retrieval recall is 60%, no prompt engineering will get you above 60% correct answers.**
-Conflating the two is why RAG debugging goes in circles — you tune the prompt for a week while
-the real problem is chunking.
+Mixing up the two halves is why RAG debugging goes round in circles, making no progress. You
+tune the prompt for a week while the real problem is chunking.
 
 ---
 
@@ -228,7 +296,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnablePassthrough, RunnableLambda } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const embeddings = new OllamaEmbeddings({ model: "nomic-embed-text" });
 
 // ══════════════ 1-2. LOAD & SPLIT (Day 09) ═══════════════════════════════
@@ -358,7 +426,8 @@ for (const question of QUESTIONS) {
 
 ### 4.2 A cleaner LCEL version
 
-The version above threads `question` through explicitly. Here's the idiomatic shape:
+The version above passes `question` through each step by hand. Here is the more usual way to
+write it:
 
 ```js
 // day12-rag-clean.js
@@ -381,12 +450,12 @@ console.log(result.answer);
 console.log(result.docs.map((d) => d.metadata.breadcrumb));
 ```
 
-That `RunnableParallel` with a `RunnablePassthrough` is the canonical RAG pattern from Day 07 —
-retrieve *and* keep the question, then build up context and answer with `assign`.
+That `RunnableParallel` with a `RunnablePassthrough` is the standard RAG pattern from Day 07. It
+retrieves the documents *and* keeps the question. Then `assign` adds the context and the answer.
 
 ### 4.3 Structured output with verified citations
 
-Free-text `[1]` markers can be hallucinated. Force the structure instead:
+The model can invent free-text `[1]` markers. Force a fixed structure instead:
 
 ```js
 // day12-structured-citations.js
@@ -407,7 +476,9 @@ const citedChain = RunnableParallel.from({
   question: new RunnablePassthrough(),
 })
   .assign({ context: (x) => formatContext(x.docs) })
-  .assign({ result: prompt.pipe(model.withStructuredOutput(CitedAnswer)) });
+  .assign({
+    result: prompt.pipe(model.withStructuredOutput(CitedAnswer, { method: "jsonSchema" })),
+  });
 
 for (const q of ["How long for a Pro refund?", "What is the CEO's salary?"]) {
   const { docs, result } = await citedChain.invoke(q);
@@ -435,9 +506,20 @@ for (const q of ["How long for a Pro refund?", "What is the CEO's salary?"]) {
 }
 ```
 
-**That verification step is the point.** The model can hallucinate a quote or a source number;
-checking the quote against the actual chunk catches it. Unverified citations are a signal to
+**That verification step is the point.** The model can invent a quote or a source number.
+Checking the quote against the actual chunk catches it. An unverified citation is a signal to
 flag the answer, not to show it confidently.
+
+> ⚠️ **Why `method: "jsonSchema"`?** This chain reuses the §4.1 prompt, which says *reply
+> exactly: "I don't have that information…"*. With the default method (function calling),
+> `openai/gpt-oss-120b` sometimes obeyed that line and replied in plain text instead of calling
+> the tool. Groq then rejected the call: `400 Tool choice is required, but model did not call a
+> tool` (`tool_use_failed`). It happened for the CEO question in our run. With `jsonSchema`, the
+> reply must match the schema. The same question then came back as `answerFound: false`. The
+> real fix is to make the prompt and the schema agree: a structured prompt should say "set
+> `answerFound` to false", not "reply exactly". Python spells it `method="json_schema",
+> strict=True`. The methods are compared in
+> [Day 06](../week-01-foundations/day-06-output-parsers-structured-output.md).
 
 ### 4.4 The built-in helper
 
@@ -489,9 +571,11 @@ for await (const chunk of await answerChain.stream({
 console.log();
 ```
 
-**Show sources before the answer streams.** The retrieval takes ~50ms; the answer takes ~2s.
-Rendering sources first makes the whole thing feel instant and lets the user start verifying
-while the answer is still being written.
+*Streaming* means printing the answer piece by piece as the model writes it.
+
+**Show sources before the answer streams.** Retrieval typically takes tens of milliseconds; the
+answer takes a second or more (typical figures — time your own pipeline). Showing sources first makes the whole thing feel instant. It also lets the user start
+checking them while the answer is still being written.
 
 ---
 
@@ -518,7 +602,7 @@ from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 # ══════════════ 1-2. LOAD & SPLIT (Day 09) ═══════════════════════════════
@@ -622,8 +706,9 @@ for question in QUESTIONS:
 ```
 
 > 🔑 Look at the chain shape. `RunnableParallel(docs=retriever, question=RunnablePassthrough())`
-> is the canonical RAG pattern — retrieve *and* keep the question, then build up with `.assign()`.
-> This is Day 07's `Parallel` + `Passthrough` + `Assign` lesson in its natural habitat.
+> is the standard RAG pattern: retrieve *and* keep the question, then add more keys with
+> `.assign()`. This is Day 07's `Parallel` + `Passthrough` + `Assign` lesson, doing the job it
+> was designed for.
 
 ### 5.2 Structured output with verified citations
 
@@ -646,7 +731,8 @@ class CitedAnswer(BaseModel):
 cited_chain = (
     RunnableParallel(docs=retriever, question=RunnablePassthrough())
     .assign(context=lambda x: format_context(x["docs"]))
-    .assign(result=prompt | model.with_structured_output(CitedAnswer))
+    .assign(result=prompt | model.with_structured_output(
+        CitedAnswer, method="json_schema", strict=True))
 )
 
 for q in ["How long for a Pro refund?", "What is the CEO's salary?"]:
@@ -743,12 +829,13 @@ createRetrievalChain({ retriever, combineDocsChain })
        .assign({ answer: combineDocsChain })
 ```
 
-That's it. It's the LCEL you wrote in §4.1, packaged. Which is why you should know the manual
-version: the moment you need query rewriting, reranking, hybrid retrieval or a corrective loop,
-the helper stops fitting and you drop back to LCEL.
+That's it. It's the LCEL you wrote in §4.1, packaged. This is why you should know the manual
+version. Sooner or later you need query rewriting (turning a vague question into a clear one),
+reranking, hybrid retrieval or a corrective loop. At that moment the helper no longer fits, and
+you go back to LCEL.
 
 **The helper is a convenience, not a foundation.** Most production RAG pipelines outgrow it
-within weeks — which is why Day 13 exists.
+within weeks. That is why Day 13 exists.
 
 ### Why retrieval quality caps everything downstream
 
@@ -765,8 +852,9 @@ within weeks — which is why Day 13 exists.
    prompt engineering can only improve the OTHER 60%
 ```
 
-This is the argument for measuring the halves separately, stated as a bound. If you're at 60%
-recall and you spend a week on the prompt, your ceiling is still 60%.
+This is the argument for measuring the two halves separately, written as a limit. Suppose recall
+is 60% and you spend a week on the prompt. Your ceiling — the best score you can possibly
+reach — is still 60%.
 
 **Diagnostic that takes two minutes:** for each failing question, check whether the correct
 chunk was in the retrieved set.
@@ -778,8 +866,8 @@ Every RAG debugging session should start here.
 
 ### Context ordering and lost-in-the-middle
 
-Day 01's finding applies directly: models attend more reliably to the beginning and end of a long
-context.
+Day 01's finding applies directly: models pay more reliable attention to the beginning and end
+of a long context than to the middle.
 
 ```
    k=10 chunks, the relevant one at position 6
@@ -789,26 +877,28 @@ context.
          weakest attention zone
 ```
 
-Two mitigations: **retrieve fewer chunks** (k=3–5 rather than 10–20), and **reorder** so the
-highest-scoring chunks sit at the start *and* end, with weaker ones in the middle. LangChain
-ships a `LongContextReorder` transformer for exactly this.
+There are two ways to reduce the problem. First, **retrieve fewer chunks** (k=3–5 rather than
+10–20). Second, **reorder** them so the highest-scoring chunks sit at the start *and* the end,
+with weaker ones in the middle. LangChain provides a `LongContextReorder` transformer for exactly
+this.
 
-The deeper fix is reranking (Day 13): retrieve 20 candidates cheaply, rerank accurately, keep 4.
-You get the recall benefit of a large `k` with the precision of a small one.
+The deeper fix is reranking (Day 13): retrieve 20 candidates cheaply, rerank them accurately and
+keep 4. You get the recall benefit of a large `k` with the precision of a small one.
 
 ### Why "I don't know" is hard for a model
 
-Rule 3 of the grounding contract fights the model's training distribution. In pretraining data,
-a question followed by a confident answer is overwhelmingly more common than a question followed
-by an admission of ignorance (Day 01's hallucination mechanism).
+Rule 3 of the grounding contract works against how the model was trained. Its pretraining data
+is the huge body of text it first learned from. In that text, a question is overwhelmingly more
+often followed by a confident answer than by an admission of not knowing. This is Day 01's
+hallucination mechanism.
 
 What actually helps, in order:
 
-1. **An exact phrase to output** — "reply exactly: I don't have that information" is far more
-   reliable than "say you don't know", because it makes the refusal a concrete, imitable token
-   sequence rather than an abstract instruction.
-2. **A boolean field in a structured schema** (`answerFound`) — the model must commit to
-   true/false, and you can branch on it in code rather than parsing prose.
+1. **An exact phrase to output.** "reply exactly: I don't have that information" is far more
+   reliable than "say you don't know". It turns the refusal into a concrete sequence of tokens
+   the model can copy, instead of an abstract instruction.
+2. **A boolean field in a structured schema** (`answerFound`). The model must choose true or
+   false, and your code can branch on it instead of parsing prose.
 3. **A few-shot example** showing a not-in-context question and the refusal.
 
 Test this explicitly. It's the behaviour most likely to be silently missing.
@@ -828,7 +918,8 @@ const store = await MemoryVectorStore.fromDocuments(chunks, embeddings);   // ev
 
 **❌ No "not in context" instruction**
 
-The model falls back on parametric knowledge and you can't tell retrieval failed.
+The model falls back on parametric knowledge (what it memorised in training), and you can't tell
+that retrieval failed.
 ✅ Give an exact refusal phrase, and test it with an out-of-corpus question.
 
 ---
@@ -842,7 +933,7 @@ The model falls back on parametric knowledge and you can't tell retrieval failed
 
 **❌ `k` too large**
 
-k=20 buries the relevant chunk mid-context and costs 5× the tokens.
+k=20 buries the relevant chunk in the middle of the context and costs 5 times the tokens.
 ✅ k=3–6, or retrieve 20 and rerank to 4 (Day 13).
 
 ---
@@ -872,7 +963,8 @@ prompt.invoke({ context: docs })    // "[object Object],[object Object]"
 
 **❌ Streaming the answer before showing sources**
 
-Retrieval takes 50ms, generation takes 2s. Users stare at nothing.
+Retrieval is fast (typically tens of milliseconds), generation slow (often seconds). Users
+stare at a blank screen.
 ✅ Render sources immediately, then stream the answer.
 
 ---
@@ -880,7 +972,8 @@ Retrieval takes 50ms, generation takes 2s. Users stare at nothing.
 **❌ Never testing an out-of-corpus question**
 
 The most important behaviour in the system, and it's the one nobody tests.
-✅ Put at least one "definitely not in the docs" question in your eval set permanently.
+✅ Put at least one "definitely not in the docs" question in your eval set (your fixed list of
+test questions) permanently.
 
 ---
 
@@ -902,7 +995,7 @@ Record the symptom for each. This builds the diagnostic instinct faster than any
 <details>
 <summary>✅ Solution</summary>
 
-**Python** (JS follows the identical structure)
+**Python** (the JavaScript version follows below)
 ```python
 # day12_break_it.py
 from dotenv import load_dotenv
@@ -915,7 +1008,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 SECTIONS = [
@@ -1034,7 +1127,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const embeddings = new OllamaEmbeddings({ model: "nomic-embed-text" });
 
 const SECTIONS = [
@@ -1143,34 +1236,48 @@ rule("BREAK 6 — out-of-corpus with grounding (the CORRECT behaviour)");
 console.log((await ask(store, OUT_OF_CORPUS)).answer);
 ```
 
-**Symptoms you should observe:**
+**Symptoms to look for** (what each break *can* cause — whether you see it depends on your
+embedder, your model and your corpus):
 
 | Break | Symptom | Real-world cause |
 |---|---|---|
 | 1. chunk=60 | Answer says "30 days" or "60 days" but can't say **which plan** — the plan name and the number landed in different chunks | Chunk size below the natural unit |
 | 2. no headers | Often retrieves *Shipping* instead of *Refunds* — both talk about "days" | Structure stripped at ingest |
 | 3. k=1 | Answers about Basic only, missing Pro, or vice versa | Over-tight retrieval budget |
-| 4. ungrounded | **Confidently invents a CEO address** | Missing grounding instruction |
+| 4. ungrounded | Answers from its own memory, or invents an answer | Missing grounding instruction |
 | 5. k=25 | Relevant chunk lands mid-context; answer becomes vague or cites the wrong source | Lost in the middle |
 | 6. grounded + missing | *"I don't have that information in the provided documents."* ✅ | This is correct |
 
-**The one to sit with is Break 4 versus Break 6.** Identical question, identical corpus,
-identical model. The only difference is one paragraph of system prompt — and it's the difference
-between a fabricated answer and an honest refusal.
+**What we actually saw** (Python, `openai/gpt-oss-120b`, October 2026). Ollama was not
+installed on the checking machine, so a simple keyword-based stand-in replaced
+`nomic-embed-text`. On a corpus this small the strong model answered *"60 days"* correctly in
+Breaks 1, 2, 3 and 5. In Break 4 it did **not** invent an address. The ungrounded prompt got
+*"I'm sorry, but I can't help with that."* — a privacy refusal from the model's own training,
+not from your rules. A harmless question ("What year was Acme founded?") also got a refusal
+without the grounding rules.
 
-**The one that's hardest to spot in production is Break 2.** Nothing errors. Retrieval returns
-results. The answer is plausible. It's just about the wrong section — and you'd only catch it by
-checking which chunks were retrieved.
+**So think hardest about Break 4 versus Break 6.** Identical question, corpus and model. Only
+one paragraph of system prompt differs. With the grounding paragraph, refusing is *your rule*,
+with the exact wording you chose. Without it, you are relying on one model's habits — and a
+model swap can change them silently. A strong model also hides retrieval mistakes on a tiny
+corpus, which is why you check the retrieved chunks, not just the answer.
+
+**The one that's hardest to spot in production is Break 2.** Nothing throws an error. Retrieval
+returns results. The answer sounds believable. It's just about the wrong section, and you'd only
+catch it by checking which chunks were retrieved.
 </details>
 
 ---
 
 ### Exercise 2 — RAG evaluation harness ●●●○○
 
-Build a harness that evaluates a RAG pipeline on both halves: **retrieval** (recall@k — was the
-correct chunk fetched?) and **generation** (does the answer contain the expected fact? did it
-correctly refuse when it should?). Report both, plus which failures are retrieval versus
-generation.
+Build a harness (a small test program) that evaluates a RAG pipeline on both halves:
+
+- **retrieval** (recall@k — was the correct chunk fetched?)
+- **generation** (does the answer contain the expected fact? did it correctly refuse when it
+  should?)
+
+Report both, plus which failures are retrieval and which are generation.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1189,7 +1296,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 SECTIONS = [
@@ -1307,7 +1414,8 @@ if (!answeredOk) {
 }
 ```
 
-**Typical output:**
+**Typical output** (illustrative — the shape of the report, not a measured run; your numbers
+will differ):
 
 ```
 ═══ chunk=150 k=3 ═══
@@ -1329,15 +1437,15 @@ answer accuracy    : 7/8 (88%)
 ```
 
 **The `cause` column is the entire value of this harness.** Without it you see "63% accuracy" and
-have no idea what to fix. With it you see "the failures are all RETRIEVAL" and you know that
-prompt work is wasted effort — go fix chunking.
+have no idea what to fix. With it you see "the failures are all RETRIEVAL". Then you know that
+prompt work is wasted effort, and you go and fix chunking.
 
 **Three things worth noticing:**
 
 1. **Retrieval recall is an upper bound on answer accuracy.** At 71% recall you can't exceed 71%
    correct (excluding the refusal case, which needs no retrieval).
 2. **A retrieval failure often surfaces as a *correct refusal*.** The model honestly says "not in
-   the context" — because it genuinely wasn't. The grounding contract is working; retrieval isn't.
+   the context" — because it genuinely wasn't. The grounding contract is working. Retrieval isn't.
    Without measuring both halves, this looks like a generation problem.
 3. **The refusal case is in the eval set permanently.** It's the behaviour most likely to break
    silently when someone edits the prompt.
@@ -1369,7 +1477,7 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 DOCS = [
@@ -1410,7 +1518,7 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{question}"),
 ])
 
-chain = prompt | model.with_structured_output(CitedAnswer)
+chain = prompt | model.with_structured_output(CitedAnswer, method="json_schema", strict=True)
 
 def normalise(s):
     return re.sub(r"\s+", " ", s.lower().strip())
@@ -1517,16 +1625,16 @@ function verifyCitation(citation, docs) {
 | `WRONG_SOURCE` | Real quote, wrong number | Fix by renumbering in the UI; the fact is sound |
 | `FABRICATED` | Quote exists nowhere | **Suppress the answer or flag for review** |
 
-A simple `verified: true/false` would lump paraphrasing (harmless) with fabrication (dangerous)
-and you'd either alarm on everything or miss the real problem.
+A simple `verified: true/false` would put paraphrasing (harmless) and fabrication (dangerous) in
+the same group. You would then either raise an alarm on everything or miss the real problem.
 
-**The production use:** this is a **runtime guardrail**, not just an eval. If faithfulness drops
-below a threshold on a given answer, don't show it — fall back to "I found relevant documents but
-couldn't produce a confident answer, here they are." That converts a hallucination into a
-degraded-but-honest experience, which is the trade you want in any domain where being wrong is
-expensive.
+**The production use:** this is a **runtime guardrail** (a check that runs on every live
+request), not just an eval. If faithfulness for an answer drops below a threshold, don't show
+that answer. Fall back to "I found relevant documents but couldn't produce a confident answer,
+here they are." That turns a hallucination into a less helpful but honest experience. It is the
+trade you want in any domain where being wrong is expensive.
 
-Day 25 turns this into an offline metric run over a dataset; here it runs per request.
+Day 25 turns this into an offline metric run over a dataset. Here it runs on every request.
 </details>
 
 ---
@@ -1534,8 +1642,9 @@ Day 25 turns this into an offline metric run over a dataset; here it runs per re
 ### Exercise 4 — Conversational RAG ●●●●○
 
 Naive RAG breaks on follow-up questions: *"what about Basic?"* retrieves nothing useful because
-the query has no context. Build a conversational RAG chain that **rewrites** the follow-up into a
-standalone question using chat history, then retrieves. Show the before/after.
+the query has no context. Build a conversational RAG chain that uses the chat history to
+**rewrite** the follow-up into a standalone question (one that makes sense on its own), then
+retrieves. Show the before/after.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1554,7 +1663,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnablePassthrough, RunnableBranch
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 DOCS = [
@@ -1674,7 +1783,10 @@ const conversationalRag = RunnablePassthrough
   .assign({ answer: answerPrompt.pipe(model).pipe(new StringOutputParser()) });
 ```
 
-**Expected output:**
+**Expected output** (illustrative — the retrieved lists depend on your embedding model). The
+rewriter really does work this way. In our run with `openai/gpt-oss-120b` (October 2026) it
+wrote *"What is the refund period for the Basic plan?"* and *"What is the rate limit for the
+Basic plan?"*. Your wording will differ.
 
 ```
 WITHOUT rewriting
@@ -1694,33 +1806,39 @@ WITH rewriting
    retrieved: ['Rate Limits (Basic)', 'Rate Limits (Pro)']           ✅
 ```
 
-**"What about Basic?" retrieves *Shipping*** without rewriting — the embedding of three words
-with no topic is essentially noise, and it matches whatever happens to be nearby.
+**"What about Basic?" retrieves *Shipping*** without rewriting. Those three words have no topic,
+so their embedding is essentially noise, and it matches whatever happens to be nearby.
 
 **Four design points:**
 
 1. **`RunnableBranch` skips the rewrite on turn one.** No history means nothing to resolve, and
    you save a model call plus latency on every conversation's first turn.
-2. **"Do NOT answer it" is load-bearing.** Without it the rewriter frequently answers the
-   question instead of rewriting it, and you retrieve on an answer.
+2. **"Do NOT answer it" is essential.** Without it the rewriter often answers the question
+   instead of rewriting it, and you then search using an answer.
 3. **History goes into *both* chains** — the rewriter needs it to resolve references, and the
    answer chain needs it for conversational tone and to avoid repeating itself.
 4. **`standalone` is kept in the output.** Being able to see what was actually searched for is
    the first thing you want when a follow-up returns something strange.
 
-**The cost:** one extra LLM call per turn after the first. Mitigate by using a small fast model
-for rewriting — it's an easy task and doesn't need the 70B. This is exactly Day 08's
-route-by-difficulty principle applied inside a RAG pipeline.
+**The cost:** one extra LLM call per turn after the first. Reduce it by using a small, fast model
+for rewriting. It's an easy task and doesn't need the 120B model. This is exactly Day 08's
+route-by-difficulty principle, applied inside a RAG pipeline.
 </details>
 
 ---
 
 ### Exercise 5 — 🏆 StudyBuddy v2: chat with your PDFs ●●●●●
 
-Upgrade StudyBuddy to answer from **your own documents**. Build a CLI that: ingests a folder of
-files into a persistent store with incremental upsert, supports conversational follow-ups with
-query rewriting, streams answers with verified citations, shows which chunks were used, refuses
-honestly when the answer isn't there, and reports timing and token usage.
+Upgrade StudyBuddy to answer from **your own documents**. Build a CLI (command-line program)
+that:
+
+- ingests a folder of files into a persistent store with incremental upsert (adding only new or
+  changed chunks)
+- supports conversational follow-ups with query rewriting
+- streams answers with verified citations
+- shows which chunks were used
+- refuses honestly when the answer isn't there
+- reports timing and token usage
 
 <details>
 <summary>✅ Solution</summary>
@@ -1750,8 +1868,8 @@ load_dotenv()
 EMBEDDING_MODEL = "nomic-embed-text"
 PERSIST_DIR = "./studybuddy_db"
 
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)      # rewriting
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)  # answering
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)    # rewriting
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0)  # answering
 embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
 
 store = Chroma(
@@ -1939,7 +2057,9 @@ def chat():
                 f"[{i}] {d.metadata.get('breadcrumb', '?')[:28]}"
                 for i, d in enumerate(state["docs"], 1)))
 
-            result = (answer_prompt | smart.with_structured_output(Answer)).invoke({
+            answerer = answer_prompt | smart.with_structured_output(
+                Answer, method="json_schema", strict=True)
+            result = answerer.invoke({
                 "context": state["context"], "question": question, "history": history,
             })
 
@@ -1982,8 +2102,8 @@ python studybuddy_v2.py
 **JavaScript** — the same architecture; the distinctive pieces:
 ```js
 // Two models: cheap for rewriting, strong for answering (Day 08's routing lesson)
-const fast  = new ChatGroq({ model: "llama-3.1-8b-instant", temperature: 0 });
-const smart = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const fast  = new ChatGroq({ model: "openai/gpt-oss-20b", temperature: 0 });
+const smart = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 // Content hash AS the Chroma id → idempotent upsert (Day 11's lesson)
 await store.addDocuments(newDocs, { ids: newDocs.map((d) => d.metadata.contentHash) });
@@ -1991,7 +2111,8 @@ await store.addDocuments(newDocs, { ids: newDocs.map((d) => d.metadata.contentHa
 // Sources shown before the answer streams
 const state = await pipeline.invoke({ question, history });
 console.log("📚 " + state.docs.map((d, i) => `[${i + 1}] ${d.metadata.breadcrumb}`).join(" · "));
-const result = await answerPrompt.pipe(smart.withStructuredOutput(Answer))
+const result = await answerPrompt
+  .pipe(smart.withStructuredOutput(Answer, { method: "jsonSchema" }))
   .invoke({ context: state.context, question, history });
 ```
 
@@ -2009,13 +2130,17 @@ const result = await answerPrompt.pipe(smart.withStructuredOutput(Answer))
 
 1. **Ingest and chat are separate commands.** Different lifecycles, different cost profiles. The
    chat process never re-embeds.
-2. **The content hash is the document ID**, so re-ingesting an unchanged file is a no-op and
-   re-ingesting a changed file overwrites cleanly.
-3. **Rewriting uses the 8B model.** It's an easy transformation; paying 70B rates for it on every
-   turn is waste.
+2. **The content hash is the document ID.** A content hash is a short fingerprint computed from
+   the chunk's text. So re-ingesting an unchanged file is a no-op (it does nothing), and
+   re-ingesting a changed file adds only the chunks whose text changed.
+   ⚠️ It does **not** remove the old chunks of that file, so the old version can still be
+   retrieved — the "staleness" failure from §2. A real system first deletes the file's chunks
+   by their `source` metadata, then adds the new ones.
+3. **Rewriting uses the 20B model.** It's an easy transformation. Paying 120B rates for it on
+   every turn is waste.
 4. **`RunnableBranch` skips rewriting on turn one** — no history, nothing to resolve.
-5. **Sources render before the answer.** Retrieval is ~50ms, generation ~2s. The user sees
-   progress immediately and can start verifying while the answer arrives.
+5. **Sources render before the answer.** Retrieval is typically tens of milliseconds, generation
+   often seconds (time yours). The user sees progress immediately and can start checking sources while the answer arrives.
 6. **Citations are verified, not trusted.** An unverified citation gets a ⚠️ rather than a ✅, so
    the user knows which claims to check.
 
@@ -2023,9 +2148,9 @@ const result = await answerPrompt.pipe(smart.withStructuredOutput(Answer))
 the first retrieval returns nothing useful. It answers *"I don't have that information"* and
 stops. A human researcher would rephrase and search again.
 
-It also can't decide *whether* to retrieve (a greeting triggers a pointless search), can't
-combine multiple retrievals for a multi-part question, and can't tell you the retrieved documents
-were irrelevant before wasting a generation call on them.
+It also can't decide *whether* to retrieve, so a greeting triggers a pointless search. It can't
+combine several retrievals for a multi-part question. And it can't tell you that the retrieved
+documents were irrelevant before it wastes a generation call on them.
 
 Fixing those needs retrieval that **adapts** — reranking, multi-query, self-correction. That's
 Day 13.
@@ -2043,10 +2168,14 @@ Day 13.
 Retrieval-Augmented Generation: retrieve documents relevant to a question and put them in the
 prompt so the model answers from real, current data rather than from its training weights.
 
-It solves three problems: the model doesn't know your private data; its training data is stale;
-and it hallucinates when asked about things it doesn't know. RAG also makes answers *verifiable*
-through citations, and updating knowledge means re-ingesting a document rather than fine-tuning
-a model.
+It solves three problems:
+
+- the model doesn't know your private data
+- its training data is stale (out of date)
+- it hallucinates when asked about things it doesn't know
+
+RAG also makes answers *verifiable* through citations. And updating knowledge means re-ingesting
+a document rather than fine-tuning (retraining) a model.
 </details>
 
 <details>
@@ -2054,13 +2183,20 @@ a model.
 
 Two phases with very different cost profiles.
 
-**Ingest (offline, per document version):** load files into Documents preserving page/section
-metadata; split into chunks with overlap and injected header context; embed in batches; store in
-a vector database with metadata.
+**Ingest (offline, per document version):**
 
-**Query (online, per request):** embed the question; similarity search (optionally hybrid, with
-metadata filters) for the top-k chunks; format them numbered for citation; prompt the model with
-instructions to answer only from that context; return the answer with sources.
+1. Load files into Documents, keeping page and section metadata.
+2. Split them into chunks with overlap and injected header context.
+3. Embed the chunks in batches.
+4. Store them in a vector database with their metadata.
+
+**Query (online, per request):**
+
+1. Embed the question.
+2. Run a similarity search for the top-k chunks (optionally hybrid, with metadata filters).
+3. Format the chunks with numbers so they can be cited.
+4. Prompt the model with instructions to answer only from that context.
+5. Return the answer with its sources.
 
 Keeping ingest separate from query is what makes it practical — you embed once and query
 thousands of times.
@@ -2069,12 +2205,13 @@ thousands of times.
 <details>
 <summary><b>Q: What is `k` and how do you choose it?</b></summary>
 
-The number of chunks retrieved and passed to the model. Too small and the answer may not be in
-context; too large and you pay more tokens, dilute the prompt with irrelevant text, and hit
-"lost in the middle" where mid-context information gets less attention.
+The number of chunks retrieved and passed to the model. If it is too small, the answer may not
+be in the context. If it is too large, you pay for more tokens and dilute the prompt with
+irrelevant text. You also hit "lost in the middle", where information in the middle of the
+context gets less attention.
 
 3–6 is a reasonable default for question answering. The better pattern is retrieve-then-rerank:
-fetch 20 candidates cheaply, rerank them accurately, keep the top 4 — you get the recall of a
+fetch 20 candidates cheaply, rerank them accurately and keep the top 4. You get the recall of a
 large `k` with the precision of a small one. Note `k` interacts with chunk size: your real budget
 is `k × chunkSize`.
 </details>
@@ -2082,15 +2219,15 @@ is `k × chunkSize`.
 <details>
 <summary><b>Q: How do you make a RAG system say "I don't know"?</b></summary>
 
-Give it an exact phrase to output — "If the context does not contain the answer, reply exactly:
-*I don't have that information in the provided documents*" — rather than a vague "say you don't
-know". A concrete token sequence is far easier for the model to produce than an abstract
-instruction, because it's fighting a training distribution where confident answers vastly
-outnumber admissions of ignorance.
+Don't give a vague instruction like "say you don't know". Give it an exact phrase to output
+instead: "If the context does not contain the answer, reply exactly: *I don't have that
+information in the provided documents*". A concrete sequence of tokens is far easier for the
+model to produce than an abstract instruction. That matters because the model is working
+against its training data, where confident answers vastly outnumber admissions of not knowing.
 
-Even better, use structured output with a boolean `answerFound` field, so the model must commit
-and you branch in code rather than parsing prose. Then test it explicitly with an out-of-corpus
-question — it's the behaviour most likely to be silently missing.
+Even better, use structured output with a boolean `answerFound` field. The model must commit to
+true or false, and you branch in code instead of parsing prose. Then test it explicitly with an
+out-of-corpus question — it's the behaviour most likely to be silently missing.
 </details>
 
 ### Intermediate
@@ -2098,34 +2235,38 @@ question — it's the behaviour most likely to be silently missing.
 <details>
 <summary><b>Q: How do you evaluate a RAG system?</b></summary>
 
-Measure the two halves separately, because they have different fixes and conflating them is why
-RAG debugging goes in circles.
+Measure the two halves separately. They have different fixes, and mixing them up is why RAG
+debugging goes round in circles.
 
 **Retrieval:** recall@k (was the chunk containing the answer retrieved?) and precision@k (how
 much of what you retrieved was useful?). Build this from a set of questions with known
 answer-locations.
 
-**Generation:** faithfulness (is every claim supported by the retrieved context?), answer
-relevance (does it address the question?), and citation accuracy (do the markers point at
-sources that actually contain the quoted text?).
+**Generation:**
+
+- faithfulness — is every claim supported by the retrieved context?
+- answer relevance — does it address the question?
+- citation accuracy — do the markers point at sources that actually contain the quoted text?
 
 The key insight is that **retrieval recall is an upper bound on answer accuracy** — at 60%
 recall, no prompt engineering gets you past 60%. So for every failure, the first diagnostic is:
 was the correct chunk in the retrieved set? Not retrieved means a chunking, embedding or query
-problem; retrieved but answered wrong means a prompt, ordering or model problem.
+problem. Retrieved but answered wrong means a prompt, ordering or model problem.
 </details>
 
 <details>
 <summary><b>Q: Why does naive RAG fail on follow-up questions?</b></summary>
 
-Because retrieval sees only the raw question. "What about Basic?" has no topical content — its
-embedding is essentially noise and matches arbitrary documents. The context needed to interpret
+Because retrieval sees only the raw question. "What about Basic?" has no topic in it. Its
+embedding is essentially noise and matches unrelated documents. The context needed to understand
 it lives in the chat history, which the retriever never sees.
 
-The fix is **query rewriting**: use the model plus history to turn the follow-up into a
-standalone question ("How long do I have to get a refund on the Basic plan?"), then retrieve on
-that. Two practical details: instruct it explicitly *not* to answer the question, or it often
-will; and skip the rewrite on the first turn when there's no history, saving a call and latency.
+The fix is **query rewriting**. Use the model plus the history to turn the follow-up into a
+standalone question ("How long do I have to get a refund on the Basic plan?"). Then retrieve
+using that question. Two practical details:
+
+- Tell it explicitly *not* to answer the question, or it often will.
+- Skip the rewrite on the first turn, when there's no history. That saves a call and some latency.
 
 Use a small fast model for the rewrite — it's an easy task.
 </details>
@@ -2135,29 +2276,38 @@ Use a small fast model for the rewrite — it's an easy task.
 
 Don't trust free-text `[1]` markers — they're generated tokens and can be wrong or invented.
 
-Use structured output requiring, per claim, the source number **and the exact supporting quote
-copied verbatim**. Then verify in code that the quote actually appears in that chunk. Classify
-the outcome rather than using a boolean: verified (exact match), paraphrased (close — usually
-fine), wrong-source (real quote, wrong number — the fact is sound), fabricated (appears nowhere —
-dangerous).
+Use structured output that requires, for each claim, the source number **and the exact
+supporting quote copied verbatim**. Then verify in code that the quote actually appears in that
+chunk. Classify the outcome rather than using a true/false boolean:
 
-That classification lets you act proportionately, and it doubles as a **runtime guardrail**: if
-faithfulness is low, suppress the answer and show the retrieved documents instead. Converting a
-hallucination into a degraded-but-honest response is the right trade wherever being wrong is
-expensive.
+- verified — exact match
+- paraphrased — close; usually fine
+- wrong-source — real quote, wrong number; the fact is sound
+- fabricated — appears nowhere; dangerous
+
+That classification lets you respond in proportion to the problem. It also works as a **runtime
+guardrail**: if faithfulness is low, hide the answer and show the retrieved documents instead.
+Turning a hallucination into a less helpful but honest response is the right trade wherever being
+wrong is expensive.
 </details>
 
 <details>
 <summary><b>Q: What is "lost in the middle" and how does it affect RAG?</b></summary>
 
-Models attend more reliably to information at the start and end of a long context than to the
-middle. So retrieving 20 chunks and placing the relevant one at position 11 can produce a worse
+Models pay more reliable attention to information at the start and end of a long context than
+to the middle. So retrieving 20 chunks with the relevant one at position 11 can produce a worse
 answer than retrieving 4 chunks where it sits at position 2.
 
-Three mitigations: retrieve fewer chunks (smaller `k`); reorder so the highest-scoring chunks sit
-at both ends with weaker ones in the middle (LangChain's `LongContextReorder`); and — the proper
-fix — retrieve a large candidate set cheaply, rerank with a cross-encoder, and pass only the top
-few. That gives you the recall of a large `k` and the precision of a small one.
+Three ways to reduce it:
+
+1. Retrieve fewer chunks (smaller `k`).
+2. Reorder so the highest-scoring chunks sit at both ends, with weaker ones in the middle
+   (LangChain's `LongContextReorder`).
+3. The proper fix: retrieve a large candidate set cheaply, rerank it with a cross-encoder, and
+   pass only the top few. A cross-encoder is a model that reads the question and a chunk
+   together and scores how well they match.
+
+That gives you the recall of a large `k` and the precision of a small one.
 </details>
 
 ### Advanced
@@ -2173,14 +2323,16 @@ completely different fixes, and it takes minutes.
 **If retrieval failed**, work up the ingest pipeline cheapest-first:
 - Is the answer in any chunk *intact*, or split across a boundary? That caps your ceiling and no
   retrieval change can fix it — adjust chunk size and overlap.
-- Did chunks lose their headings? Injecting header breadcrumbs is routinely worth double-digit
-  recall on structured documents.
-- Is the query lexical — an error code, name or identifier? Embeddings blur those; add hybrid
-  search.
-- Is there a phrasing gap between terse queries and prose documents? Add query rewriting or
-  multi-query expansion.
-- Are filters over-restricting, or is the store post-filtering and starving results?
-- Are near-duplicates crowding the top-k? Deduplicate at ingest, or use MMR.
+- Did chunks lose their headings? Injecting header breadcrumbs often improves recall noticeably
+  on structured documents — measure the before/after on your own eval set.
+- Is the query lexical (about exact words) — an error code, name or identifier? Embeddings blur
+  those, so add hybrid search (keyword search plus vector search).
+- Is there a phrasing gap between short queries and full-sentence documents? Add query rewriting
+  or multi-query expansion.
+- Are filters too strict? Or is the store filtering after the search (post-filtering) and leaving
+  too few results?
+- Are near-duplicates crowding the top-k? Deduplicate at ingest, or use MMR (a search mode that
+  prefers varied results).
 
 **If retrieval succeeded but the answer was wrong**:
 - Was the right chunk buried mid-context? Reduce `k` or rerank.
@@ -2188,9 +2340,10 @@ completely different fixes, and it takes minutes.
 - Is the model overriding context with parametric knowledge? Verify citations to detect it.
 - Is the context formatted so chunks are distinguishable and citable?
 
-**Then institutionalise it.** Every diagnosed failure becomes a case in the eval set, with the
-retrieval/generation label recorded, and the suite runs in CI. Without that, the next chunking
-"improvement" silently reintroduces old bugs.
+**Then make it permanent.** Every diagnosed failure becomes a case in the eval set, labelled as
+a retrieval or a generation failure. The suite runs in CI (continuous integration — automatic
+checks on every change). Without that, the next chunking "improvement" silently brings old bugs
+back.
 
 The mistake I'd call out explicitly: spending a week on prompt engineering when retrieval recall
 is 70%. The ceiling is 70% and no prompt moves it.
@@ -2205,7 +2358,7 @@ is 70%. The ceiling is 70% and no prompt moves it.
 - **Questions needing the full document** — "summarise this contract" isn't a retrieval problem;
   you want the whole document, which is a document-chain job (Day 08).
 - **Highly structured queries** — "orders over £500 from last quarter" is a database query.
-  Embeddings are poor at numeric comparisons; use text-to-SQL or self-query with metadata filters.
+  Embeddings are poor at numeric comparisons. Use text-to-SQL or self-query with metadata filters.
 - **When the model already knows** — general knowledge doesn't need retrieval, and retrieving
   anyway adds latency, cost and a chance of retrieving something misleading.
 - **When behaviour, not knowledge, is the gap** — if you need a consistent tone, format or
@@ -2224,61 +2377,73 @@ Knowing which problem you have is the actual skill.
 The three constraints — auditability, access control, and the domain — drive almost every
 decision.
 
-**Access control comes first, because it's a correctness requirement, not a feature.** Matter-level
-partitioning: separate collections per matter or client, not metadata filters, so cross-matter
-leakage is structurally impossible rather than one bug away. Every query carries the user's
-authorisation from the session, resolved in a single data-access layer that call sites can't
-bypass. Log every retrieval with user, matter and documents returned.
+**Access control comes first, because it's a correctness requirement, not a feature.** Use
+matter-level partitioning: a separate collection per matter (legal case) or client, not metadata
+filters. Then a leak between matters is structurally impossible, rather than one bug away. Every
+query carries the user's authorisation from the session. A single data-access layer checks it,
+and no calling code can go around that layer. Log every retrieval with user, matter and
+documents returned.
 
 **Chunking follows the document structure.** Contracts are clause-based: one chunk per clause,
 with the clause number, section heading, contract ID and effective date in both metadata and
 injected text. Fixed-size splitting would cut clauses in half, which is legally meaningless.
 
 **Retrieval must be hybrid.** Legal queries are full of exact terms — clause numbers, defined
-terms, party names, statute references — that embeddings blur together. BM25 handles those;
-vectors handle "what are our termination rights". Fuse with RRF, then rerank.
+terms, party names, statute references — that embeddings blur together. BM25 (a classic keyword
+ranking method) handles those. Vectors handle "what are our termination rights". Fuse the two
+result lists with RRF (Reciprocal Rank Fusion), then rerank.
 
-**Auditability shapes generation.** Structured output with verbatim quotes per claim, verified
-against the source chunk in code, and an answer that is suppressed rather than shown if
-faithfulness fails. Store the full trace — question, rewritten query, retrieved chunk IDs and
-versions, prompt, model version, answer, citations — immutably. "Which contract version did this
-answer come from, on that date?" must be answerable.
+**Auditability shapes generation.** Use structured output with a verbatim quote for each claim.
+Verify each quote against the source chunk in code. If faithfulness fails, suppress the answer
+rather than show it. Store the full trace immutably (so it can never be changed): question,
+rewritten query, retrieved chunk IDs and versions, prompt, model version, answer, citations.
+"Which contract version did this answer come from, on that date?" must be answerable.
 
-**Versioning is non-negotiable.** Contracts get amended. Chunks carry a version and effective
-date; queries default to current but can be time-scoped; superseded versions are retained, not
-deleted, and clearly labelled so an answer never silently mixes versions.
+**Versioning is non-negotiable.** Contracts get amended. Each chunk carries a version and an
+effective date. Queries use the current version by default but can be limited to a point in
+time. Superseded (replaced) versions are kept, not deleted. They are clearly labelled, so an
+answer never silently mixes versions.
 
 **Human review by default** for anything advisory. This is a research assistant that surfaces
 sources for a lawyer, not an oracle. The product framing matters as much as the architecture.
 
-**Evaluation** uses a golden set built with the lawyers, measuring retrieval recall and citation
-accuracy separately, run before every deploy. In this domain a confident wrong answer is far
-worse than "I couldn't find it" — so tune toward abstention, and monitor the abstention rate as a
-first-class metric.
+**Evaluation** uses a golden set (trusted questions with known correct answers) built with the
+lawyers. It measures retrieval recall and citation accuracy separately, and runs before every
+deploy. In this domain a confident wrong answer is far worse than "I couldn't find it". So tune
+toward abstention (declining to answer), and track the abstention rate as a key metric.
 </details>
 
 ---
 
 ## 10. Recap
 
-- ✅ RAG = retrieve relevant chunks, then stuff **only those** — ~100× cheaper than map-reduce
+- ✅ RAG means: retrieve the relevant chunks, then stuff **only those** into the prompt — far
+  cheaper than map-reduce (roughly 90× fewer tokens in the §1 illustration)
 - ✅ Ingest (offline, expensive, rare) and query (online, cheap, constant) are separate lifecycles
-- ✅ The canonical chain: `RunnableParallel({docs: retriever, question: passthrough})` then `.assign()`
+- ✅ The standard chain: `RunnableParallel({docs: retriever, question: passthrough})` then `.assign()`
 - ✅ Format context numbered and separated so citations round-trip to real chunks
 - ✅ The grounding contract: only the context, cite everything, **an exact refusal phrase**, no invented citations
 - ✅ Verify citations against source text — classify verified / paraphrased / wrong-source / fabricated
 - ✅ `k = 3–6`; large `k` triggers lost-in-the-middle
 - ✅ **Measure retrieval and generation separately** — recall caps answer accuracy
 - ✅ Follow-up questions need **query rewriting** or retrieval sees meaningless input
-- ✅ Show sources before streaming the answer — retrieval is 50ms, generation is 2s
+- ✅ Show sources before streaming the answer — retrieval is typically tens of ms, generation
+  often seconds
+
+> 📏 **Measure it:** Test today's pipeline with three questions, using code you already have. In
+> `day12_rag.py` / `day12-rag.js`, the Pro refund question must answer 60 days with a citation,
+> and the "CEO's address" question must say "I don't know" using the exact refusal phrase. In
+> `day12_structured_citations.py` / `day12-structured-citations.js`, "How long for a Pro refund?"
+> passes only if every citation prints ✅ — and Day 25 turns these checks into a full evaluation
+> suite.
 
 ### Tomorrow
 
 **[Day 13 — Advanced RAG & retrievers](day-13-advanced-rag.md)**: today's pipeline retrieves once
-and hopes. Tomorrow it gets smarter — MMR for diversity, multi-query expansion, HyDE, reranking
-with cross-encoders, parent-document retrieval, contextual compression, self-query with metadata
-filters — plus the corrective and self-RAG patterns that **grade their own retrieval and try
-again**.
+and hopes for the best. Tomorrow it gets smarter with MMR for diversity, multi-query expansion,
+HyDE, reranking with cross-encoders, parent-document retrieval, contextual compression and
+self-query with metadata filters. It also adds the corrective and self-RAG patterns that **grade
+their own retrieval and try again**.
 
 ### Quick self-check
 
@@ -2295,8 +2460,16 @@ again**.
 2. No **query rewriting**. The retriever embeds "what about the Basic plan?" literally; with no
    topic in the query, the embedding is near-noise and matches arbitrary chunks. Rewrite the
    follow-up into a standalone question using chat history, then retrieve on that.
-3. The **grounding contract** — specifically an explicit instruction to use only the provided
-   context plus an exact refusal phrase for when it doesn't contain the answer. Without it the
-   model falls back on parametric knowledge, and you can't distinguish that from a real answer.
+3. The **grounding contract**. Specifically: an explicit instruction to use only the provided
+   context, plus an exact refusal phrase for when it doesn't contain the answer. Without it the
+   model falls back on parametric knowledge, and you can't tell that apart from a real answer.
    Add a structured `answerFound` boolean and test with an out-of-corpus question.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 11 — Vector Databases](day-11-vector-databases.md)** · **[Week 2 index](README.md)** · **[Day 13 — Advanced RAG →](day-13-advanced-rag.md)**
+
+</div>

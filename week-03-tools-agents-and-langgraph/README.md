@@ -172,12 +172,18 @@ That inconsistency has cost more debugging hours than it has any right to.
 | `invoke()` returns `undefined` / `None`, no error | 17 | A node is writing a channel name that doesn't exist. Typo. Silent by design |
 | Parallel node reads stale/`undefined` data | 17 | Same superstep = same snapshot. If B needs A, add an edge A→B |
 | Items appear twice in a list channel | 17 | You did the reducer's job: send the delta, not the merged value |
-| Two parallel results, only one survives | 17 | Last-write-wins channel. Fan-out needs a combining reducer |
+| `InvalidUpdateError: … can only receive one value per step` after a fan-out | 17 | Last-write-wins channel. Fan-out needs a combining reducer |
+| Python loop runs thousands of steps before `GraphRecursionError` | 17 | Python's default `recursion_limit` is 10007 (JS: 25) — set it on every call |
 | `GraphRecursionError` | 17 | Your loop has no budget exit. Fix the router, don't raise the limit |
-| State leaks between users | 17/20 | `default: []` instead of `default: () => []`, or a missing `thread_id` |
+| `400 Tool choice is required, but model did not call a tool` from structured output | 19 | GPT-OSS answered in text. Pass `method: "jsonSchema"` / `method="json_schema"` |
+| JS: `outline is already being used as a state attribute … cannot also be used as a node name` | 19 | Rename the node (`build_outline`). Python allows the clash; JS doesn't |
+| A replan still counts last round's results | 19 | An append reducer can't clear. Give it a sentinel (`CLEAR`) or tag results by round |
+| `TypeError: initialValueFactory is not a function` | 17 | `default: []` — `default` must be a function: `default: () => []` |
+| State leaks between users | 17/20 | A `default` factory that returns one shared object (plus a mutating reducer), or a missing `thread_id` |
 | `GraphValueError: No checkpointer set` | 20 | `getState`/`getStateHistory` need `compile({ checkpointer })` |
 | Conversation resets on every message | 20 | Same `thread_id` per conversation — that's the whole mechanism |
 | `interrupt()` fires again after resume | 21 | The node re-runs from its start on resume. Put `interrupt` first in the node |
+| Charged twice even with an `if (!state.charged)` guard | 21 | The node never finished, so the flag was never saved. Move the charge to a later node, or use an idempotency key |
 
 ---
 

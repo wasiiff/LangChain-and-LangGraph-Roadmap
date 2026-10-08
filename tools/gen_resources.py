@@ -21,10 +21,13 @@ OUT = os.path.join(ROOT, "resources")
 
 # Short week titles for the generated files; the week READMEs use longer ones.
 WEEKS = [
+    ("week-00-start-here", "Week 0 — Start Here"),
     ("week-01-foundations", "Week 1 — Foundations"),
     ("week-02-data-embeddings-and-rag", "Week 2 — Data, Embeddings, RAG & Memory"),
     ("week-03-tools-agents-and-langgraph", "Week 3 — Tools, Agents & LangGraph"),
     ("week-04-production-projects-and-interviews", "Week 4 — Multi-agent, Production & Interviews"),
+    ("week-05-the-model-layer", "Week 5 — The Model Layer"),
+    ("week-06-advanced-agents-product-and-career", "Week 6 — Advanced Agents, Product & Career"),
 ]
 
 LINK = re.compile(r"\]\((?!https?:|mailto:|#)([^)\s]+)\)")
@@ -40,21 +43,23 @@ def write(path, text):
 
 
 def load_days():
-    """[(week_title, [day dicts])] — each day carries its title, text and repo-relative path."""
+    """[(folder, week_title, [day dicts])] — each day carries its title, text and path."""
     weeks = []
     for folder, title in WEEKS:
+        if not os.path.isdir(os.path.join(ROOT, folder)):
+            continue                                # a planned week not written yet
         days = []
         for path in sorted(glob.glob(os.path.join(ROOT, folder, "day-*.md"))):
             text = read(path)
-            h1 = re.search(r"^# Day \d+ — (.+)$", text, re.M)
+            h1 = re.search(r"^# Day ([0-9]+[A-C]?) — (.+)$", text, re.M)
             days.append({
-                "num": int(re.search(r"day-(\d+)", os.path.basename(path)).group(1)),
-                "title": h1.group(1).strip(),
+                "num": h1.group(1).zfill(2),        # "03", "0A" — a label, not a number
+                "title": h1.group(2).strip(),
                 "text": text,
                 "dir": os.path.dirname(path),
                 "link": folder + "/" + os.path.basename(path),
             })
-        weeks.append((title, days))
+        weeks.append((folder, title, days))
     return weeks
 
 
@@ -95,13 +100,13 @@ def count_questions(body):
 # ── mapping ─────────────────────────────────────────────────────────────────
 def gen_mapping(weeks):
     parts = [HEADER_MAPPING.strip("\n")]
-    for i, (title, days) in enumerate(weeks):
+    for i, (_, title, days) in enumerate(weeks):
         parts.append(("\n" if i else "") + "## " + title)
         for day in days:
             body = grab(day["text"], r"^#{3,4} .*JS ↔ Python.*$", r"^(#{1,3} |---\s*$)")
             if not body:
                 continue        # e.g. Day 28 has no translation table
-            parts.append(f"### Day {day['num']:02d} — [{day['title']}]({day_link(day)})")
+            parts.append(f"### Day {day['num']} — [{day['title']}]({day_link(day)})")
             parts.append(rebase(body, day["dir"]))
     write(os.path.join(OUT, "js-vs-python-mapping.md"), "\n\n".join(parts) + "\n")
 
@@ -109,7 +114,7 @@ def gen_mapping(weeks):
 # ── interview bank ──────────────────────────────────────────────────────────
 def gen_interviews(weeks):
     collected = []
-    for title, days in weeks:
+    for _, title, days in weeks:
         rows = []
         for day in days:
             body = grab(day["text"], r"^## 9\. .*$", r"^## ")
@@ -127,13 +132,13 @@ def gen_interviews(weeks):
     for title, rows in collected:
         toc.append(f"- **{title}**")
         for day, _, n in rows:
-            toc.append(f"  - Day {day['num']:02d} — {day['title']} ({n})")
+            toc.append(f"  - Day {day['num']} — {day['title']} ({n})")
     parts.append("\n".join(toc))
 
     for i, (title, rows) in enumerate(collected):
         parts.append(("\n" if i else "") + "## " + title)
         for day, body, n in rows:
-            parts.append(f"### Day {day['num']:02d} — {day['title']}")
+            parts.append(f"### Day {day['num']} — {day['title']}")
             parts.append(f"*{n} questions · [open the day]({day_link(day)})*")
             parts.append(body)
             parts.append("---")
@@ -144,9 +149,12 @@ def gen_interviews(weeks):
 # ── troubleshooting ─────────────────────────────────────────────────────────
 def gen_troubleshooting(weeks):
     parts = [HEADER_TROUBLESHOOTING.strip("\n")]
-    for i, (title, _) in enumerate(weeks, 1):
-        readme = os.path.join(ROOT, WEEKS[i - 1][0], "README.md")
-        body = grab(read(readme), rf"^## Common Week {i} blockers\s*$", r"^(## |---\s*$)")
+    for folder, title, _ in weeks:
+        readme = os.path.join(ROOT, folder, "README.md")
+        if not os.path.exists(readme):
+            continue
+        n = int(re.search(r"week-(\d+)", folder).group(1))
+        body = grab(read(readme), rf"^## Common Week {n} blockers\s*$", r"^(## |---\s*$)")
         if not body:
             continue
         parts.append("## " + title)
@@ -214,7 +222,8 @@ These strings were produced by running the code in this book. If you see one, th
 | Error text (excerpt) | Cause | Fix | Day |
 |---|---|---|---|
 | `UnreachableNodeError: Node ... is not reachable` / `Graph must have an entrypoint` | no edge from `START` | `addEdge(START, "first")` | 17 |
-| `GraphRecursionError: Recursion limit of 25 reached` | a loop with no working exit | add a budget exit to the router; don't just raise the limit | 17 |
+| `GraphRecursionError: Recursion limit of 25 reached` | a loop with no working exit (JS default 25; Python's default is 10007, so set `recursion_limit`) | add a budget exit to the router; don't just raise the limit | 17, 36 |
+| `InvalidUpdateError: … can only receive one value per step` | two nodes or `Send` workers wrote a no-reducer channel in the same superstep | give the channel a combining reducer | 17, 19 |
 | `No checkpointer set` | `getState` / history / interrupts without a checkpointer | `compile({ checkpointer })` | 20 |
 | `Failed to put checkpoint ... missing a required "thread_id"` / `Checkpointer requires one or more of the following 'configurable' keys` | invoking a checkpointed graph without a thread | pass `configurable.thread_id` | 20 |
 | `When there are multiple pending interrupts, you must specify the interrupt id when resuming` | resuming parallel interrupts with one value | resume with a map of interrupt id → value | 21 |
@@ -239,7 +248,6 @@ The most expensive bugs don't throw. Symptoms to recognise:
 | Symptom | Cause | Day |
 |---|---|---|
 | `invoke` returns `undefined` / `None` | a node writes a key that isn't a declared channel | 17 |
-| Parallel results: one survives instead of N | fan-out into a last-write-wins channel | 17, 19 |
 | Items duplicated in a list channel | returning the full list with an append reducer; or a subgraph sharing an appending channel | 17, 19 |
 | A new conversation every turn | unstable or per-request `thread_id`; in-memory checkpointer across instances | 20, 27 |
 | A side effect happens twice after approval | code before `interrupt()` re-runs on resume | 21 |

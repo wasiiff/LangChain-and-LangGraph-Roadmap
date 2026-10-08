@@ -62,6 +62,68 @@ update [03-verified-findings.md](03-verified-findings.md).
 > Rows marked "not recorded" were installed but their version wasn't captured — record them next
 > time you rebuild.
 
+## Added in the October 2026 expansion (Weeks 0 and 5–6)
+
+Recorded as the agents reported them. Machine: i5-8265U (4 cores), **7.8 GB RAM**, no GPU,
+Windows 11; Node 24.15.0, npm 11.12.1, Python 3.14.4, pip 26.0.1, git 2.53.0.
+
+| Package | Version | Used by |
+|---|---|---|
+| `dotenv` / `python-dotenv` | 18.0.6 / 1.2.4 | 0A, 0B |
+| `zod` / `pydantic` | 4.6.5 / 2.13.5 | 0B, 31, 32, 37 |
+| `httpx` | 0.28.1 | 0B, 30 |
+| `@langchain/core` / `langchain-core` | 1.2.17 / 1.6.7 | Weeks 5–6 |
+| `langchain` (JS / PY) | 1.5.15 / 1.4.3 | 34, 35, 36 |
+| `@langchain/langgraph` / `langgraph` | 1.4.20 / 1.2.14 | 35–40 |
+| `@langchain/groq` / `langchain-groq` | 1.3.1 / 1.1.3 | 34 (key checks only) |
+| `@langchain/openai` / `langchain-openai` (+ `openai` 7.30.0 / 3.26.0) | 1.6.2 / 1.6.7 | 30, 31, 33 |
+| `@langchain/ollama` / `langchain-ollama` | 1.3.0 / 1.1.0 | 29 (no server — error paths only) |
+| `@langchain/google-genai` / `langchain-google-genai` | 2.3.2 / 4.4.0 | 33 (request captured, no live call) |
+| `torch` (CPU) | 2.14.1+cpu | 29–31, 33, 35 |
+| `transformers` / `@huggingface/transformers` | 5.19.0 / 4.3.1 | 29, 30, 31, 33 |
+| `peft` · `accelerate` · `datasets` | 0.21.2 · 1.15.0 · 5.1.0 | 31 |
+| `huggingface_hub` · `safetensors` | 1.33.0 · 0.8.0 | 29, 35 |
+| `langchain-huggingface` | 1.2.2 | 29 |
+| `fastapi` · `uvicorn` | 0.142.2 · 0.54.0 | 30, 31 |
+| `sanitize-html` / `nh3` | 2.18.0 / 0.3.7 | 35 |
+| `deepagents` (JS / PY) | 1.14.2 / 0.7.22 | 36 |
+| `node:sqlite` (built in) / `sqlite3` | SQLite 3.51.3 / 3.50.4 | 37 |
+| `playwright` (both) | 1.63.0 (chromium headless shell 1243) | 38 |
+| `@a2a-js/sdk` / `a2a-sdk[http-server]` | 1.3.0 / 1.2.2 | 38 |
+| `langsmith` (JS / PY) | 0.10.8 / 0.14.4 | 39 (signatures only) |
+| Models | `HuggingFaceTB/SmolLM2-135M-Instruct` (+360M), `SmolVLM-256M-Instruct`, `whisper-tiny.en` | 29–33 |
+
+### Live-provider runs (model migration, 7–8 October 2026)
+
+| Package | Version |
+|---|---|
+| `groq-sdk` (JS) / `groq` (PY) | 1.6.0 / 0.37.1 |
+| `@langchain/groq` / `langchain-groq` | 1.3.1 / 1.1.3 |
+| `@langchain/google-genai` / `langchain-google-genai` | 2.3.2 / 4.4.0 |
+| `ai` / `@ai-sdk/groq` | 7.0.130 / 4.0.57 |
+| `gpt-tokenizer` / `tiktoken` | 4.0.0 / installed |
+| `@langchain/langgraph-checkpoint-sqlite` / `langgraph-checkpoint-sqlite` | 1.0.4 / 3.1.1 |
+| `@langchain/langgraph-swarm` / `langgraph-swarm` | 1.0.4 / 0.1.0 |
+
+Models used live: Groq `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` (preview);
+Google `gemini-embedding-2` (and `gemini-3.8-flash` request shape; chat was 503/quota-limited).
+Keys came from the owner's practice `.env` (`JS/langchain-practice/.env`) and were never written to
+the repo. The `GEMINI_API_KEY` environment variable belongs to a project that returns
+`403 Your project has been denied access`.
+
+### The D: sandbox (heavy work)
+
+C: was nearly full, so Week 5–6 sandboxes live in `D:/ai-course-sandbox/<day-id>/`, with one
+shared Python environment (`D:/ai-course-sandbox/shared-venv`: torch CPU, transformers, peft,
+accelerate, datasets, langchain, langgraph, fastapi). Extra packages per day go into
+`<day-id>/extra` with `pip install --target`, never into the shared venv. Before installing:
+
+```bash
+export TEMP="D:/ai-course-sandbox/tmp" TMP="D:/ai-course-sandbox/tmp"        npm_config_cache="D:/ai-course-sandbox/npm-cache" PIP_NO_CACHE_DIR=1        HF_HOME="D:/ai-course-sandbox/hf-cache" PLAYWRIGHT_BROWSERS_PATH="D:/ai-course-sandbox/pw-browsers"
+```
+
+With 7.8 GB RAM, run **one model process at a time** — six in parallel triggered memory pressure.
+
 ## Rebuilding the sandbox
 
 Never install into the repo. The scratchpad path is printed in each session's environment

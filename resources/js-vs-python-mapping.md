@@ -21,6 +21,78 @@ it matches the code you read there. Use your browser's find (Ctrl/Cmd+F) on eith
 > | ChatGroq default retries | 6 | 2 | 24 |
 > | PII `mask` strategy on an email | `a***@example.com` | `ayesha.khan@****.com` | 24 |
 
+## Week 0 — Start Here
+
+### Day 0A — [Your Toolkit: Terminal, Git, Node, Python & Reading Errors](../week-00-start-here/day-00a-your-toolkit.md)
+
+| Idea | JavaScript (Node.js) | Python |
+|---|---|---|
+| Run a file | `node env-check.js` | `python env_check.py` |
+| Check the version | `node --version` | `python --version` |
+| Package tool | `npm` | `pip` (use `python -m pip` when unsure) |
+| Project package list | `package.json` → `dependencies` | `requirements.txt` |
+| Exact versions | `package-lock.json` (automatic) | `pip freeze > requirements.txt` |
+| Where packages go | `node_modules/` in the project | `.venv/` after you activate it |
+| Install everything | `npm install` | `pip install -r requirements.txt` |
+| Isolation | automatic, per folder | manual: `python -m venv .venv` + activate |
+| Module setting | `"type": "module"` in `package.json` | none needed |
+| Load `.env` | `import "dotenv/config";` | `from dotenv import load_dotenv` + `load_dotenv()` |
+| Package name vs import name | `dotenv` / `dotenv` | `python-dotenv` / `dotenv` |
+| Read a variable | `process.env.NAME` → `undefined` if missing | `os.environ.get("NAME")` → `None` if missing |
+| Runtime version | `process.version` | `platform.python_version()` |
+| Current folder | `process.cwd()` | `os.getcwd()` |
+| Which program is running | `process.execPath` | `sys.executable` |
+| Exit with an error | `process.exit(1)` | `sys.exit(1)` |
+| "Nothing" value | `undefined` / `null` | `None` |
+| Where the error type is | top of the trace | last line of the trace |
+| Where `.env` is searched | the current folder only | from the script's folder upwards |
+
+### Day 0B — [Programming for AI: JSON, HTTP, Async & Schemas in JS and Python](../week-00-start-here/day-00b-programming-for-ai.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| data → JSON text | `JSON.stringify(obj)` | `json.dumps(d)` |
+| JSON text → data | `JSON.parse(text)` | `json.loads(text)` |
+| pretty JSON | `JSON.stringify(obj, null, 2)` | `json.dumps(d, indent=2)` |
+| a date in JSON | becomes an ISO string | `TypeError` — convert it yourself |
+| huge integer | loses precision | exact |
+| HTTP POST with JSON | `fetch(url, { method, headers, body: JSON.stringify(x) })` | `httpx.post(url, json=x)` |
+| status | `res.status`, `res.ok` | `res.status_code`, `res.is_success` |
+| raise on 4xx/5xx | do it yourself: `if (!res.ok) throw …` | `res.raise_for_status()` |
+| read the body | `await res.json()` — only once | `res.json()` — as often as you like |
+| a header | `res.headers.get("retry-after")` | `res.headers.get("retry-after")` |
+| sync option | ❌ none — always async | ✅ `invoke` (sync) and `ainvoke` (async) |
+| parallel | `Promise.all([...])` | `asyncio.gather(*tasks)` |
+| tolerant parallel | `Promise.allSettled` | `gather(..., return_exceptions=True)` |
+| un-awaited call | `Promise { <pending> }` | `<coroutine object …>` |
+| timing | `console.time` / `timeEnd` | `time.time()` deltas |
+| spread into call | `f(...args)` | `f(*args)` |
+| yield many | `for (const p of parts) yield p` | `yield from parts` |
+| schema errors | `result.error.issues` | `e.errors()` |
+| schema → JSON Schema | `z.toJSONSchema(Schema)` | `Model.model_json_schema()` |
+| `"yes"` for a boolean | rejected | accepted as `True` (unless `strict=True`) |
+| method names | `withStructuredOutput`, `withRetry` | `with_structured_output`, `with_retry` |
+
+### Day 0C — [Just-Enough Maths: Vectors, Probability & Softmax](../week-00-start-here/day-00c-just-enough-maths.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| file / import | `toolkit.mjs` · `import { dot } from "./toolkit.mjs"` | `toolkit.py` · `from toolkit import dot` |
+| square root, e^x, natural log | `Math.sqrt` · `Math.exp` · `Math.log` | `math.sqrt` · `math.exp` · `math.log` |
+| biggest value | `Math.max(...xs)` | `max(xs)` |
+| add up a list | `xs.reduce((s, x) => s + x, 0)` | `sum(xs)` |
+| transform every item | `xs.map((x) => x / n)` | `[x / n for x in xs]` |
+| round up | `Math.ceil` | `math.ceil` |
+| sort numbers | `[...xs].sort((a, b) => a - b)` — **comparator required** | `sorted(xs)` — numeric by default |
+| whole number vs decimal | one `number` type: prints `5` | `int` and `float`: `math.sqrt` prints `5.0` |
+| raise an error | `throw new Error("…")` | `raise ValueError("…")` |
+| divide by zero | `1 / 0` → `Infinity`, `0 / 0` → `NaN` (no error) | `ZeroDivisionError` |
+| `exp` of a huge number | `Math.exp(710)` → `Infinity` | `math.exp(710)` → `OverflowError: math range error` |
+| seeded random | none built in — write `makeRng` | `random.Random(seed)` (different numbers from JS) |
+| state inside a closure | `let state` in the outer function | `nonlocal state` in the inner function |
+| fast vector maths | (plain loops are fast enough here) | numpy: `D @ q`, `np.dot`, `np.linalg.norm` |
+
+
 ## Week 1 — Foundations
 
 ### Day 01 — [What an LLM Actually Is: Tokens, Context & Inference](../week-01-foundations/day-01-llms-tokens-and-inference.md)
@@ -33,8 +105,10 @@ it matches the code you read there. Use your browser's find (Ctrl/Cmd+F) on eith
 | Null-safe access | `chunk.choices[0]?.delta?.content ?? ""` | `chunk.choices[0].delta.content or ""` |
 | Naming | `camelCase` params in LangChain, `snake_case` in raw SDK | `snake_case` everywhere |
 | Tokenizer lib | `gpt-tokenizer` | `tiktoken` |
+| Reasoning tokens used | `usage.completion_tokens_details?.reasoning_tokens` | `usage.completion_tokens_details.reasoning_tokens` |
+| Dot product (attention) | `a.reduce((sum, x, i) => sum + x * b[i], 0)` | `sum(x * y for x, y in zip(a, b))` |
 
-> ⚠️ **Naming trap you'll hit all week.** The raw provider SDKs use `snake_case` in *both*
+> ⚠️ **Naming trap you'll meet all week.** The raw provider SDKs use `snake_case` in *both*
 > languages (`max_tokens`), because that's what the HTTP API uses. But **LangChain JS** uses
 > `camelCase` (`maxTokens`). So in JS you'll write `max_tokens` today and `maxTokens` on Day 04.
 > That's not a typo — it's two different layers.
@@ -50,20 +124,23 @@ it matches the code you read there. Use your browser's find (Ctrl/Cmd+F) on eith
 | Counting votes | `{}` + manual increment | `collections.Counter` |
 | JSON | `JSON.parse` / `JSON.stringify` | `json.loads` / `json.dumps` |
 | Spread kwargs | `...rest` | `**rest` |
+| Reasoning text (raw SDK) | `msg.reasoning` | `msg.reasoning` |
 
-### Day 03 — [JS & Python Essentials for AI · Why LangChain Exists](../week-01-foundations/day-03-js-python-essentials-and-why-langchain.md)
+### Day 03 — [Choosing a Model · Why LangChain Exists](../week-01-foundations/day-03-choosing-a-model-and-why-langchain.md)
 
-| | JavaScript | Python |
+| Concept | JavaScript | Python |
 |---|---|---|
-| Sync option | ❌ none — always async | ✅ `invoke` (sync) and `ainvoke` (async) |
-| Parallel | `Promise.all([...])` | `asyncio.gather(*tasks)` |
-| Tolerant parallel | `Promise.allSettled` | `gather(..., return_exceptions=True)` |
-| Timing | `console.time` / `timeEnd` | `time.time()` deltas |
-| Spread into call | `f(...args)` | `f(*args)` |
-| Yield many | `for (const p of parts) yield p` | `yield from parts` |
-| Schema errors | `result.error.issues` | `e.errors()` |
-| Schema → dict | `schema.parse(x)` | `Model.model_validate(x)` |
-| Method names | `withStructuredOutput`, `withRetry` | `with_structured_output`, `with_retry` |
+| a price table | object of objects | dict of dicts |
+| big numbers readable | `1_000_000` | `1_000_000` |
+| money to 6 places | `one.toFixed(6)` | `f"{one:.6f}"` |
+| pad a column | `str.padEnd(16)` | `f"{s:<16}"` |
+| precise timer | `performance.now()` (ms) | `time.perf_counter()` (s — × 1000 for ms) |
+| median | sort, take the middle | `statistics.median(times)` |
+| a fake model | object with `async invoke()` | class with `invoke()` |
+| strip trailing dots | `s.replace(/[.!]+$/, "")` | `s.rstrip(".!")` |
+| structured output | `.withStructuredOutput(Zod)` | `.with_structured_output(Pydantic)` |
+| retry / fallback | `.withRetry({ stopAfterAttempt })` / `.withFallbacks([...])` | `.with_retry(stop_after_attempt=)` / `.with_fallbacks([...])` |
+| sync option | ❌ none — always async | ✅ `invoke` (sync) and `ainvoke` (async) |
 
 ### Day 04 — [LangChain Models: invoke, stream, batch & Message Types](../week-01-foundations/day-04-langchain-models.md)
 
@@ -75,8 +152,13 @@ it matches the code you read there. Use your browser's find (Ctrl/Cmd+F) on eith
 | Batch concurrency | `{ maxConcurrency: 2 }` | `config={"max_concurrency": 2}` |
 | Message import | `from "@langchain/core/messages"` | `from langchain_core.messages import ...` |
 | Trimming | `trimMessages(msgs, {...})` | `trim_messages(msgs, ...)` |
+| Token counter (an estimate either way) | `tokenCounter: model` (GPT-2's tokenizer) | `token_counter=count_tokens_approximately` |
 | Text accessor | `res.text` | `res.content` (or `res.text` / `res.text()`) |
 | Async variants | none — always async | `ainvoke`, `astream`, `abatch` |
+| Reasoning effort | `reasoningEffort: "low"` | `reasoning_effort="low"` |
+| Hidden reasoning (Groq) | not exposed | `additional_kwargs["reasoning_content"]`, `usage_metadata["output_token_details"]["reasoning"]` |
+| Streamed usage (Groq) | `response_metadata.usage` — `usage_metadata` is missing (§3.6) | `usage_metadata`, as normal |
+| Model chosen per call | `initChatModel("openai/gpt-oss-120b", { modelProvider: "groq", configurableFields: ["model"] })`, then `{ model: "openai/gpt-oss-20b" }` | `init_chat_model(configurable_fields=["model"])`, then `{"model": "groq:openai/gpt-oss-20b"}` |
 
 ### Day 05 — [Prompts & Templates](../week-01-foundations/day-05-prompts-and-templates.md)
 
@@ -101,6 +183,7 @@ it matches the code you read there. Use your browser's find (Ctrl/Cmd+F) on eith
 | Schema library | Zod | Pydantic |
 | String parser | `StringOutputParser` | `StrOutputParser` ⚠️ |
 | Method | `withStructuredOutput(S)` | `with_structured_output(S)` |
+| JSON schema mode | `{ method: "jsonSchema" }` (always strict) | `method="json_schema", strict=True` |
 | Raw included | `{ includeRaw: true }` → `{raw, parsed}` | `include_raw=True` → `{"raw", "parsed"}` |
 | Return type | plain object | Pydantic model instance (use `.model_dump()` for a dict) |
 | Field description | `.describe("...")` | `Field(description="...")` |
@@ -162,7 +245,7 @@ it matches the code you read there. Use your browser's find (Ctrl/Cmd+F) on eith
 | | JavaScript | Python |
 |---|---|---|
 | Ollama embeddings | `new OllamaEmbeddings({ model })` | `OllamaEmbeddings(model=...)` |
-| Google embeddings | `model: "text-embedding-004"` | `model="models/text-embedding-004"` ⚠️ prefix |
+| Google embeddings | `model: "gemini-embedding-2"` | `model="models/gemini-embedding-2"` |
 | Query | `await embeddings.embedQuery(s)` | `embeddings.embed_query(s)` |
 | Documents | `await embeddings.embedDocuments([...])` | `embeddings.embed_documents([...])` |
 | Cache class | `@langchain/classic/embeddings/cache_backed` | `langchain_classic.embeddings` |
@@ -170,9 +253,11 @@ it matches the code you read there. Use your browser's find (Ctrl/Cmd+F) on eith
 | Byte store | `InMemoryStore` (`@langchain/classic/storage/in_memory`) | `InMemoryByteStore` (`langchain_core.stores`) |
 | Vector maths | manual loops (or a lib) | **numpy** — use it |
 
-> ⚠️ **Google model-name gotcha:** Python needs the `models/` prefix
-> (`"models/text-embedding-004"`), JS does not (`"text-embedding-004"`). This trips people up
-> constantly when porting code between the two.
+> 📦 **The `models/` prefix.** Older versions of `langchain-google-genai` needed it in Python
+> (`"models/..."`) and older JS did not, which tripped people up when porting code. With the
+> current packages both spellings work: we measured `"gemini-embedding-2"` and
+> `"models/gemini-embedding-2"` in Python 4.4.0 (both 3072 dims), and the JS class strips the
+> prefix itself. This course keeps `models/` in Python so the code also runs on older versions.
 
 ### Day 11 — [Vector Databases: Indexes, Filtering & Hybrid Search](../week-02-data-embeddings-and-rag/day-11-vector-databases.md)
 
@@ -286,10 +371,10 @@ it matches the code you read there. Use your browser's find (Ctrl/Cmd+F) on eith
 | recursion cap | `{ recursionLimit: 50 }` | `{"recursion_limit": 50}` |
 | diagram | `(await app.getGraphAsync()).drawMermaid()` | `app.get_graph().draw_mermaid()` |
 
-Chaining differs slightly too: JS `.addNode()` returns the builder so you can chain the whole
-thing fluently. Python's methods return the builder as well and *can* be chained, but the
-idiomatic style is one statement per line — that's what the docs use and what your reviewers
-will expect.
+Chaining differs slightly too. JS `.addNode()` returns the builder, so you can chain every call
+into one statement. Python's methods return the builder as well, so they *can* be chained. But
+the usual Python style is one statement per line. That's what the docs use, and what your
+reviewers will expect.
 
 ### Day 18 — [State & Reducers: What Goes Where](../week-03-tools-agents-and-langgraph/day-18-state-and-reducers.md)
 
@@ -402,7 +487,7 @@ will expect.
 
 | Concept | JavaScript | Python |
 |---|---|---|
-| client retries | `new ChatGroq({ maxRetries })` — default **6** | `ChatGroq(max_retries=...)` — default **2** |
+| client retries | `new ChatGroq({ maxRetries })` — default **6**, but a Groq 429 is never retried | `ChatGroq(max_retries=...)` — default **2**, 429s included (waits for `retry-after`) |
 | client timeout | call option `{ timeout: ms }` → `DOMException` | `ChatGroq(request_timeout=seconds)` |
 | rate limiter | hand-rolled / library | `InMemoryRateLimiter` → `rate_limiter=` |
 | runnable retry | `.withRetry({ stopAfterAttempt })` | `.with_retry(stop_after_attempt=...)` |
@@ -475,3 +560,248 @@ will expect.
 | background run | `client.runs.create(...)` + `client.runs.join(...)` | `client.runs.create(...)` + `client.runs.join(...)` |
 | background task in-process | a promise kept in a `Set` | `asyncio.create_task` kept in a `set` |
 | graceful shutdown | `SIGTERM` → `server.close` → drain | lifespan exit → `asyncio.wait(tasks)` |
+
+
+## Week 5 — The Model Layer
+
+### Day 29 — [Open & Local Models: Run AI on Your Own Machine](../week-05-the-model-layer/day-29-open-and-local-models.md)
+
+| Task | JavaScript | Python |
+|---|---|---|
+| Install the runner | `npm i @huggingface/transformers` | `pip install torch transformers` |
+| Weight format used | ONNX (`onnx/*.onnx`) | safetensors (`model.safetensors`) |
+| Load a model | `await pipeline("text-generation", id, { dtype: "q4" })` | `AutoModelForCausalLM.from_pretrained(id, dtype=...)` |
+| Choose precision | `dtype: "fp32" \| "fp16" \| "q8" \| "q4"` (picks a file) | `dtype=torch.float32 \| torch.bfloat16` (converts on load) |
+| Default precision on CPU | fp32 (and unknown strings fall back to fp32) | the model's own `torch_dtype` (bf16 here) |
+| Apply the chat template | pass `[{ role, content }]` to the pipeline | `tok.apply_chat_template(messages, add_generation_prompt=True)` |
+| Limit the answer | `max_new_tokens: 60` (pipeline default 256) | `max_new_tokens=60` (`generate()` default: 20 new tokens) |
+| Repeatable output | `do_sample: false` | `do_sample=False` |
+| LangChain chat model | your own `BaseChatModel` subclass (§4.3) | `ChatHuggingFace(llm=HuggingFacePipeline...)` |
+| Token counts | you fill `usage_metadata` yourself | `usage_metadata` is `None`; count with `chat.tokenizer` |
+| Strip the prompt from output | `generated_text.at(-1).content` | `return_full_text: False` |
+| Offline switch | `env.allowRemoteModels = false` | `HF_HUB_OFFLINE=1` before import |
+| Licence lookup | `fetch("https://huggingface.co/api/models/<id>")` → `cardData.license`, `gated` | `HfApi().model_info(id)` → `card_data.license`, `gated` |
+| Local server client | `new ChatOllama({ model })` | `ChatOllama(model=...)` |
+| Free memory | `await generator.dispose()` | `del model` |
+
+### Day 30 — [Inference & Serving: What Happens Between Request and Token](../week-05-the-model-layer/day-30-inference-and-serving.md)
+
+| Task | JavaScript | Python |
+|---|---|---|
+| Install the client | `npm i @langchain/openai` | `pip install langchain-openai` |
+| Point at your server | `configuration: { baseURL: "http://127.0.0.1:8030/v1" }` | `base_url="http://127.0.0.1:8030/v1"` |
+| Dummy key | `apiKey: "not-needed"` | `api_key="not-needed"` |
+| Answer length | `maxTokens: 40` | `max_tokens=40` |
+| Timeout unit | `timeout: 60_000` (milliseconds) | `timeout=60` (seconds) |
+| Default retries | `maxRetries: 6` → 93 s on a dead server | `max_retries=None` → openai default 2 → 7.4 s |
+| Fail fast | `maxRetries: 0` | `max_retries=0` |
+| Timeout error | `TimeoutError: Request timed out.` | `OpenAITimeoutError: Request timed out.` |
+| Wrong path (404) | `Error: 404 {"detail":"Not Found"}` | `OpenAIModelNotFoundError: Error code: 404 - {'detail': 'Not Found'}` |
+| Server down | `Error: Connection error.` | `OpenAIConnectionError: Connection error.` |
+| Stream | `for await (const c of await llm.stream(q))` | `for c in llm.stream(q)` |
+| Join stream chunks | `full = full ? full.concat(c) : c` | `full = c if full is None else full + c` |
+| Token usage | `reply.usage_metadata` | `reply.usage_metadata` |
+| Finish reason | `reply.response_metadata.finish_reason` | `reply.response_metadata["finish_reason"]` |
+| Run 8 at once | `await Promise.all(qs.map(ask))` | `await asyncio.gather(*(ask(q) for q in qs))` |
+| Clock | `performance.now()` (ms) | `time.perf_counter()` (s) |
+| The server itself | — (Python only today) | FastAPI + transformers, §5.5 |
+
+### Day 31 — [Fine-Tuning: Teaching a Model New Habits](../week-05-the-model-layer/day-31-fine-tuning.md)
+
+| Job | JavaScript | Python |
+|---|---|---|
+| Validate a training row | Zod `z.object(...).superRefine(...)` | Pydantic `BaseModel` + `@model_validator` |
+| Exact keys only | `z.strictObject({...})` | `set(reply) == {"answer", "quiz"}` |
+| Compact JSON | `JSON.stringify(obj)` (no spaces by default) | `json.dumps(obj, separators=(",", ":"))` |
+| Write JSONL | `xs.map(JSON.stringify).join("\n")` | `f.write(e.model_dump_json() + "\n")` |
+| Count LoRA parameters | — (arithmetic: `r * (dIn + dOut)`) | `model.print_trainable_parameters()` |
+| Train the adapter | — (Python only) | `get_peft_model` + a PyTorch loop |
+| Save / load / merge | — | `save_pretrained` · `PeftModel.from_pretrained` · `merge_and_unload()` |
+| Call the tuned model | `new ChatOpenAI({ configuration: { baseURL } })` | `ChatOpenAI(base_url=...)` |
+| Check the habit | `Reply.safeParse(JSON.parse(text))` | `json.loads` + key check |
+
+### Day 32 — [Dataset Engineering: Good Data In, Good Model Out](../week-05-the-model-layer/day-32-dataset-engineering.md)
+
+| Task | JavaScript | Python |
+|---|---|---|
+| SHA-256 of text | `createHash("sha256").update(s, "utf8").digest("hex")` | `hashlib.sha256(s.encode("utf-8")).hexdigest()` |
+| Unicode NFKC | `s.normalize("NFKC")` | `unicodedata.normalize("NFKC", s)` |
+| Lower-case key (same result) | `toLowerCase()` | `.lower()` — not `.casefold()` |
+| Collapse whitespace | `s.replace(/\s+/g, " ").trim()` | `re.sub(r"\s+", " ", s).strip()` |
+| Words in any language | `t.match(/[\p{L}\p{N}]+/gu)` | `re.findall(r"[^\W_]+", t)` |
+| Shingles | loop + `text.slice(i, i + k)` (UTF-16 units) | `{text[i:i+k] for i in …}` (code points) |
+| Set intersection | loop with `b.has(x)` | `a & b` |
+| Regex test, many strings | `/…/i` with `.test` — **no `g`** | `re.compile(…, re.I).search` (no state) |
+| Replace all matches | `.replace(/…/g, fn)` | `rx.sub(fn, text)` |
+| Scripted model | `FakeListChatModel` from `@langchain/core/utils/testing` | `FakeListChatModel` from `langchain_core.language_models.fake_chat_models` |
+| Schema check | `z.object({...}).safeParse(item)` | `QA.model_validate(item)` + `except ValidationError` |
+| "Ends with ?" | `z.string().endsWith("?")` | `Field(pattern=r"\?$")` |
+| Bad JSON error | `Unexpected token 'S', "Sure! Here"... is not valid JSON` | `Expecting value: line 1 column 1 (char 0)` |
+| Missing field message | `Invalid input: expected string, received undefined` | `Field required` |
+| JSONL line | `JSON.stringify(r)` | `json.dumps(r, ensure_ascii=False, separators=(",", ":"))` |
+| Write text file | `writeFileSync(name, text)` (writes `\n` as is) | `open(name, "w", encoding="utf-8", newline="\n")` |
+| Keep insertion order, unique | `new Set(...)` | `dict.fromkeys(...)` |
+
+### Day 33 — [Multimodal: Images, Documents and Voice](../week-05-the-model-layer/day-33-multimodal.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| Standard image block | `{ type: "image", data, mimeType }` | `{"type": "image", "base64": ..., "mime_type": ...}` |
+| Normalised view of blocks | `msg.contentBlocks` | `msg.content_blocks` |
+| Old 0.3 block (`source_type`) | passed to your model **unchanged** | **converted** to v1 before your model sees it |
+| `data:` prefix inside the base64 field | sent to Gemini as-is | `binascii.Error` before sending |
+| Wrong MIME type | sent as-is | sent as-is |
+| Read the reply text | `res.text` | `res.text` |
+| Local VLM class | `AutoModelForImageTextToText` (Transformers.js) | `AutoModelForImageTextToText` (transformers) |
+| Image splitting option | `processor(prompt, images, { do_image_splitting })` | `AutoProcessor.from_pretrained(..., do_image_splitting=...)` |
+| Bytes → image | `RawImage.fromBlob(new Blob([buf]))` | `Image.open(io.BytesIO(raw))` |
+| Read a WAV file | `wavefile` package | standard `wave` + NumPy |
+| Resample to 16 kHz | `wav.toSampleRate(16000)` (built in) | needs `torchaudio` (else `ImportError`) |
+| Wrong-rate audio, undeclared | wrong words, no error | wrong words (a 25–40 s loop here), no error |
+| Image in a text-only chat template | base64 pasted into the prompt as text (§8 Ex 3) | `TypeError` (§8 Ex 3) |
+| Run a TTS process safely | `execFileSync(cmd, [args])` | `subprocess.run([cmd, *args], check=True)` |
+| Image generation result | `result.data[0].b64_json` | `result.data[0].b64_json` |
+
+### Day 34 — [Cost & Latency: Making It Cheap and Fast](../week-05-the-model-layer/day-34-cost-and-latency.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| Custom chat model | `class X extends BaseChatModel` + `_generate`, `_llmType()` | `class X(BaseChatModel)` + `_generate`, `_llm_type` property |
+| Custom streaming | `async *_streamResponseChunks(messages)` | `def _stream(self, messages, ...)` |
+| Model params in the cache key | `_identifyingParams()` | `_identifying_params` property |
+| Global cache | `cache: true` on each model (`InMemoryCache.global()`) | `set_llm_cache(InMemoryCache())` — every model |
+| Per-model cache | `new ChatX({ cache: new InMemoryCache() })` | `ChatX(cache=InMemoryCache())` |
+| Cache-hit `usage_metadata` | **all zeros** — and the first message is zeroed too | original counts **plus** `total_cost: 0` |
+| `ChatGroq` cache key | **no** model name, **no** temperature (1.3.1) | model name, temperature, every constructor setting |
+| Inspect the key (internal) | `m._getSerializedCacheKeyParametersForCall({})` | `m._get_llm_string()` |
+| Batch with a cap | `batch(xs, { maxConcurrency: 4 })` | `batch(xs, config={"max_concurrency": 4})` |
+| Batch default with no cap | all inputs at once (40 of 40 measured) | thread pool default (12 on 8 cores) |
+| Errors in a batch | `batch(xs, opts, { returnExceptions: true })` | `batch(xs, return_exceptions=True)` |
+| Output cap on `ChatGroq` | `maxTokens` → sent as `max_completion_tokens` | `max_tokens` → sent as `max_tokens` |
+| Cached-input tokens (if reported) | `usage_metadata.input_token_details?.cache_read` | `usage_metadata["input_token_details"]["cache_read"]` |
+| Timing | `performance.now()` (ms) | `time.perf_counter()` (s) |
+
+### Day 35 — [AI Security: Attack Your Own App Before Someone Else Does](../week-05-the-model-layer/day-35-ai-security.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| secure random token | `randomBytes(4).toString("hex")` | `secrets.token_hex(4)` |
+| tag characters in a regex | `/[\u{E0000}-\u{E007F}]/gu` (needs `u`) | `"[\U000E0000-\U000E007F]"` (normal string) |
+| make a tag character | `String.fromCodePoint(0xe0000 + c)` | `chr(0xE0000 + c)` |
+| host of a URL | `new URL(u).hostname` (throws on bad URL) | `urlparse(u).hostname` (may be `None`) |
+| strict email domain | `/^[^@\s]+@([^@\s]+)$/.exec(a)` | `re.fullmatch(r"[^@\s]+@([^@\s]+)", a)` |
+| HTML escape | hand-written map (or `sanitize-html` 2.18.0) | `.replace(...)` chain (or `html.escape`, `nh3` 0.3.7) |
+| custom tool guard | `createMiddleware({ wrapToolCall })` | `@wrap_tool_call` |
+| check / replace the answer | `createMiddleware({ afterModel })` | `@after_model` |
+| replace a message | return `AIMessage` with the **same `id`** | same |
+| approval middleware | `humanInTheLoopMiddleware({ interruptOn })` | `HumanInTheLoopMiddleware(interrupt_on=...)` |
+| skip approval for some calls | `when: (req) => …` on the tool's config | `"when": lambda req: …` |
+| read the pending action | `result.__interrupt__[0].value.actionRequests` | `result["__interrupt__"][0].value["action_requests"]` |
+| reject message reaches the model as | **exactly** your text | wrapped: ``User rejected the tool call for `name` with reason: …`` |
+| install-time code | npm `postinstall` (silent by default) | build scripts in source packages |
+| safe weight format | read safetensors by hand (JSON + typed array) | `safetensors` library; `torch.load` defaults to `weights_only=True` |
+
+
+## Week 6 — Advanced Agents, Product & Career
+
+### Day 36 — [Context Engineering & the Five Agent Patterns](../week-06-advanced-agents-product-and-career/day-36-context-engineering-and-agent-patterns.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| State with an adding counter | `round: Annotation({ reducer: (a, b) => a + b, default: () => 0 })` | `round: Annotated[int, operator.add]` (pass `"round": 0` at the start) |
+| Gate / router edge | `.addConditionalEdges("a", fn, ["b", END])` | `b.add_conditional_edges("a", fn, ["b", END])` |
+| Join after a fan-out | `.addEdge(["x", "y", "z"], "combine")` | `b.add_edge(["x", "y", "z"], "combine")` |
+| Orchestrator fan-out | `new Send("work", payload)` | `Send("work", payload)` |
+| Node named like a state key | **error**: "already being used as a state attribute" | accepted (measured) |
+| Unknown route label | `Error: Branch condition returned unknown or null destination` | `KeyError: 'history'` |
+| Default recursion limit | 25 | **10,007** (`LANGGRAPH_DEFAULT_RECURSION_LIMIT`) |
+| Agent | `createAgent({ model, tools, systemPrompt, middleware })` | `create_agent(model, tools, system_prompt=..., middleware=[...])` |
+| Clear old tool results | `contextEditingMiddleware({ edits: [new ClearToolUsesEdit({ trigger: { tokens: 500 }, keep: { messages: 1 } })] })` | `ContextEditingMiddleware(edits=[ClearToolUsesEdit(trigger=500, keep=1)])` |
+| Where clearing happens | written **into state** | only in the request sent to the model |
+| Message text / type | `m.text`, `m.type` | `m.text`, `m.type` |
+| To-do list | `todoListMiddleware()` from `langchain` | `TodoListMiddleware()` from `langchain.agents.middleware` |
+| Deep agent | `createDeepAgent({ model, systemPrompt, middleware })` from `deepagents` | `create_deep_agent(model=..., system_prompt=..., middleware=[...])` |
+
+### Day 37 — [Advanced Retrieval: Graphs, SQL and Agentic Search](../week-06-advanced-agents-product-and-career/day-37-advanced-retrieval.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| Built-in SQLite | `import { DatabaseSync } from "node:sqlite"` (Node 24) | `import sqlite3` |
+| Open read-only | `new DatabaseSync(path, { readOnly: true })` | `sqlite3.connect(f"file:{path}?mode=ro", uri=True)` |
+| Write on read-only | `Error: attempt to write a readonly database` | `OperationalError: attempt to write a readonly database` |
+| Authorizer | `db.setAuthorizer((action, a1, a2, dbName, view) => …)` | `db.set_authorizer(fn)` — same five arguments |
+| Constants | `constants.SQLITE_READ` (from `node:sqlite`) | `sqlite3.SQLITE_READ` |
+| Denied read | `Error: access to students.email is prohibited` | `DatabaseError: access to students.email is prohibited` |
+| Denied write | `Error: not authorized` | `DatabaseError: not authorized` |
+| Two statements in one string | `prepare()` **silently runs only the first** | `execute()` raises `ProgrammingError` |
+| Runs every statement | `db.exec()` — never for model SQL | `executescript()` — never for model SQL |
+| Lazy rows for a cap | `stmt.iterate(...params)` + `break` | `cur.fetchmany(n + 1)` |
+| Parameters | `prepare(sql).all(a, b)` | `execute(sql, (a, b))` |
+| Row shape | plain object `{ title, avg_score }` | `sqlite3.Row` → `dict(row)` |
+| `ROUND(59.0, 1)` | prints `59` | prints `59.0` |
+| Stop a long query | no progress handler in `node:sqlite` | `set_progress_handler(fn, n)` → `OperationalError: interrupted` |
+| Structured output validates? | **No** (base class) — call `Schema.parse()` | **Yes** — raises `ValidationError` |
+| Scripted model message for structured output | must be `AIMessageChunk` | `AIMessage` works |
+| Graph lookup "into a node" | `g.in(o, r)` | `g.into(o, r)` (`in` is a keyword) |
+
+### Day 38 — [Emerging Agents: Browsers, Computers and Agents That Talk to Agents](../week-06-advanced-agents-product-and-career/day-38-emerging-agents.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| install the browser | `npx playwright install chromium` | `playwright install chromium` |
+| start | `await chromium.launch()` | `sync_playwright().start().chromium.launch()` |
+| fresh profile | `await browser.newContext()` | `browser.new_context()` |
+| intercept every request | `await context.route("**/*", handler)` | `context.route("**/*", handler)` |
+| serve / block | `route.fulfill({ contentType, body })` / `route.abort("blockedbyclient")` | `route.fulfill(content_type=, body=)` / `route.abort("blockedbyclient")` |
+| accessibility tree | `await page.locator("body").ariaSnapshot()` | `page.locator("body").aria_snapshot()` |
+| find by label | `page.getByLabel("Email")` | `page.get_by_label("Email")` |
+| find by role + name | `page.getByRole("button", { name: "Register" })` | `page.get_by_role("button", name="Register")` |
+| pick an option | `.selectOption({ label }, { timeout })` | `.select_option(label=, timeout=)` |
+| timeout error | `locator.fill: Timeout 2000ms exceeded.` | `TimeoutError`: `Locator.fill: Timeout 2000ms exceeded.` |
+| blocked navigation | `page.goto: net::ERR_BLOCKED_BY_CLIENT at …` | `Page.goto: net::ERR_BLOCKED_BY_CLIENT at …` |
+| a tool | `tool(fn, { name, description, schema: z.object(...) })` | `@tool` + type hints + docstring |
+| scripted model | `class extends BaseChatModel` + `_generate` | `class (BaseChatModel)` + `_generate` → `ChatResult` |
+| A2A package | `@a2a-js/sdk` (+ `express`) | `a2a-sdk[http-server]` (+ `uvicorn`) |
+| A2A server | `DefaultRequestHandler(card, store, executor)` + `jsonRpcHandler` | `DefaultRequestHandler(agent_executor=, task_store=, agent_card=)` + `create_jsonrpc_routes` |
+| publish results | `bus.publish(AgentEvent.task / artifactUpdate / statusUpdate)` | `TaskUpdater.add_artifact` / `.update_status` |
+| A2A client | `new ClientFactory().createFromUrl(base)` | `A2ACardResolver` + `create_client(agent=card)` |
+| send | `await client.sendMessage({ message })` → a Task or Message | `async for event in client.send_message(req)` |
+| state name | `taskStateToJSON(state)` | `TaskState.Name(state)` |
+| skill frontmatter | regex with `\r?\n` | regex with `\n` (`read_text` normalises) |
+
+### Day 39 — [AI Product Engineering: Building Something People Trust and Use](../week-06-advanced-agents-product-and-career/day-39-ai-product-engineering.md)
+
+| Idea | JavaScript | Python |
+|---|---|---|
+| Choose the root run id | `invoke(input, { runId })` | `invoke(inp, {"run_id": run_id})` |
+| Id made by the library (none passed) | a string | a `uuid.UUID` object |
+| New UUID | `randomUUID()` from `node:crypto` | `str(uuid.uuid4())` |
+| SHA-256 hex | `createHash("sha256").update(s).digest("hex")` | `hashlib.sha256(s.encode()).hexdigest()` |
+| Hex → integer | `parseInt(hex.slice(0, 8), 16)` | `int(hex_digest[:8], 16)` |
+| Normal curve | no `erf`: approximation (error < 2 × 10⁻⁷) | `math.erf` (exact) |
+| p-value for z = 4.483 | `7.360e-6` | `7.353e-06` — both print `0.000007` at 6 decimals |
+| Seeded random numbers | Day 0C's `makeRng` | Day 0C's `make_rng` — identical sequence |
+| Tiny HTTP server | `http.createServer`, `listen(0, host, cb)` | `ThreadingHTTPServer`, `BaseHTTPRequestHandler` |
+| 4xx reply in the client | `fetch` resolves; read `res.status` | `urllib` raises `HTTPError`; read `err.code` |
+| Validate a thumb | `v === 1 \|\| v === -1` (a `true` fails) | needs `not isinstance(v, bool)` (`True == 1`) |
+| JSON `4.0` as a rating | parsed as `4`, accepted | parsed as `4.0` (a float), rejected by `isinstance(v, int)` |
+| Append a JSONL line | `appendFileSync(path, line)` | `open(path, "a").write(line)` |
+| LangSmith feedback | `client.createFeedback(runId, key, { score })` | `client.create_feedback(run_id, key=…, score=…)` |
+| Peeking simulation time (measured) | about 1 s | about 9 s |
+
+### Day 40 — [Final Capstone & Career: Ship It, Prove It, Get Hired](../week-06-advanced-agents-product-and-career/day-40-final-capstone-and-career.md)
+
+| Concept | JavaScript | Python |
+|---|---|---|
+| A custom chat model | `class X extends BaseChatModel`, `_generate` returns `{ generations: [{ message, text }] }` | `class X(BaseChatModel)`, `_generate` returns `ChatResult(generations=[ChatGeneration(message=...)])` |
+| Fields on the model | plain properties set in the constructor | Pydantic fields: `ms_per_call: float = 40` |
+| Per-request data in a node | second argument: `(state, config) => config.configurable.route` | a `config: RunnableConfig` parameter: `config["configurable"]["route"]` |
+| Where a `Command` node can go | `{ ends: ["agent", "tools"] }` | `-> Command[Literal["agent", "tools"]]` |
+| The paused payload | `out.__interrupt__[0].value` | `out["__interrupt__"][0].value` |
+| Step cap | `recursionLimit: 10` | `"recursion_limit": 10` |
+| A tool | `tool(fn, { name, description, schema: z.object(...) })` | `@tool` with a docstring and type hints |
+| Wall-clock timing | `performance.now()` (ms) | `time.perf_counter()` (seconds × 1000) |
+| Tokens from a tool call | `JSON.stringify(tool_calls)` | `json.dumps(tool_calls, separators=(",", ":"))` |
+| Run only when called directly | `import.meta.url === pathToFileURL(process.argv[1]).href` | `if __name__ == "__main__":` |
+| Fail the CI step | `process.exitCode = 1` | `sys.exit(1)` |
+| Printing $0.0008955 to 6 places | `0.000895` | `0.000896` |

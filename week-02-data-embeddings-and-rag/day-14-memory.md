@@ -2,12 +2,25 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 13](day-13-advanced-rag.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** every memory strategy — buffer, window, summary, token-buffer, entity,
-vector — what each costs, and **how memory actually works in modern LangChain** now that the
-`Memory` classes are gone.
+**Today you learn:** A model forgets everything between calls, and on Day 04 trimming the
+history made you choose between low cost and good recall. Today you learn the main memory
+strategies and what each one costs. You also learn **how memory actually works in modern
+LangChain**, now that the old `Memory` classes are gone.
 
 Then you build StudyBuddy v3, which remembers you across sessions *and* answers from your
 documents.
+
+> 📖 **Words you'll meet today**
+>
+> - **Stateless** — the model keeps nothing between calls; each request starts from zero.
+> - **Memory** — any strategy for deciding which past information to send with the next request.
+> - **Context engineering** — deciding everything that goes into the model's context window.
+>   Memory is one part of it.
+> - **Buffer / window** — send the whole history (buffer), or only the last few messages (window).
+> - **Summary memory** — older turns are compressed into a short running summary by a model call.
+> - **Fact (entity) memory** — short, structured facts about the user, such as "prefers Python".
+> - **Vector memory** — past conversation turns are embedded and searched, like RAG over chats.
+> - **Checkpointer** — a LangGraph part that saves conversation state, like a save file in a game.
 
 ---
 
@@ -125,6 +138,9 @@ Short and mid term live in the prompt. Long term is a **database row**, not a me
 
 ### 3.1 What actually changed in LangChain 1.x
 
+> 💬 **In plain words:** LangChain no longer keeps memory for you inside a hidden object. You
+> store the history yourself, and you choose what goes into each prompt.
+
 This is the part interviewers ask about, and the part most tutorials get wrong.
 
 **The old way (0.x):**
@@ -135,12 +151,12 @@ chain = ConversationChain(llm=model, memory=memory)
 chain.predict(input="hi")          # memory updated implicitly
 ```
 
-The `Memory` classes were **stateful objects that mutated themselves** inside a chain. Three
-problems killed them:
+The `Memory` classes were **stateful objects that mutated themselves** inside a chain: they
+quietly changed their own contents each time the chain ran. Three problems killed them:
 
 1. **Hidden state.** You couldn't tell what was in the prompt without inspecting the object.
-2. **Not thread-safe.** One memory instance shared across concurrent requests interleaved
-   conversations — a real bug people shipped.
+2. **Not thread-safe.** Requests often run at the same time. One memory instance shared by
+   those requests mixed their conversations together. This was a real bug that people shipped.
 3. **Not persistent.** Restart the process and every conversation vanished.
 
 **The modern way** splits it into three explicit pieces:
@@ -159,43 +175,55 @@ answer = (prompt | model).invoke({"history": trimmed, "input": text})
 save_history(session_id, history + [HumanMessage(text), AIMessage(answer)])
 ```
 
-More lines, but you can see exactly what's in the prompt, it's safe under concurrency, and
-persistence is your choice.
+It takes more lines. In return, you can see exactly what's in the prompt, it's safe when many
+requests run at once, and saving the history is your choice.
 
 > 🚨 **The 1.x reality:** the legacy `Memory` classes moved to `langchain-classic` /
 > `@langchain/classic` alongside the legacy chains. `ConversationBufferMemory`,
-> `ConversationSummaryMemory` and friends still exist there for migration, but **the intended
-> path for persistent conversational state is LangGraph checkpointers** (Day 20). Today you build
-> the mechanisms by hand so the checkpointer isn't magic when you meet it.
+> `ConversationSummaryMemory` and similar classes still exist there to help old code migrate.
+> But **the intended path for persistent conversational state is LangGraph checkpointers**
+> (Day 20). Today you build the mechanisms by hand, so the checkpointer isn't magic when you
+> meet it.
 
 ### 3.2 Buffer and window
+
+> 💬 **In plain words:** Sending the whole history gets expensive fast. Sending only the last few
+> messages is cheap, but everything older is forgotten.
 
 ```js
 const buffer = history;                                    // everything
 const window = [system, ...history.slice(-6)];             // last 6
 ```
 
-Cost of buffer over a conversation is O(n²) — turn *n* re-sends all *n-1* previous turns.
-That's Day 01's lesson, and it's why unbounded buffer is only viable for short interactions.
+The cost of a buffer over a conversation is O(n²): the total grows with the square of the
+number of turns. That's because turn *n* re-sends all *n-1* previous turns. This is Day 01's
+lesson, and it's why an unbounded buffer only works for short conversations.
 
 ### 3.3 Token buffer — `trimMessages`
+
+> 💬 **In plain words:** Keep as many recent messages as fit a fixed token budget. Set it up so
+> the trimmed history still starts in a valid place, or the provider may reject it.
 
 ```js
 await trimMessages(messages, {
   maxTokens: 800,
   strategy: "last",         // keep the most RECENT (vs "first")
-  tokenCounter: model,      // accurate counting via the model's tokenizer
+  tokenCounter: model,      // an estimate: GPT-2's tokenizer (Day 04 §5.6)
   includeSystem: true,      // never drop the system message
   startOn: "human",         // a valid history starts on a human turn
   allowPartial: false,      // don't cut a message in half
 });
 ```
 
-**`startOn: "human"` matters more than it looks.** If trimming leaves a dangling `ToolMessage` or
-starts on an AI turn, some providers reject the request outright. This one option prevents a
-whole class of 400 errors.
+**`startOn: "human"` matters more than it looks.** Trimming can leave a dangling `ToolMessage`
+(one whose matching AI request was cut off), or start the history on an AI turn. Some providers
+reject such a request outright. This one option prevents a whole class of 400 ("bad request")
+errors.
 
 ### 3.4 Summary memory
+
+> 💬 **In plain words:** A cheap model call rewrites old turns as a short summary. You keep the
+> gist for few tokens, but some detail is lost each time.
 
 Compress old turns into a paragraph:
 
@@ -210,12 +238,16 @@ Two flavours:
 
 - **Recompute** — summarise all old turns each time. Accurate, expensive.
 - **Progressive** — feed the *existing summary* plus the new turns, produce an updated summary.
-  Cheap, but drifts over many iterations (each rewrite is lossy — Day 08's compression lesson).
+  Cheap, but it drifts away from what was said over many iterations. Each rewrite is lossy (it
+  drops some detail) — Day 08's compression lesson.
 
 **Summary + buffer** is the practical default: a summary of old turns *plus* the last few
-verbatim. Recent detail stays exact; distant context becomes gist.
+verbatim (word for word). Recent detail stays exact. Distant context becomes gist.
 
 ### 3.5 Entity / fact memory
+
+> 💬 **In plain words:** Store key facts about the user as named fields. When a fact changes,
+> replace the old value instead of adding a second one.
 
 Instead of prose, extract **structured facts**:
 
@@ -234,9 +266,13 @@ sessions as a database row.
 
 The hard part is **updating** rather than appending. If the user says "actually I've switched to
 Python", you must *replace* `prefers_language`, not accumulate contradictions. That's a merge
-policy decision, and it's where naive fact memory fails.
+policy decision — a rule for how new facts combine with old ones — and it's where naive fact
+memory fails.
 
 ### 3.6 Vector memory — RAG over your own conversations
+
+> 💬 **In plain words:** Search your past conversations the way RAG searches documents. Only the
+> few relevant old exchanges go into the prompt.
 
 Embed each turn (or each summary), store it, and retrieve the relevant ones when the user
 references something old.
@@ -252,9 +288,12 @@ Constant cost regardless of history length. The trade-off is that retrieval can 
 a full history would have carried implicitly.
 
 **Every technique from Days 10–13 applies here** — chunking, hybrid search, reranking. Memory
-retrieval is RAG with a different corpus.
+retrieval is RAG with a different corpus (the collection of text you search).
 
 ### 3.7 Choosing
+
+> 💬 **In plain words:** Short chats can send everything. Long or repeated chats need a mix: a
+> summary, stored facts, and search over old conversations.
 
 | Situation | Use |
 |---|---|
@@ -282,7 +321,7 @@ import { ChatGroq } from "@langchain/groq";
 import { SystemMessage, HumanMessage, AIMessage, trimMessages }
   from "@langchain/core/messages";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const SYSTEM = new SystemMessage("You are a concise assistant. One short sentence per answer.");
 
@@ -343,8 +382,8 @@ import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 
-const fast = new ChatGroq({ model: "llama-3.1-8b-instant", temperature: 0 });
-const smart = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.3 });
+const fast = new ChatGroq({ model: "openai/gpt-oss-20b", temperature: 0 });
+const smart = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.3 });
 
 class SummaryBufferMemory {
   constructor({ keepRecent = 4, summariseAfter = 6 } = {}) {
@@ -434,7 +473,7 @@ import "dotenv/config";
 import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 
-const fast = new ChatGroq({ model: "llama-3.1-8b-instant", temperature: 0 });
+const fast = new ChatGroq({ model: "openai/gpt-oss-20b", temperature: 0 });
 
 const FactUpdate = z.object({
   reasoning: z.string().describe("What you learned. Write this first."),
@@ -454,12 +493,13 @@ class FactMemory {
     const known = Object.entries(this.facts)
       .map(([k, v]) => `${k}: ${v}`).join("\n") || "(nothing known yet)";
 
-    const { updates, reasoning } = await fast.withStructuredOutput(FactUpdate).invoke(
+    const { updates, reasoning } = await fast
+      .withStructuredOutput(FactUpdate, { method: "jsonSchema" }).invoke(
       `Extract durable facts about the user from their message.\n\n` +
       `Already known:\n${known}\n\n` +
       `New message: "${userMessage}"\n\n` +
-      `Only report facts worth remembering long-term (preferences, identity, ongoing " +
-      "projects, constraints). Ignore transient questions.\n` +
+      `Only report facts worth remembering long-term (preferences, identity, ongoing ` +
+      `projects, constraints). Ignore transient questions.\n` +
       `If the user CONTRADICTS something known, use "set" to replace it.`
     );
 
@@ -507,8 +547,18 @@ for (const msg of MESSAGES) {
 console.log(`\n${"─".repeat(64)}\nWHAT I KNOW ABOUT YOU:\n${memory.render()}`);
 ```
 
-Watch the contradiction turn: `preferred_language` should be **replaced**, not appended, so the
-final state says Python and not "JavaScript, Python".
+Watch the contradiction turn: the language fact should be **replaced**, not appended, so the
+final state says Python and not "JavaScript, Python". In our run with `openai/gpt-oss-20b`
+(October 2026, JS and Python) the model named the key `primary_language`. It went from
+`javascript` to `python` with a `SET`, and the France question learned nothing. Your key names
+will differ. Notice one thing it did *not* do: `learning_language: python` stayed, although it
+is now out of date. Fact memory is only as tidy as the extractor.
+
+> ⚠️ The extractor uses `{ method: "jsonSchema" }` (Python: `method="json_schema",
+> strict=True`). Groq's default tool-calling mode can fail with `400 Tool choice is required,
+> but model did not call a tool` when a GPT-OSS model answers in plain text instead. See
+> [Day 13 §4.1](day-13-advanced-rag.md) and
+> [Day 06](../week-01-foundations/day-06-output-parsers-structured-output.md).
 
 ### 4.4 Vector memory — retrieve old conversations
 
@@ -658,9 +708,10 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import (
     SystemMessage, HumanMessage, AIMessage, trim_messages,
 )
+from langchain_core.messages.utils import count_tokens_approximately
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 SYSTEM = SystemMessage("You are a concise assistant. One short sentence per answer.")
 
@@ -668,7 +719,8 @@ STRATEGIES = {
     "buffer": lambda msgs: msgs,
     "window": lambda msgs: [msgs[0]] + msgs[1:][-6:],
     "token_trim": lambda msgs: trim_messages(
-        msgs, max_tokens=400, strategy="last", token_counter=model,
+        msgs, max_tokens=400, strategy="last",
+        token_counter=count_tokens_approximately,   # ~4 characters per token, no download
         include_system=True, start_on="human",
     ),
 }
@@ -701,6 +753,15 @@ for name, strategy in STRATEGIES.items():
           f'"{last[:60]}"')
 ```
 
+> ⚠️ **The two languages count differently, so they keep different amounts.** Python's
+> `count_tokens_approximately` needs no tokenizer download (Day 04 §5.6 explains why we avoid
+> `token_counter=model`). It counts about four characters per token, plus the role name and 3
+> tokens per message. JavaScript's `tokenCounter: model` runs GPT-2's tokenizer over the message
+> text only. We trimmed the same 61-message history (a system message plus 30 short
+> question-and-answer pairs) with both. At a 400-token budget, JavaScript kept 33 messages and
+> Python kept 21. At 800, JavaScript kept all 61 and Python kept 45. Both are estimates. Pick a
+> budget by testing in the language you ship, and read the real count from `usage_metadata`.
+
 ### 5.2 Summary + buffer — the practical default
 
 ```python
@@ -712,8 +773,8 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 
 load_dotenv()
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 
 class SummaryBufferMemory:
     def __init__(self, keep_recent=4, summarise_after=6):
@@ -790,6 +851,12 @@ print(f"SUMMARY ({len(memory.summary)} chars):\n{memory.summary}")
 print(f"\nverbatim recent: {len(memory.recent)} messages")
 ```
 
+We ran this in Python in October 2026, with GPT-OSS 20B summarising and GPT-OSS 120B
+answering. The last question was answered from the summary: *"Your name is Wasif, you chose
+800‑character chunks, and you're using Chroma as the vector store."* By then the summary held
+1,178 characters of bullet points, and 6 messages were kept word for word. Your wording will
+differ.
+
 ### 5.3 Entity / fact memory with proper updates
 
 ```python
@@ -800,7 +867,7 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 
 load_dotenv()
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
 
 class FactChange(BaseModel):
     key: str = Field(description="snake_case fact key, e.g. 'preferred_language'")
@@ -822,7 +889,7 @@ class FactMemory:
     def observe(self, user_message):
         known = "\n".join(f"{k}: {v}" for k, v in self.facts.items()) or "(nothing known yet)"
 
-        result = fast.with_structured_output(FactUpdate).invoke(
+        result = fast.with_structured_output(FactUpdate, method="json_schema", strict=True).invoke(
             f"Extract durable facts about the user from their message.\n\n"
             f"Already known:\n{known}\n\n"
             f'New message: "{user_message}"\n\n'
@@ -1024,17 +1091,18 @@ Three concrete failures:
    was in the prompt without inspecting the object, and two chains sharing a memory interfered
    invisibly.
 
-2. **Concurrency bugs.** A single `memory` instance at module scope, shared across web requests,
-   interleaved different users' conversations. This shipped to production more than once. The
-   fix required a memory-per-session registry — which is state management you were doing anyway,
-   just implicitly.
+2. **Concurrency bugs.** A single `memory` instance at module scope (one global object) was
+   shared across web requests. It mixed different users' conversations together. This shipped
+   to production more than once. The fix needed a registry with one memory per session. That is
+   state management you were doing anyway, just hidden.
 
-3. **No persistence story.** Restart the process, lose everything. Bolting on persistence meant
-   subclassing.
+3. **No persistence story.** Restart the process, lose everything. Adding persistence meant
+   writing a subclass.
 
 **The modern answer separates the three concerns** — storage (yours), injection
-(`MessagesPlaceholder`), bounding (`trimMessages` or your own summariser). More explicit, safe
-under concurrency, and persistence becomes a choice rather than a fight.
+(`MessagesPlaceholder`), bounding (`trimMessages` or your own summariser). It is more explicit
+and safe when many requests run at once. Saving history becomes a simple choice rather than a
+fight with the framework.
 
 This is the same design lesson as Day 08's chains: **abstractions should hide implementation, not
 control flow or state.**
@@ -1054,7 +1122,9 @@ control flow or state.**
         └──────────────────────────────────▶ turns
 ```
 
-For a 50-turn conversation with ~200 tokens per turn:
+For a 50-turn conversation with ~200 tokens per turn (the buffer row is plain arithmetic:
+200 × (1 + 2 + … + 50) = 200 × 1,275 ≈ 255,000; the other rows are rough estimates that depend
+on window size, summary length, `k` and chunk size — measure your own):
 
 | Strategy | Total input tokens |
 |---|---|
@@ -1092,7 +1162,7 @@ structured facts are for things that must not drift.
 ### Where LangGraph checkpointers fit
 
 Everything you built today — history storage, trimming, summarising, persistence — is what a
-LangGraph **checkpointer** provides as infrastructure:
+LangGraph **checkpointer** provides as ready-made infrastructure. Here is how they map.
 
 | Today, by hand | LangGraph (Day 20) |
 |---|---|
@@ -1103,9 +1173,9 @@ LangGraph **checkpointer** provides as infrastructure:
 | — | Interrupt and resume mid-conversation |
 | Fact memory in a dict | `Store` — long-term memory across threads |
 
-Note the last row: LangGraph distinguishes the **checkpointer** (one thread's conversation state)
-from the **Store** (facts shared across all of a user's threads). That's exactly the short/mid
-versus long-term split from §2, made explicit in the framework.
+Note the last row. LangGraph separates the **checkpointer** (one thread's conversation state)
+from the **Store** (facts shared across all of a user's threads). That's exactly the split from
+§2 between short and mid term on one side and long term on the other, built into the framework.
 
 You've now built the mechanisms by hand, so none of that will be magic.
 
@@ -1125,9 +1195,9 @@ You've now built the mechanisms by hand, so none of that will be magic.
 | `RunnableWithMessageHistory` | 0.3-era history wrapper | LangGraph checkpointer |
 
 A frequent interview question is **"how has memory changed in LangChain?"** The strong answer
-names the *reasons*: hidden mutation, concurrency hazards and no persistence — and that the
-replacement makes storage, injection and bounding three separate explicit choices, with LangGraph
-checkpointers as the production path.
+names the *reasons*: hidden mutation, concurrency hazards and no persistence. It then explains
+that the replacement makes storage, injection and bounding three separate, explicit choices.
+LangGraph checkpointers are the production path.
 </details>
 
 ---
@@ -1143,15 +1213,15 @@ Cost is O(n²) over a conversation and eventually hits the context limit mid-cha
 
 **❌ Trimming without `startOn: "human"`**
 
-Trimming can leave a dangling tool message or start on an AI turn; some providers reject that
-with a 400.
+Trimming can leave a dangling tool message or start on an AI turn. Some providers reject that
+with a 400 error.
 ✅ `startOn: "human"`, `includeSystem: true`.
 
 ---
 
 **❌ A single memory object shared across users**
 
-The classic 0.x bug: module-scope memory interleaves different users' conversations.
+The classic 0.x bug: one module-scope memory mixes different users' conversations together.
 ✅ Key everything by session/user ID. This is *why* the framework stopped owning memory.
 
 ---
@@ -1180,8 +1250,8 @@ Most turns contain nothing durable. Running extraction on all of them wastes a c
 **❌ Letting the summary drift**
 
 Progressive summarisation is repeated lossy compression; specifics erode first.
-✅ Instruct preservation of facts/names/numbers, and keep critical values in structured fact
-memory instead of prose.
+✅ Tell the summariser to preserve facts, names and numbers. Keep critical values in structured
+fact memory instead of prose.
 
 ---
 
@@ -1220,10 +1290,11 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import (
     SystemMessage, HumanMessage, AIMessage, trim_messages,
 )
+from langchain_core.messages.utils import count_tokens_approximately
 
 load_dotenv()
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 SYSTEM = SystemMessage("You are a concise assistant. Answer in one short sentence.")
 
@@ -1301,7 +1372,8 @@ RESULTS = [
     run_simple(lambda m: m, "buffer"),
     run_simple(lambda m: [m[0]] + m[1:][-6:], "window(6)"),
     run_simple(lambda m: trim_messages(m, max_tokens=400, strategy="last",
-                                       token_counter=smart, include_system=True,
+                                       token_counter=count_tokens_approximately,
+                                       include_system=True,
                                        start_on="human"), "token_trim(400)"),
     run_summary_buffer("summary+buffer"),
 ]
@@ -1332,7 +1404,8 @@ const RESULTS = [
 ];
 ```
 
-**Typical output:**
+**Typical output** (your numbers will differ — the token counts are illustrative; the pattern of
+✅/❌ is the point):
 
 ```
 strategy         tokens  name (turn 1)       chunk size (turn 5)  deadline (turn 12)
@@ -1348,23 +1421,27 @@ That's exactly what a sliding window does — recency without history. Notice th
 failure, not a random one, which is what makes it dangerous: it works fine in a short demo and
 fails on real conversations.
 
-**Summary+buffer gets all three at half the tokens of buffer.** That ratio is why it's the
+**Summary+buffer gets all three at roughly half the tokens of buffer in this illustrative output.** That ratio is why it's the
 practical default.
 
-**Two caveats worth knowing.** Summary+buffer's advantage depends heavily on the folding prompt
-— drop "PRESERVE every name, number, date and decision" and the specifics erode within a few
-folds (§6's drift problem). And it costs extra *calls*, not just tokens: each fold is an LLM
-invocation, which is why the fold uses the cheap model.
+**Two caveats worth knowing.** First, summary+buffer's advantage depends heavily on the folding
+prompt. Drop "PRESERVE every name, number, date and decision" and the specifics erode within a
+few folds (§6's drift problem). Second, it costs extra *calls*, not just tokens. Each fold is an
+LLM invocation, which is why the fold uses the cheap model.
 </details>
 
 ---
 
 ### Exercise 2 — Fact memory with contradiction handling ●●●○○
 
-Extend the fact memory so it handles contradictions, confidence and staleness: each fact carries
-a confidence score and a timestamp; contradictions replace rather than append; low-confidence
-facts are re-confirmed rather than asserted. Test with a conversation containing two
-contradictions and one uncertain statement.
+Extend the fact memory so it handles contradictions, confidence and staleness (facts that are
+out of date):
+
+- Each fact carries a confidence score and a timestamp.
+- Contradictions replace rather than append.
+- Low-confidence facts are re-confirmed rather than asserted.
+
+Test with a conversation containing two contradictions and one uncertain statement.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1379,7 +1456,7 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 
 load_dotenv()
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
 
 class FactChange(BaseModel):
     key: str = Field(description="snake_case key, e.g. 'preferred_language'")
@@ -1406,7 +1483,7 @@ class FactMemory:
             f"{k}: {v['value']} (confidence {v['confidence']:.1f})"
             for k, v in self.facts.items()) or "(nothing known yet)"
 
-        result = fast.with_structured_output(FactUpdate).invoke(
+        result = fast.with_structured_output(FactUpdate, method="json_schema", strict=True).invoke(
             f"Extract durable facts about the user.\n\nAlready known:\n{known}\n\n"
             f'Message: "{message}"\n\n'
             "Only durable facts (identity, preferences, projects, constraints). "
@@ -1516,7 +1593,12 @@ if (u.contradicts && prev) {
 }
 ```
 
-**Expected behaviour:**
+**Expected behaviour** (illustrative — the ideal run, not a measured one). In our run with
+`openai/gpt-oss-20b` (Python, October 2026) the contradiction handling worked: *"switched
+entirely to Python"* became `REPLACE preferred_language = JavaScript → Python (conf 1.0)`, and the
+arithmetic question stored nothing. But the tentative first message was already treated as a
+move: `REPLACE location = Lahore → Karachi (conf 0.5)`. The low confidence was right; the
+replace was too eager. That is exactly the kind of case your eval set should hold.
 
 ```
 👤 I think I might be moving to Karachi soon, not sure yet.
@@ -1587,7 +1669,7 @@ from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_core.documents import Document
 
 load_dotenv()
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 DOCS = [
@@ -1628,7 +1710,7 @@ class EnrichedQuery(BaseModel):
 
 def enrich_query(question, facts):
     known = "\n".join(f"{k}: {v}" for k, v in facts.items())
-    return fast.with_structured_output(EnrichedQuery).invoke(
+    return fast.with_structured_output(EnrichedQuery, method="json_schema", strict=True).invoke(
         f"Known about the user:\n{known}\n\n"
         f'Question: "{question}"\n\n'
         "Rewrite the question as a document-search query, incorporating ONLY the user "
@@ -1673,7 +1755,7 @@ const EnrichedQuery = z.object({
 });
 
 const enrichQuery = (question, facts) =>
-  fast.withStructuredOutput(EnrichedQuery).invoke(
+  fast.withStructuredOutput(EnrichedQuery, { method: "jsonSchema" }).invoke(
     `Known about the user:\n${Object.entries(facts).map(([k, v]) => `${k}: ${v}`).join("\n")}\n\n` +
     `Question: "${question}"\n\n` +
     `Rewrite as a document-search query, incorporating ONLY relevant user facts. ` +
@@ -1681,7 +1763,10 @@ const enrichQuery = (question, facts) =>
   );
 ```
 
-**Expected output:**
+**Expected output** (illustrative — which documents come back depends on your embedding
+model). In our run with `openai/gpt-oss-20b` (Python, October 2026) the rate-limit question was
+enriched using `preferred_language, industry, current_project`. The France question used no
+facts and was left unchanged — the behaviour this exercise is about.
 
 ```
 ❓ how do I handle rate limits?
@@ -1708,9 +1793,9 @@ WITH memory:
    compliance document the user actually needs.
 
 2. **`usedFacts` is essential, not decorative.** It makes the enrichment auditable, and it lets
-   you verify the model isn't injecting irrelevant context. The "capital of France" case
-   returning an empty list is the behaviour to test for — over-eager enrichment would produce
-   "capital of France for Python fintech developers", which retrieves worse than the plain query.
+   you verify the model isn't injecting irrelevant context. Test for the "capital of France"
+   case returning an empty list. Over-eager enrichment would produce "capital of France for
+   Python fintech developers", which retrieves worse than the plain query.
 
 3. **This is Day 13's query transformation, with memory as the source.** Same mechanism as
    multi-query or HyDE; the novelty is *where the extra signal comes from*. Combining it with
@@ -1746,8 +1831,8 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 
 load_dotenv()
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.4)
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0.4)
 
 SESSION_DIR = Path("./.sessions")
 
@@ -1832,7 +1917,7 @@ def extract_facts(message, facts):
             description="key→value of NEW or CHANGED durable facts. Empty if none.")
 
     known = "\n".join(f"{k}: {v}" for k, v in facts.items()) or "(nothing)"
-    r = fast.with_structured_output(Facts).invoke(
+    r = fast.with_structured_output(Facts, method="json_schema", strict=True).invoke(
         f"Known:\n{known}\n\nMessage: \"{message}\"\n\n"
         "Extract durable facts (identity, preferences, projects). "
         "Ignore transient questions. Replace contradicted values.")
@@ -2029,8 +2114,8 @@ EMBEDDING_MODEL = "nomic-embed-text"
 DB_DIR = "./studybuddy_v3_db"
 SESSION_DIR = Path("./.studybuddy_sessions")
 
-fast = ChatGroq(model="llama-3.1-8b-instant", temperature=0)     # memory, rerank, rewrite
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)  # answering
+fast = ChatGroq(model="openai/gpt-oss-20b", temperature=0)      # memory, rerank, rewrite
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)  # answering
 embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
 
 store = Chroma(collection_name="studybuddy_v3", embedding_function=embeddings,
@@ -2116,7 +2201,7 @@ class Facts(BaseModel):
 
 def extract_facts(message, known):
     k = "\n".join(f"{a}: {b}" for a, b in known.items()) or "(nothing)"
-    return fast.with_structured_output(Facts).invoke(
+    return fast.with_structured_output(Facts, method="json_schema", strict=True).invoke(
         f"Known:\n{k}\n\nMessage: \"{message}\"\n\n"
         "Extract durable facts (identity, preferences, level, projects). "
         "Ignore transient questions.").updates
@@ -2154,7 +2239,7 @@ class Answer(BaseModel):
 def build_query(question, history, facts):
     f = "\n".join(f"{k}: {v}" for k, v in facts.items()) or "(nothing known)"
     h = "\n".join(f"{m.type}: {m.content[:100]}" for m in history[-4:]) or "(no history)"
-    return fast.with_structured_output(SearchQuery).invoke(
+    return fast.with_structured_output(SearchQuery, method="json_schema", strict=True).invoke(
         f"User facts:\n{f}\n\nRecent conversation:\n{h}\n\n"
         f'Question: "{question}"\n\n'
         "Produce a STANDALONE document-search query. Resolve pronouns and references from "
@@ -2167,7 +2252,7 @@ def retrieve_and_rerank(query, fetch_k=8, top_n=3):
         return candidates
     scored = []
     for d in candidates:
-        r = fast.with_structured_output(Relevance).invoke(
+        r = fast.with_structured_output(Relevance, method="json_schema", strict=True).invoke(
             f"Question: {query}\n\nDocument: {d.page_content}\n\nRelevance 0-10?")
         scored.append((d, r.score))
     return [d for d, _ in sorted(scored, key=lambda x: -x[1])[:top_n]]
@@ -2272,7 +2357,9 @@ def chat(session_id):
                     f"[{i}] ({d.metadata.get('source')}) {d.page_content}"
                     for i, d in enumerate(docs, 1))
 
-                result = (answer_prompt | smart.with_structured_output(Answer)).invoke({
+                answerer = answer_prompt | smart.with_structured_output(
+                    Answer, method="json_schema", strict=True)
+                result = answerer.invoke({
                     "facts": facts_str,
                     "summary": state["summary"] or "(none)",
                     "context": context, "recent": recent, "input": text,
@@ -2324,7 +2411,7 @@ if __name__ == "__main__":
 **JavaScript** — the distinctive integration points:
 ```js
 // 1. Memory-enriched, history-resolved, retrieval-gated query
-const sq = await fast.withStructuredOutput(SearchQuery).invoke(
+const sq = await fast.withStructuredOutput(SearchQuery, { method: "jsonSchema" }).invoke(
   `User facts:\n${factsStr}\n\nRecent:\n${historyStr}\n\nQuestion: "${text}"\n\n` +
   `Produce a STANDALONE search query. Resolve references. Add user context only if relevant. ` +
   `Set needsRetrieval=false for greetings.`);
@@ -2393,12 +2480,15 @@ Look at the `chat()` function. It's a `while` loop containing branches, try/exce
 updates, and conditional summarisation. You've now hand-written a state machine four times across
 Days 13–14: corrective RAG, self-RAG, the production pipeline, and this.
 
-Now try to add: *streaming* the answer while still verifying citations afterwards; *pausing* for
-the user to approve an expensive deep-search; *resuming* a conversation from three turns ago to
-try a different path; or letting the model *decide for itself* to search twice.
+Now try to add any of these:
 
-Each one means more flags, deeper nesting, and more state threaded by hand. That's not a failure
-of your code — it's LCEL reaching its limit. **Loops, persistent state, interrupts and
+- *streaming* the answer while still verifying citations afterwards.
+- *pausing* for the user to approve an expensive deep-search.
+- *resuming* a conversation from three turns ago to try a different path.
+- letting the model *decide for itself* to search twice.
+
+Each one means more flags, deeper nesting, and more state passed around by hand. That's not a
+failure of your code — it's LCEL reaching its limit. **Loops, persistent state, interrupts and
 time-travel are exactly what LangGraph provides as infrastructure.**
 
 Week 3 rebuilds this as a graph, and everything you hand-rolled becomes declarative.
@@ -2413,52 +2503,69 @@ Week 3 rebuilds this as a graph, and everything you hand-rolled becomes declarat
 <details>
 <summary><b>Q: Do LLMs have memory?</b></summary>
 
-No. Every API call is stateless — the model retains nothing between requests. Apparent memory is
-entirely the application re-sending previous messages as part of the input.
+No. Every API call is stateless — the model keeps nothing between requests. What looks like
+memory is just the app sending the old messages again as part of the input.
 
-So "memory" in an LLM framework always means a *strategy for deciding what to re-send* within a
-finite context budget: everything (buffer), the recent N (window), what fits a token budget
-(trim), a compressed summary, extracted facts, or retrieved relevant past turns.
+So "memory" in an LLM framework always means a *strategy for deciding what to re-send*. The
+context budget is finite, so you choose one of these:
+
+- everything (buffer);
+- the recent N messages (window);
+- what fits a token budget (trim);
+- a compressed summary;
+- extracted facts;
+- or retrieved relevant past turns.
+
+The industry name for the bigger job is **context engineering**: deciding everything that goes
+into the model's context window — instructions, history, retrieved documents, tool results and
+memory. Memory is one part of it. Day 36 covers context engineering in depth.
 </details>
 
 <details>
 <summary><b>Q: What are the main memory strategies?</b></summary>
 
-- **Buffer** — send everything. Perfect recall, but cost is O(n²) over a conversation and it
-  eventually exceeds the context window.
-- **Window** — send the last N messages. Bounded cost, hard forgetting at the boundary.
-- **Token buffer** — send as many recent messages as fit a token budget. Same forgetting,
-  predictable cost.
-- **Summary** — compress older turns into a running summary. Bounded and long-lived, but lossy.
-- **Summary + buffer** — summary of old turns plus recent turns verbatim. The practical default.
-- **Entity/fact memory** — extract structured facts. Tiny, persists across sessions, updatable.
-- **Vector memory** — embed past turns and retrieve the relevant ones. Constant cost regardless
-  of history length.
+- **Buffer** — send everything. Perfect recall, but cost is O(n²) over a chat, and in the end it
+  goes past the context window.
+- **Window** — send the last N messages. Capped cost, but sharp forgetting at the edge.
+- **Token buffer** — send as many recent messages as fit a token budget. Same forgetting, but
+  the cost is easy to predict.
+- **Summary** — compress older turns into a running summary. Capped and long-lived, but lossy.
+- **Summary + buffer** — a summary of old turns plus recent turns word for word. The practical
+  default.
+- **Entity/fact memory** — extract structured facts. Tiny, kept across sessions, and easy to
+  update.
+- **Vector memory** — embed past turns and fetch the relevant ones. The cost stays the same
+  however long the history is.
 
-Production systems usually layer three: recent verbatim, rolling summary, and durable facts.
+Real systems usually stack three: recent turns word for word, a rolling summary, and lasting
+facts.
 </details>
 
 <details>
 <summary><b>Q: What does `trimMessages` do?</b></summary>
 
-Bounds a message list to a token budget. Key options: `strategy` (keep first or last),
-`tokenCounter` (use the model's tokenizer for accuracy), `includeSystem` (never drop the system
-message), and `startOn: "human"` — which ensures the trimmed history begins on a valid turn.
+It bounds a message list to a token budget. The key options are:
 
-That last one prevents a real class of bug: trimming can otherwise leave a dangling tool message
-or start on an AI turn, which some providers reject with a 400.
+- `strategy` — keep the first or the last messages.
+- `tokenCounter` — how to count tokens. An estimate is enough for a budget: JS `tokenCounter:
+  model` (GPT-2's tokenizer for Groq), Python `count_tokens_approximately`.
+- `includeSystem` — never drop the system message.
+- `startOn: "human"` — make sure the trimmed history begins on a valid turn.
+
+That last one prevents a real class of bug. Without it, trimming can leave a dangling tool
+message or start on an AI turn, which some providers reject with a 400 error.
 </details>
 
 <details>
 <summary><b>Q: Difference between memory and RAG?</b></summary>
 
-The same retrieval mechanism over different corpora. RAG retrieves from **documents** — external
-knowledge the model never saw. Memory retrieves from **conversations** — what was previously said
-between this user and the system.
+They use the same search mechanism over different corpora (collections of text). RAG searches
+**documents** — outside knowledge the model never saw. Memory searches **conversations** — what
+this user and the system said before.
 
-"What's our refund policy?" is RAG. "What did I tell you last week?" is memory. They have
-different lifetimes, different privacy implications, and different failure modes, so keep them as
-separate retrievers and be explicit in the prompt about which context is which.
+"What's our refund policy?" is RAG. "What did I tell you last week?" is memory. They live for
+different lengths of time, carry different privacy risks, and fail in different ways. So keep
+them as separate retrievers, and say clearly in the prompt which context is which.
 </details>
 
 ### Intermediate
@@ -2466,72 +2573,83 @@ separate retrievers and be explicit in the prompt about which context is which.
 <details>
 <summary><b>Q: How has memory changed in modern LangChain?</b></summary>
 
-The 0.x `Memory` classes — `ConversationBufferMemory` and friends — were stateful objects that
-mutated themselves as a side effect of running a chain. Three problems ended that design:
-**hidden state** (you couldn't see what was in the prompt without inspecting the object),
-**concurrency bugs** (a module-scope memory shared across web requests interleaved different
-users' conversations — a bug that shipped to production), and **no persistence** (restart the
-process, lose everything).
+The 0.x `Memory` classes — `ConversationBufferMemory` and similar — were stateful objects. They
+changed themselves as a side effect of running a chain. Three problems ended that design:
 
-The modern approach separates three concerns explicitly: **storage** is yours (an array, a
-database row, or a LangGraph checkpointer), **injection** is `MessagesPlaceholder`, and
-**bounding** is `trimMessages` or a summarisation step you write. The legacy classes moved to
-`langchain-classic` for migration, and the intended production path for persistent conversational
-state is LangGraph checkpointers.
+- **Hidden state.** You couldn't see what was in the prompt without inspecting the object.
+- **Concurrency bugs.** A module-scope memory shared across web requests mixed different users'
+  conversations together. This bug shipped to production.
+- **No persistence.** Restart the process, lose everything.
 
-It's the same design lesson as the legacy chains: abstractions should hide implementation, not
-control flow or state.
+The modern approach splits the job into three clear parts:
+
+- **Storage** is yours: an array, a database row, or a LangGraph checkpointer.
+- **Injection** (putting history into the prompt) is `MessagesPlaceholder`.
+- **Bounding** (keeping it small) is `trimMessages` or a summary step you write.
+
+The legacy classes moved to `langchain-classic` for migration. For saved chat state in
+production, the intended path is LangGraph checkpointers.
+
+It's the same design lesson as the legacy chains: a good abstraction hides *how* a thing is done.
+It should not hide the order of steps or the state.
 </details>
 
 <details>
 <summary><b>Q: Why does summary memory degrade over long conversations?</b></summary>
 
-Progressive summarisation is repeated lossy compression. Each fold summarises *the previous
-summary* plus new turns, so a detail from turn 2 has been compressed four or five times by turn
-40. Specifics erode first — numbers, names, exact decisions — leaving increasingly generic prose.
-It's the same dilution as map-reduce over many levels.
+A progressive summary squeezes the text again and again, and each squeeze loses a little. Each
+fold summarises *the previous summary* plus new turns. So by turn 40, a detail from turn 2 has
+been compressed four or five times. Specifics wear away first — numbers, names, exact decisions.
+What is left grows more and more vague. It's the same loss as map-reduce over many levels.
 
-Mitigations: instruct the summariser explicitly to preserve names, numbers, dates and decisions;
-keep critical values in **structured fact memory** instead, where they're fields that can't be
-paraphrased away; and periodically re-summarise from the original transcript if you retain it.
+Fixes:
 
-That's the real argument for a layered design — prose summaries for gist, structured facts for
+- Tell the summariser clearly to keep names, numbers, dates and decisions.
+- Keep key values in **structured fact memory** instead. There they are fields, which can't be
+  paraphrased away.
+- Now and then, summarise again from the first transcript, if you keep it.
+
+That's the real case for a layered design. Prose summaries hold the gist. Structured facts hold
 anything that must not drift.
 </details>
 
 <details>
 <summary><b>Q: How would you implement memory that persists across sessions?</b></summary>
 
-Separate the layers by lifetime. **Within a conversation**: recent messages verbatim plus a
-rolling summary, stored per session. **Across conversations**: extracted structured facts —
-preferences, identity, ongoing projects — stored as a database row keyed by user, not as messages.
+Split the layers by how long they live. **Within one chat:** recent messages word for word plus
+a rolling summary, stored per session. **Across chats:** extracted structured facts — likes,
+identity, current projects. Store these as a database row keyed by user, not as messages.
 
-Implementation essentials: key everything by session/user ID with no shared mutable state (that's
-the structural fix for the old concurrency bug); persist on every turn rather than on exit,
-because processes crash; handle contradictions by *replacing* values rather than appending, or
-you accumulate conflicting facts; timestamp facts so stale ones can decay or be re-confirmed; and
-give users a way to view and delete what you remember, which is both a compliance requirement and
-good product design.
+What to build:
 
-In LangGraph this is a checkpointer (per-thread conversation state) plus a Store (cross-thread
-long-term facts) — the same split, provided as infrastructure.
+- **Key everything by session or user ID**, with no shared state that can change. That's the
+  real fix for the old concurrency bug (two requests at once mixing their data).
+- **Save on every turn**, not on exit, because processes crash.
+- **Handle contradictions by *replacing* values**, not appending. Otherwise you collect facts
+  that clash.
+- **Timestamp facts**, so old ones can fade or be checked again.
+- **Let users view and delete what you remember.** Privacy rules often require it, and it's good
+  product design.
+
+In LangGraph this is a checkpointer (one thread's chat state) plus a Store (long-term facts
+shared across threads). It's the same split, provided as ready-made infrastructure.
 </details>
 
 <details>
 <summary><b>Q: When would you use vector memory over summarisation?</b></summary>
 
-When history is long and users reference *specific* past exchanges rather than needing continuous
-context — a support assistant where someone says "you helped me with this three months ago", or a
-tutor spanning many sessions.
+Use it when history is long and users point back to *specific* past exchanges, rather than
+needing the whole story. Examples: a support assistant where someone says "you helped me with
+this three months ago", or a tutor used across many sessions.
 
-Vector memory has constant cost regardless of history length, and preserves exact wording rather
-than a lossy paraphrase. The trade-off is that it retrieves discrete fragments, so it can miss
-context that a continuous summary would carry implicitly, and it needs the same care as document
-RAG — store the whole exchange rather than individual messages, since a question without its
-answer retrieves poorly.
+Vector memory costs the same however long the history is. It also keeps the exact words instead
+of a lossy rewrite. The trade-off is that it fetches separate pieces. So it can miss context that
+a running summary would carry without saying so. It also needs the same care as document RAG.
+Store the whole exchange, not single messages, since a question without its answer is hard to
+find.
 
-In practice they're complementary: summary for recent continuity, vector retrieval for the long
-tail.
+In practice you use both: a summary to keep recent turns joined up, and vector search for the
+long tail of old chats.
 </details>
 
 ### Advanced
@@ -2539,126 +2657,143 @@ tail.
 <details>
 <summary><b>Q: Design the memory system for a personal AI assistant used daily for years.</b></summary>
 
-The defining constraint is that history becomes unboundedly large while relevance stays sparse —
-so no single strategy works, and the design is about **lifetimes**.
+The defining constraint: history keeps growing without limit, but only a small part of it is
+relevant to any one question. So no single strategy works, and the design is about
+**lifetimes**.
 
-**Layered by lifetime.** Working memory: the last few turns verbatim, for conversational
-coherence. Episodic: per-conversation summaries, retained and retrievable. Semantic: structured
-facts about the user — preferences, relationships, ongoing projects — as database fields, not
-prose. Archival: full transcripts, embedded and retrievable, never replayed wholesale.
+**Layered by lifetime.**
 
-**Retrieval across episodes.** A daily-use assistant will be asked "what did we decide about X?"
-where X was months ago. That's RAG over conversation history, with all of Days 10–13 applying —
-including hybrid search, since users reference exact names and dates that embeddings blur.
+- **Working memory:** the last few turns word for word, so the chat flows.
+- **Episodic:** a summary of each chat, kept and searchable.
+- **Semantic:** structured facts about the user — likes, people, current projects — as database
+  fields, not prose.
+- **Archival:** full transcripts, embedded and searchable, never sent back in full.
 
-**Fact management is the hard part**, and it's where these systems actually fail. Contradictions
-must replace rather than accumulate. Facts need timestamps and decay — "currently learning
-Python" is meaningless two years on. Confidence matters: hedged statements shouldn't be asserted
-back as fact. And you want an audit trail, because "why do you think that about me?" is a
-question users genuinely ask.
+**Search across past chats.** A daily-use assistant will be asked "what did we decide about X?"
+where X was months ago. That's RAG over chat history, and all of Days 10–13 applies. That
+includes hybrid search, since users name exact names and dates that embeddings blur.
 
-**Privacy is a first-class requirement, not a feature.** Users must be able to see everything
-remembered, edit it, delete selectively, and export it. Sensitive categories may need explicit
-consent or exclusion. Memory should be encrypted at rest and scoped strictly per user.
+**Managing facts is the hard part**, and it's where these systems really fail. A new fact that
+clashes with an old one must replace it, not pile up beside it. Facts need timestamps and must
+fade — "currently learning Python" means nothing two years on. Confidence matters: a hedged
+remark ("I might…") shouldn't be stated back as fact. And you want an audit trail, because
+users really do ask "why do you think that about me?".
 
-**Cost control.** Constant per-turn cost regardless of history age: bounded working memory,
-retrieval instead of replay, and cheap models for extraction and summarisation with the strong
-model reserved for responses.
+**Privacy is a core requirement, not a feature.** Users must be able to see everything you
+remember, edit it, delete parts of it, and export it. Sensitive topics may need clear consent,
+or must be left out. Memory should be encrypted at rest and kept strictly per user.
 
-**Failure modes to design against:** memory poisoning (a user asserting false facts that then
-shape all future answers — hence confidence and provenance); drift from repeated summarisation;
-and over-personalisation, where the assistant becomes so anchored on a stale profile that it
-answers the profile rather than the question. That last one argues for the model deciding when
-memory is relevant, rather than injecting everything into every prompt.
+**Cost control.** Keep the cost per turn the same, however old the history gets. Cap working
+memory, search instead of re-sending, and use cheap models to extract and summarise. Save the
+strong model for answers.
+
+**Failure modes to design against:**
+
+- **Memory poisoning.** A user states false facts that then shape all future answers. That is
+  why you need confidence scores and provenance (a record of where each fact came from).
+- **Drift** from repeated summarisation.
+- **Over-personalisation.** The assistant relies so much on a stale profile that it answers the
+  profile rather than the question.
+
+That last one is a reason to let the model decide when memory is relevant, rather than pushing
+all of it into every prompt.
 </details>
 
 <details>
 <summary><b>Q: Your assistant "remembers" things the user never said. Diagnose it.</b></summary>
 
-False memories are more damaging than forgetting, because the user can't tell where they came
-from — so I'd isolate the source before changing anything.
+False memories do more harm than forgetting, because the user can't tell where they came from.
+So I'd find the source before changing anything.
 
-**Where it can originate:**
+**Where it can come from:**
 
-1. **Extraction hallucination.** The fact-extractor inferred something implied rather than stated
-   — the user mentioned a Python error and it recorded "prefers Python". Check by diffing extracted
-   facts against the raw messages. Fix with a confidence field, a prompt requiring facts to be
-   *directly stated*, and only asserting above a threshold.
+1. **Extraction hallucination.** The fact extractor recorded something implied, not stated. The
+   user mentioned a Python error and it recorded "prefers Python". Check by comparing extracted
+   facts with the raw messages. Fix it with a confidence field and a prompt that asks only for
+   *directly stated* facts. Then only state facts above a threshold.
 
-2. **Summarisation drift.** Repeated lossy compression can invent connective tissue that reads
-   plausibly but wasn't in the transcript. Check by comparing the summary against the original
-   messages. Fix with preservation instructions and by keeping hard facts structured.
+2. **Summarisation drift.** Repeated lossy compression can invent linking details that sound
+   right but weren't in the transcript. Check by comparing the summary with the first messages.
+   Fix it by telling the summariser what to keep, and by keeping hard facts structured.
 
-3. **Contradiction mishandling.** Appending rather than replacing produces facts like
-   "JavaScript, Python", from which the assistant infers something the user never said. Check the
+3. **Mishandled contradictions.** Appending instead of replacing gives facts like
+   "JavaScript, Python". The assistant then guesses something the user never said. Check the
    fact history.
 
-4. **Cross-session or cross-user contamination.** Shared mutable state, a caching bug, or a
-   session ID collision leaking one user's facts into another's context. This is the most serious
-   possibility — it's a privacy incident, not a quality bug — so I'd check session isolation
-   early even though it's less likely.
+4. **Leaks across sessions or users.** Shared state, a caching bug, or two sessions with the
+   same ID can leak one user's facts into another's context. This is the most serious case — it's
+   a privacy incident, not a quality bug. So I'd check that sessions are kept apart early, even
+   though it's less likely.
 
-5. **The model confabulating from the prompt.** Even with correct memory, a model may embellish
-   ("as you mentioned earlier…" about something never mentioned). Fix by labelling the memory
-   block explicitly and instructing that it must not claim the user said anything outside it.
+5. **The model confabulating (making things up) from the prompt.** Even with correct memory, a
+   model may add things ("as you mentioned earlier…" about something never mentioned). Fix it by
+   labelling the memory block clearly. Tell the model it must not claim the user said anything
+   outside it.
 
-**Structural mitigations:** store provenance with every fact — which message and when — so
-"remembered" facts are traceable and can be shown to the user; separate *stated* facts from
-*inferred* ones and treat them differently; expose memory in the UI so users can correct it; and
-add eval cases where the correct behaviour is learning **nothing**, since over-extraction is
-rarely tested for.
+**Fixes in the design itself:**
+
+- **Store provenance with every fact** — which message it came from, and when. Then you can
+  trace each "remembered" fact and show it to the user.
+- **Separate *stated* facts from *inferred* ones**, and treat them differently.
+- **Show memory in the UI**, so users can correct it.
+- **Add eval cases where the correct behaviour is learning nothing.** Over-extraction is rarely
+  tested for.
 </details>
 
 <details>
 <summary><b>Q: How do memory and retrieval interact, and where does that go wrong?</b></summary>
 
-They interact in three useful ways and fail in three characteristic ones.
+They work together in three useful ways, and fail in three typical ones.
 
-**Useful.** Memory *resolves* queries — "what about the other one?" is unretrievable until
-history disambiguates it, which is query rewriting. Memory *enriches* queries — knowing the user
-works in Python and fintech makes "how do I handle rate limits?" retrieve far better documents.
-And memory *is* a retrieval corpus — past conversations, searched the same way as documents.
+**Useful.** Memory *resolves* queries. "What about the other one?" can't be searched until the
+history makes clear what "the other one" is — that is query rewriting. Memory *enriches*
+queries. Knowing the user works in Python and fintech makes "how do I handle rate limits?" find
+far better documents. And memory *is* a search corpus — past chats, searched the same way as
+documents.
 
 **Where it goes wrong.**
 
-*Over-enrichment.* Injecting the user's whole profile into every query narrows retrieval
-harmfully — a general question becomes "capital of France for Python fintech developers". The fix
-is letting the model decide which facts are relevant and permitting "none", then testing that
-case explicitly.
+*Over-enrichment.* Pushing the user's whole profile into every query narrows the search in a
+harmful way. A general question becomes "capital of France for Python fintech developers". The
+fix is to let the model decide which facts are relevant, and allow "none". Then test that case
+on purpose.
 
-*Confusing the two corpora.* If conversation history and documents are retrieved into the same
-context block undifferentiated, the model may cite something the user said as though it were
+*Confusing the two corpora.* Say chat history and documents land in the same context block, with
+nothing to tell them apart. The model may then cite something the user said as if it were
 documentation. Keep them separate and label them.
 
-*Stale memory poisoning retrieval.* A fact from a year ago silently steering every search, long
-after it stopped being true. Timestamps and decay.
+*Stale memory poisoning retrieval.* A fact from a year ago quietly steers every search, long
+after it stopped being true. The fix is timestamps, and letting old facts fade.
 
-**The architectural point:** memory should be *available* to retrieval, not *forced into* it. The
-strongest design has the model decide per query whether retrieval is needed at all, which memory
-facts are relevant, and how to phrase the search — which is one classification call, and it's
-exactly the adaptive routing pattern from Day 13 with memory as an extra input.
+**The design point:** memory should be *available* to retrieval, not *forced into* it. In the
+strongest design, the model decides three things for each query: whether to search at all,
+which memory facts are relevant, and how to word the search. That is one classification call.
+It's exactly the adaptive routing pattern from Day 13, with memory as an extra input.
 </details>
 
 ---
 
 ## 10. Recap
 
-- ✅ LLMs are stateless — "memory" is always a strategy for what to re-send
-- ✅ Buffer O(n²) · window and trim forget hard · **summary + buffer is the practical default**
+- ✅ LLMs are stateless — "memory" is always a strategy for what to re-send. It is one part of
+  context engineering.
+- ✅ A buffer's total cost grows with the square of the conversation length, O(n²). Window and
+  trim forget suddenly. **Summary + buffer is the practical default**
 - ✅ `trimMessages` with `startOn: "human"` and `includeSystem` prevents a real class of 400 errors
 - ✅ Progressive summarisation **drifts** — keep hard facts structured, not in prose
 - ✅ Entity/fact memory must **replace on contradiction**, carry confidence, and be timestamped
-- ✅ Vector memory = RAG over conversations — store the whole exchange, not single messages
-- ✅ Three layers: recent verbatim (short) · rolling summary (mid) · facts in a DB (long)
+- ✅ Vector memory is RAG over conversations — store the whole exchange, not single messages
+- ✅ Three layers: recent messages word for word (short term), a rolling summary (mid term), and
+  facts in a database (long term)
 - ✅ The `Memory` classes were removed for hidden state, concurrency bugs and no persistence
 - ✅ Modern = **you own storage**, `MessagesPlaceholder` injects, `trimMessages` bounds
 - ✅ Memory improves **retrieval**, not just tone — but must be able to say "no facts relevant"
 
 ### 🎉 Week 2 complete
 
-You can now take a folder of documents and build a system that ingests, chunks, embeds, indexes,
-retrieves with hybrid search and reranking, answers with verified citations, refuses honestly,
-and remembers the user across sessions.
+You can now take a folder of documents and build a system around it. It ingests, chunks, embeds
+and indexes the documents. It retrieves with hybrid search and reranking. It answers with
+verified citations, refuses honestly, and remembers the user across sessions.
 
 **StudyBuddy v3** does all of it.
 
@@ -2668,9 +2803,9 @@ and remembers the user across sessions.
 (corrective RAG, self-RAG, the production pipeline, the chat loop). Every time, the same
 friction: LCEL composes forward but these problems *loop*.
 
-Week 3 starts with tools and a hand-built ReAct agent, then introduces LangGraph — nodes, edges,
-typed state with reducers, checkpointers, and interrupts — and everything you hand-rolled becomes
-declarative infrastructure.
+Week 3 starts with tools and a hand-built ReAct agent. Then it introduces LangGraph: nodes,
+edges, typed state with reducers, checkpointers, and interrupts. Everything you hand-rolled
+becomes declarative infrastructure: you describe the steps, and the framework runs them.
 
 ### Quick self-check
 
@@ -2687,9 +2822,17 @@ declarative infrastructure.
    specifics erode after several rewrites. Fixes: instruct the summariser to preserve names,
    numbers and decisions; keep critical values in **structured fact memory** where they're fields
    rather than prose; or periodically re-summarise from the original transcript.
-3. Three reasons: **hidden state** (memory mutated as a side effect of running a chain, so you
-   couldn't see what was in the prompt), **concurrency bugs** (a shared instance interleaved
-   different users' conversations), and **no persistence** (restart lost everything). The
+3. Three reasons. **Hidden state:** memory changed as a side effect of running a chain, so you
+   couldn't see what was in the prompt. **Concurrency bugs:** a shared instance mixed different
+   users' conversations together. **No persistence:** a restart lost everything. The
    replacement makes storage, injection and bounding three explicit choices, with LangGraph
    checkpointers as the production path.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 13 — Advanced RAG](day-13-advanced-rag.md)** · **[Week 2 index](README.md)** · **[Day 15 — Tools →](../week-03-tools-agents-and-langgraph/day-15-tools.md)**
+
+</div>

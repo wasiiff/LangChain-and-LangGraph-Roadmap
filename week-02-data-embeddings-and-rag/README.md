@@ -103,11 +103,12 @@ ollama pull nomic-embed-text
 ```
 
 > ⚠️ **Groq does not offer embeddings.** From Day 10 onward, embeddings come from **Ollama**
-> (`nomic-embed-text`, local and free) or **Google** (`text-embedding-004`, free tier). Chat still
-> uses Groq.
+> (`nomic-embed-text`, local and free, 768 dimensions) or **Google** (`gemini-embedding-2`, free
+> tier, 3072 dimensions). Chat still uses Groq (`openai/gpt-oss-120b`, and `openai/gpt-oss-20b`
+> for cheap steps).
 >
-> Python needs the `models/` prefix for Google embeddings (`"models/text-embedding-004"`); JS
-> does not. This catches people porting code.
+> The Python code writes Google embedding models with a `models/` prefix
+> (`"models/gemini-embedding-2"`). Current packages accept it with or without the prefix.
 
 ---
 

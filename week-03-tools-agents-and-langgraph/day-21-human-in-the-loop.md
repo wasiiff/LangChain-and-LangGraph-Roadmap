@@ -2,10 +2,29 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 20](day-20-persistence-and-checkpointing.md) · 🧩 **Difficulty:** ●●●●○
 
-**Today you learn:** how to stop a graph mid-node, hand a decision to a human, and continue
-with their answer — possibly days later, on a different machine. `interrupt()`,
-`Command({ resume })`, the four HITL patterns, and the trap that catches everyone: **the node
-runs again from the top when you resume.** Then the Week 3 project.
+**Today you learn:** An agent that acts on its own will sometimes do something expensive and
+wrong, like deleting the wrong rows. Today you make the graph stop mid-node, hand the decision
+to a human, and continue with their answer — possibly days later, on a different machine. You
+learn `interrupt()`, `Command({ resume })` and the four **HITL** patterns, plus the trap that
+catches everyone: **the node runs again from the top when you resume.** Then you build the
+Week 3 project, a SQL agent that asks before it writes.
+
+> 📖 **Words you'll meet today**
+>
+> - **Human-in-the-loop (HITL)** — pausing an agent so a person can approve, reject or edit a
+>   step first.
+> - **Interrupt** — LangGraph's pause: `interrupt()` stops the graph inside a node and saves its
+>   state.
+> - **Resume** — continuing a paused thread with the human's answer, sent as
+>   `Command({ resume })`.
+> - **Side effect** — anything a node changes outside the graph's state, like charging a card or
+>   sending an email.
+> - **Idempotent** — safe to run twice: doing it again has no extra effect.
+> - **Static breakpoint** — a fixed pause before or after a named node, set at compile time,
+>   for debugging.
+> - **Approval fatigue** — people asked too often start approving without reading.
+> - **Confused deputy** — a trusted part of the system tricked into acting on the wrong
+>   request, such as a stale approval.
 
 ---
 
@@ -25,7 +44,8 @@ StudyBuddy v3.5 has a `run_sql` tool. This happens:
 The tool was correct. The SQL was valid. The agent did exactly what it was asked. And 1,847
 rows are gone, because **nobody looked before it ran**.
 
-Now list every action in your system where "the model was confident and wrong" is expensive:
+Now think of every action in your system where "the model was confident and wrong" is
+expensive. Here are some:
 
 ```
    DELETE / UPDATE on a database         sending an email to a customer
@@ -164,7 +184,7 @@ Verified in both languages:
    after resume:     sideEffects.length === 2      ← twice
 ```
 
-If line 1 of that node charges a credit card, you charged it twice. §4.3 has the rule that
+If line 1 of that node charges a credit card, you charged it twice. §4.2 has the rule that
 prevents it, and it's simple: **put `interrupt()` first, and never do anything irreversible
 before it.**
 
@@ -173,6 +193,9 @@ before it.**
 ## 3. First principles
 
 ### 3.1 How `interrupt()` actually works
+
+> 💬 **In plain words:** `interrupt()` saves the state and stops the run. On resume, the node
+> starts again from its first line, and this time `interrupt()` returns the human's answer.
 
 ```
    1. interrupt(payload) raises a special internal signal
@@ -198,6 +221,9 @@ answer.
 
 ### 3.2 What the caller receives
 
+> 💬 **In plain words:** When the graph pauses, you get its state plus an `__interrupt__` list
+> holding the question. You can also read the question later from the saved state.
+
 Verified, both languages:
 
 ```js
@@ -217,11 +243,14 @@ And in the state snapshot:
    snapshot.tasks    [ { name: 'ask', interrupts: [ Interrupt(value=..., id=...) ] } ]
 ```
 
-Two ways to reach the same information. Use `__interrupt__` from the return value in a request
-handler (it's right there); use `getState().tasks` when you're inspecting a thread you didn't
-just run — for example, rendering an approvals queue.
+Two ways to reach the same information. In a request handler, use `__interrupt__` from the
+return value, because it's right there. Use `getState().tasks` when you're inspecting a thread
+you didn't just run, for example to render an approvals queue.
 
 ### 3.3 Resuming
+
+> 💬 **In plain words:** To continue, send the answer with `Command({ resume })` on the same
+> thread. If several questions are waiting, answer each one by its id.
 
 ```js
 await app.invoke(new Command({ resume: "approve" }), config);
@@ -241,14 +270,14 @@ Three rules:
       interrupt           map of { interruptId: value }.
 ```
 
-Rule 3, verified — with two parallel interrupts pending, a bare value fails loudly:
+Rule 3, verified. With two parallel interrupts pending, a bare value fails loudly:
 
 ```
    RuntimeError: When there are multiple pending interrupts, you must specify
    the interrupt id when resuming.
 ```
 
-and the map form works:
+The map form works:
 
 ```
    Command(resume={ idOfP: "P-OK", idOfQ: "Q-OK" })
@@ -257,7 +286,10 @@ and the map form works:
 
 ### 3.4 `interrupt()` vs static breakpoints
 
-There are two ways to stop a graph, and they're for different jobs:
+> 💬 **In plain words:** `interrupt()` asks a real question, and only when needed. A static
+> breakpoint stops at the same node every time and asks nothing, so it's for debugging.
+
+There are two ways to stop a graph. They're for different jobs.
 
 | | `interrupt()` | `interruptBefore` / `interrupt_before` |
 |---|---|---|
@@ -280,6 +312,9 @@ It's a debugger's breakpoint, not an approval gate — there's no question to an
 nothing for a human to decide.
 
 ### 3.5 Why HITL requires a checkpointer
+
+> 💬 **In plain words:** A pause only works if the state is saved somewhere while you wait. The
+> checkpointer from Day 20 is that somewhere.
 
 ```
    interrupt() → checkpoint → return → [process may die] → resume → load checkpoint
@@ -360,13 +395,18 @@ await app.invoke(new Command({ resume: "yes" }), config);
 console.log(sideEffects.length);              // 2   ← IT RAN AGAIN
 ```
 
-Verified, both languages. Now imagine that first line is:
+Verified, both languages. Now imagine that first line does real work:
 
 ```js
-❌ await chargeCard(state.amount);          // charged TWICE
-❌ await sendEmail(state.to, state.body);   // sent TWICE
-❌ await db.insert(record);                 // duplicate row
-❌ counter++;                                // counted twice
+// ❌ Everything above interrupt() runs on the pause AND again on the resume.
+async function ask(state) {
+  await chargeCard(state.amount);          // ❌ charged TWICE
+  await sendEmail(state.to, state.body);   // ❌ sent TWICE
+  await db.insert(state.record);           // ❌ duplicate row
+  counter++;                               // ❌ counted twice
+  const value = interrupt({ question: "approve?" });
+  return { log: [`got:${value}`] };
+}
 ```
 
 **The rules that prevent it:**
@@ -380,18 +420,27 @@ function gate(state) {
 }
 
 // ✅ RULE 2 — the side effect goes in its OWN node, after the gate.
-.addNode("gate", gate)
-.addNode("execute", executeTheThing)     // only reached when approved
-.addEdge("gate", "execute")
+const builder = new StateGraph(State)
+  .addNode("gate", gate)
+  .addNode("execute", executeTheThing)     // only reached when approved
+  .addEdge("gate", "execute");
 
-// ✅ RULE 3 — if you truly can't avoid it, make it idempotent.
-function risky(state) {
-  if (!state.alreadyCharged) await chargeCard(state.amount);
-  const d = interrupt({ ... });
+// ✅ RULE 3 — if you truly can't avoid it, make it idempotent: send the SAME key on
+// every re-run, so the payment service ignores the repeat.
+async function risky(state, config) {
+  await chargeCard(state.amount, {
+    idempotencyKey: `${config.configurable.thread_id}:risky`,
+  });
+  const d = interrupt({ question: "approve?" });
+  return { log: [`decision:${d}`] };
 }
 ```
 
-> 🎯 **Rule 2 is the one to internalise.** A node that interrupts should do *nothing but*
+> ⚠️ **A state flag is not idempotency here.** `if (!state.charged) chargeCard(...)` inside
+> the same node still charges twice. The node stops at `interrupt()` before it returns, so a
+> `charged: true` it would return is never saved. Exercise 1 measures this: 2 charges.
+
+> 🎯 **Rule 2 is the one to remember.** A node that interrupts should do *nothing but*
 > interrupt and interpret the answer. Keep the dangerous work in the next node. Then re-running
 > the gate is harmless by construction, and you never have to reason about it again.
 
@@ -405,7 +454,9 @@ import { z } from "zod";
 const State = Annotation.Root({
   messages: Annotation({ reducer: addMessages, default: () => [] }),
   pendingSql: Annotation(),
+  estimatedRows: Annotation(),
   result: Annotation(),
+  approved: Annotation(),
   cancelled: Annotation(),
 });
 
@@ -416,7 +467,7 @@ function approveSql(state) {
   const sql = state.pendingSql;
 
   if (!DANGEROUS.test(sql)) {
-    return { log: ["auto-approved (read-only)"] };     // conditional — don't ask about SELECTs
+    return { approved: true };                         // conditional — don't ask about SELECTs
   }
 
   const decision = interrupt({
@@ -454,6 +505,10 @@ await app.invoke(new Command({ resume: "approve" }), config);
 // or
 await app.invoke(new Command({ resume: { reason: "wrong date range" } }), config);
 ```
+
+Verified in both languages with stub `plan` and `execute` nodes (no model): `"approve"` runs
+`execute`; `{ reason: "wrong date range" }` ends the run with `cancelled: true` and
+`Cancelled: wrong date range`; a `SELECT` passes through with no pause.
 
 Note `!DANGEROUS.test(sql)` returning early: **only interrupt when it matters.** An agent that
 asks permission for every `SELECT` gets approved reflexively, and reflexive approval is worse
@@ -508,8 +563,7 @@ function resolveTarget(state) {
 ```
 
 This is the pattern that makes agents feel *competent* rather than reckless. An agent that
-asks one good clarifying question beats one that guesses confidently and is wrong 30% of the
-time.
+asks one good clarifying question beats one that guesses confidently and is often wrong.
 
 ### 4.6 Pattern 4 — review a tool call before it runs
 
@@ -582,7 +636,7 @@ Two details that matter:
 
 ### 4.7 Parallel interrupts
 
-Two nodes interrupt in the same superstep:
+Here, two nodes interrupt in the same superstep.
 
 ```js
 const paused = await app.invoke({}, config);
@@ -601,7 +655,7 @@ await app.invoke(new Command({ resume: { [ids.p]: "P-OK", [ids.q]: "Q-OK" } }), 
 // { log: [ 'p:P-OK', 'q:Q-OK', 'join' ] }
 ```
 
-You can also answer one at a time — resume with a map containing a single id, and the graph
+You can also answer one at a time. Resume with a map that holds a single id, and the graph
 pauses again for the rest. That's exactly the shape of a multi-approver workflow.
 
 ### 4.8 Static breakpoints — for debugging
@@ -757,12 +811,16 @@ builder.add_node("gate", gate)
 builder.add_node("execute", execute_the_thing)
 builder.add_edge("gate", "execute")
 
-# ✅ RULE 3 — if unavoidable, make it idempotent
-def risky(state):
-    if not state.get("already_charged"):
-        charge_card(state["amount"])
-    decision = interrupt({...})
+# ✅ RULE 3 — if unavoidable, make it idempotent: the SAME key on every re-run
+def risky(state, config):
+    charge_card(state["amount"],
+                idempotency_key=f'{config["configurable"]["thread_id"]}:risky')
+    decision = interrupt({"question": "approve?"})
+    return {"log": [f"decision:{decision}"]}
 ```
+
+A `charged` flag checked and set inside `risky` would not help, for the reason in §4.2: the
+node never returns before the pause, so the flag is never saved.
 
 ### 5.3 Pattern 1 — approve / reject
 
@@ -1091,15 +1149,18 @@ compute. Compare with any design that holds a request open or parks a worker thr
 ### ❌ 1. Side effects before `interrupt()`
 
 ```js
-❌ function gate(state) {
-     await chargeCard(state.amount);        // runs on the pause AND on the resume
-     const d = interrupt({ ... });
-   }
-✅ function gate(state) {
-     const d = interrupt({ ... });          // FIRST
-     return d === "approve" ? { approved: true } : { cancelled: true };
-   }
-   // and charge the card in the NEXT node
+// ❌ the charge runs on the pause AND on the resume
+async function badGate(state) {
+  await chargeCard(state.amount);
+  const d = interrupt({ question: "approve?" });
+  return { log: [`decision:${d}`] };
+}
+
+// ✅ interrupt FIRST, and charge the card in the NEXT node
+function goodGate(state) {
+  const d = interrupt({ question: "approve?" });
+  return d === "approve" ? { approved: true } : { cancelled: true };
+}
 ```
 
 Verified: the code before `interrupt()` executes twice. This is the number-one HITL bug and
@@ -1181,8 +1242,8 @@ At least this one fails loudly.
 ✅ if (pending[0].id !== req.body.interruptId) return res.status(409).json({ ... });
 ```
 
-A stale browser tab approves a *different* request than the one it displayed. Classic
-confused deputy, and in an approvals system it's the whole ballgame.
+A stale browser tab approves a *different* request than the one it displayed. It's a classic
+confused deputy, and in an approvals system it defeats the whole purpose.
 
 ### ❌ 9. Putting the human's answer only in the resume value when the node needs state
 
@@ -1223,9 +1284,11 @@ be conditional. They're a debugging tool.
 Write a graph with one interrupting node. Before the `interrupt()` call, push to an array and
 print a message. Run it, resume it, and count.
 
-Then fix it three ways and show each fix works:
-(a) move the interrupt to line 1, (b) move the side effect to its own downstream node,
-(c) guard the side effect with a state flag.
+Then fix it three ways and show that each fix works:
+
+- **(a)** move the interrupt to line 1;
+- **(b)** move the side effect to its own downstream node;
+- **(c)** make the side effect idempotent with a key, so a second call does nothing.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1238,7 +1301,7 @@ import { StateGraph, Annotation, MemorySaver, Command, interrupt, START, END }
 
 const S = Annotation.Root({
   log: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] }),
-  charged: Annotation(),
+  approved: Annotation(),        // Fix B writes it; without this channel JS drops the write
 });
 
 // ── ❌ BROKEN ───────────────────────────────────────────────────────────
@@ -1293,14 +1356,23 @@ await fixB.invoke({}, cB);
 await fixB.invoke(new Command({ resume: "yes" }), cB);
 console.log("✅ FIX B total charges:", eB.length);              // 1
 
-// ── ✅ FIX C: idempotency guard ─────────────────────────────────────────
+// ── ✅ FIX C: idempotency key ───────────────────────────────────────────
+// A flag in state can't guard this: the node stops at interrupt() before it
+// returns, so nothing it would write gets saved. The guard must live OUTSIDE
+// the node: here, a payment service that ignores a key it has already seen.
 const eC = [];
+const usedKeys = new Set();                        // stands in for the provider's records
+function chargeOnce(key) {
+  if (usedKeys.has(key)) return;                   // seen this key → do nothing
+  usedKeys.add(key);
+  eC.push("CHARGED");
+}
+
 const fixC = new StateGraph(S)
-  .addNode("gate", (s) => {
-    let patch = {};
-    if (!s.charged) { eC.push("CHARGED"); patch = { charged: true }; }
+  .addNode("gate", (s, config) => {
+    chargeOnce(`${config.configurable.thread_id}:gate`);  // same key on every re-run
     const d = interrupt({ q: "approve?" });
-    return { ...patch, log: [`decision:${d}`] };
+    return { log: [`decision:${d}`] };
   })
   .addEdge(START, "gate").addEdge("gate", END)
   .compile({ checkpointer: new MemorySaver() });
@@ -1322,7 +1394,6 @@ from langgraph.types import interrupt, Command
 
 class S(TypedDict):
     log: Annotated[list[str], operator.add]
-    charged: bool
     approved: bool
 
 def run(builder, thread):
@@ -1370,15 +1441,23 @@ b.add_edge("charge", END)
 run(b, "fixB")
 print("✅ FIX B total charges:", len(eB))              # 1
 
-# ── ✅ FIX C: idempotency guard ─────────────────────────────────────────
+# ── ✅ FIX C: idempotency key ───────────────────────────────────────────
+# A flag in state can't guard this: the node stops at interrupt() before it
+# returns, so nothing it would write gets saved. The guard must live OUTSIDE
+# the node: here, a payment service that ignores a key it has already seen.
 eC = []
-def gate_c(s):
-    patch = {}
-    if not s.get("charged"):
-        eC.append("CHARGED")
-        patch = {"charged": True}
+used_keys = set()                                  # stands in for the provider's records
+
+def charge_once(key):
+    if key in used_keys:                           # seen this key → do nothing
+        return
+    used_keys.add(key)
+    eC.append("CHARGED")
+
+def gate_c(s, config):
+    charge_once(f'{config["configurable"]["thread_id"]}:gate')   # same key on every re-run
     d = interrupt({"q": "approve?"})
-    return {**patch, "log": [f"decision:{d}"]}
+    return {"log": [f"decision:{d}"]}
 
 b = StateGraph(S); b.add_node("gate", gate_c)
 b.add_edge(START, "gate"); b.add_edge("gate", END)
@@ -1386,7 +1465,7 @@ run(b, "fixC")
 print("✅ FIX C total charges:", len(eC))              # 1
 ```
 
-**Output**
+**Output** (identical in JS, langgraph 1.4.20, and Python, langgraph 1.2.14)
 
 ```
   side effect ran (total: 1)
@@ -1397,10 +1476,24 @@ print("✅ FIX C total charges:", len(eC))              # 1
 ✅ FIX C total charges: 1
 ```
 
-**Why Fix C works even though the node re-runs.** On the second execution, `charged` is
-already `true` in state — because the *first* execution checkpointed before the interrupt.
-The guard reads state written by the run that paused. That's a real technique, but note it
-depends on the flag being persisted, so it only works with a checkpointer (which you have).
+**Why a state flag does *not* work here.** The obvious Fix C is `if (!state.charged) charge();`
+followed by returning `{ charged: true }`. We ran exactly that, and it printed **2 charges**
+in both languages. The reason: a node's return value is saved only when the node *finishes*.
+The first run stopped at `interrupt()`, so `charged: true` was never
+written. On resume, the node starts again from the top, reads `charged` as unset, and charges
+again.
+
+**Why Fix C works even though the node re-runs.** The guard lives outside the graph, in the
+thing that does the charging. The key is built from the `thread_id`, so it is the same on
+every re-run. The second call arrives with a key the service has already seen, and does
+nothing. Real payment APIs offer this as an *idempotency key* — an id you send with a request
+so that repeating it has no extra effect. If you do want a flag in state, an earlier node
+must write it, and that node must finish before the interrupting node runs.
+
+> ⚠️ **Same mistake in the JS Fix B, now fixed.** An earlier version of this solution had no
+> `approved` channel in the JS state. JS dropped the `approved` write without an error, so
+> the router never reached `charge` and Fix B printed `0`. Every key a node returns needs a
+> channel in the state schema.
 
 **Which fix to use.** **B**, essentially always. A gate node that does nothing but interrupt
 and interpret is safe by construction, and you never have to think about double execution
@@ -1671,7 +1764,7 @@ app.invoke(Command(resume="yes"), cfg);        print(n)   # 2
 **Ranking.** #1 and #4 are loud. #2 is quiet and expensive (double charges). #3 is quiet and
 leaves stuck threads that accumulate silently. #5 is loud but the error message points at the
 model provider rather than at your approval logic, so it wastes an hour. #6 is the rarest and
-the hardest to diagnose — which is why the rule is simply **don't put `interrupt()` behind a
+the hardest to diagnose. That's why the rule is simply **don't put `interrupt()` behind a
 conditional when there's more than one in the node.** Split it into separate nodes instead.
 </details>
 
@@ -1958,7 +2051,7 @@ in the seeding process. Only consequential requests reach the inbox.
 2. **The staleness check is the whole security story.** Without it, an operator with a stale
    tab approves whatever is pending *now*, which may be a completely different request. The
    fix is one comparison, and it's the difference between an approval system and a
-   rubber stamp.
+   rubber stamp (an approval given without any real checking).
 3. **`edit` returns `{ approved: true, amount: newAmount }`.** The human didn't just consent —
    they changed the input. The downstream `execute` node reads the *edited* amount, because
    the gate wrote it to state before routing. That's pattern 2 and pattern 1 composed.
@@ -2060,7 +2153,8 @@ const runWrite = tool(
 const tools = [listTables, describeTable, runQuery, runWrite];
 const GATED = new Set(["run_write"]);
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 }).bindTools(tools);
+// Model name updated Oct 2026; this project was not re-run end to end on the new model.
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 }).bindTools(tools);
 
 // ══ 3. STATE (Day 18) ══════════════════════════════════════════════════
 const FullState = Annotation.Root({
@@ -2287,7 +2381,8 @@ def run_write(sql: str) -> str:
 
 tools = [list_tables, describe_table, run_query, run_write]
 GATED = {"run_write"}
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0).bind_tools(tools)
+# Model name updated Oct 2026; this project was not re-run end to end on the new model.
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0).bind_tools(tools)
 
 # ══ 3. STATE (Day 18) ══════════════════════════════════════════════════
 def last_30(existing, incoming):
@@ -2481,7 +2576,7 @@ which deletes *everything*, not just pre-2024 records. The student said "from be
 and the model dropped the date filter. **That is exactly the incident from §1**, and the gate
 turned it into a five-second edit instead of 1,847 lost rows.
 
-**Every day of Week 3 is load-bearing here:**
+**Every day of Week 3 does real work here:**
 
 | Day | What it contributes |
 |---|---|
@@ -2493,11 +2588,12 @@ turned it into a five-second edit instead of 1,847 lost rows.
 | 20 | SQLite checkpointer — the conversation and the pending approval survive a restart |
 | 21 | `interrupt` on writes only; approve / edit / reject; upsert-by-id for the edit |
 
-**Two limitations to be honest about.** The SQL allow-list is a regex, and regex-based SQL
-filtering is a defence-in-depth measure, not a security boundary — in production you'd use a
-read-only database role for `run_query` so the *database* enforces it, not your string
-matching. And the `approvals` channel is an audit trail inside state, which means it's
-subject to the 30-message cap's cousin: it grows forever. In production it belongs in an
+**Two limitations to be honest about.** The SQL allow-list is a regex. Regex-based SQL
+filtering is a defence-in-depth measure (one extra layer of protection), not a security
+boundary. In production you'd use a read-only database role for `run_query`, so the
+*database* enforces it, not your string matching. And the `approvals` channel is an audit
+trail inside state. It has the problem the 30-message cap solves for `messages`, but no cap:
+it grows forever. In production it belongs in an
 append-only audit table, not in checkpointed state.
 </details>
 
@@ -2558,7 +2654,9 @@ reads 2 after one approval.
 
 It matters because side effects double. Charge a card, send an email or insert a row before
 the interrupt and you do it twice. The rules: put `interrupt()` first, keep side effects in a
-downstream node, and if neither is possible, guard with a state flag.
+downstream node, and if neither is possible, make the side effect idempotent with a key. A
+state flag set in the same node does **not** work: the node never finishes before the pause,
+so the flag is never saved (measured: 2 charges).
 
 ---
 
@@ -2584,9 +2682,9 @@ then executes the corrected call, and the model's next turn sees only the edited
 **Q9. What must you do when rejecting a tool call?**
 
 Return a `ToolMessage` for **every** pending tool call, with matching `tool_call_id`s, whose
-content explains the rejection. An unanswered tool call makes the conversation invalid and the
-provider returns a 400 on the next turn — with an error that says nothing about approvals, so
-it costs you an hour.
+content explains the rejection. An unanswered tool call makes the conversation invalid, so the
+provider returns a 400 on the next turn. The error says nothing about approvals, so it costs
+you an hour.
 
 Good practice: make the rejection message actionable, e.g. "rejected: wrong date range. Do
 not retry; explain what you'd need instead." The model handles that gracefully.
@@ -2599,8 +2697,8 @@ not retry; explain what you'd need instead." The model handles that gracefully.
 `RuntimeError: When there are multiple pending interrupts, you must specify the interrupt id
 when resuming.` Resume with a map: `Command({ resume: { [idA]: valueA, [idB]: valueB } })`.
 
-You can also answer one at a time — supply a map with a single id and the graph pauses again
-for the rest, which is exactly the shape of a multi-approver workflow.
+You can also answer one at a time. Supply a map with a single id, and the graph pauses again
+for the rest. That's exactly the shape of a multi-approver workflow.
 
 ---
 
@@ -2610,9 +2708,11 @@ For each open thread, `getState(config)` and check `snapshot.tasks` for interrup
 pure read — never invoke the graph to find out whether it's waiting**, or rendering the page
 could re-execute nodes.
 
-Two things production needs: the interrupt **id** shown to the operator and re-checked on
-submit (otherwise a stale tab approves a different request than it displayed), and a stuck-
-thread alert, since a thread waiting on a human waits forever by default.
+Two things production needs:
+
+- **The interrupt id**, shown to the operator and re-checked on submit. Otherwise a stale tab
+  approves a different request than it displayed.
+- **A stuck-thread alert**, since a thread waiting on a human waits forever by default.
 
 ---
 
@@ -2736,7 +2836,7 @@ the human's decision also changes state the node will read when it re-runs.
 - ✅ The pause is durable — the process can exit; resume days later on another machine
 - ✅ Resume with `Command({ resume: value })` on the **same `thread_id`**
 - ✅ ⚠️ **The node re-runs from the top** — everything before `interrupt()` runs twice
-- ✅ So: interrupt first, side effects downstream, or guard with a state flag
+- ✅ So: interrupt first, side effects downstream, or an idempotency key (not a state flag)
 - ✅ Four patterns: **approve/reject · edit · ask for input · review a tool call**
 - ✅ Editing a tool call = re-emit the `AIMessage` with the **same id** (upsert)
 - ✅ Rejecting = return a `ToolMessage` for **every** call, or the next turn is invalid
@@ -2780,10 +2880,16 @@ inspected, rewound, and reviewed by a human.
 
 ### Next week
 
-**Week 4 — Multi-agent, Production, Projects & Interviews.** Many agents instead of one
-(and when that makes things worse), streaming to a real UI, reliability and guardrails,
-observability and evaluation, MCP and the Vercel AI SDK, deployment and scaling — then
-capstones and an interview crash course.
+**Week 4 — Multi-agent, Production, Projects & Interviews.** It covers:
+
+- many agents instead of one (and when that makes things worse);
+- streaming to a real UI;
+- reliability and guardrails;
+- observability and evaluation;
+- MCP and the Vercel AI SDK;
+- deployment and scaling.
+
+Then come capstones and an interview crash course.
 
 ### Quick self-check
 
@@ -2796,11 +2902,16 @@ capstones and an interview crash course.
 <summary>Answers</summary>
 
 1. **The email is sent twice** — once when the node runs and pauses, and again when it
-   re-executes on resume. The fix, in order of preference: (a) move the send into its own node
-   downstream of the gate, so re-running the gate is harmless by construction; (b) put
-   `interrupt()` on the first line and send afterwards; (c) if it truly must precede the
-   question, guard it with a state flag (`if (!state.notified)`), which works because the
-   flag was checkpointed by the run that paused.
+   re-executes on resume. The fix, in order of preference:
+
+   - **(a)** move the send into its own node downstream of the gate, so re-running the gate
+     is harmless by construction;
+   - **(b)** put `interrupt()` on the first line and send afterwards;
+   - **(c)** if it truly must precede the question, make the send idempotent. Pass a key
+     built from the `thread_id`. The email service skips a key it has already seen.
+     A state flag set in the same node (`if (!state.notified)`) does **not** work. The node
+     stops at `interrupt()` before it returns, so the flag is never saved, and the resumed
+     run sends again (measured in Exercise 1: 2 charges).
 
 2. **Two or more interrupts are pending at once** — typically two parallel nodes that both
    called `interrupt()` in the same superstep. LangGraph can't tell which one your bare value
@@ -2808,8 +2919,8 @@ capstones and an interview crash course.
    `Command({ resume: { [idA]: valueA, [idB]: valueB } })`. You can also answer them one at a
    time; the graph pauses again for the rest.
 
-3. Because there's **nowhere to put a paused program**. A `readline` prompt blocks a process
-   — it dies on restart, can't be answered from a web UI, holds a worker while waiting, and
+3. Because there's **nowhere to put a paused program**. A `readline` prompt blocks a process.
+   It dies on restart, can't be answered from a web UI, holds a worker while waiting, and
    can't be resumed on a different machine. `interrupt()` works because the state is already
    being checkpointed to a database after every superstep, so "pausing" is just choosing not
    to continue yet. That's why this is Day 21 and not Day 16: it needed state-as-data

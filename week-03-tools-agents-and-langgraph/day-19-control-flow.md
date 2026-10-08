@@ -2,10 +2,27 @@
 
 > ⏱ **Time:** ~3 hours · 🎯 **Prereqs:** [Day 18](day-18-state-and-reducers.md) · 🧩 **Difficulty:** ●●●●○
 
-**Today you learn:** the three tools that turn a toy graph into a real one. `Command` — route
-and update state in one move. `Send` — fan out to N copies of a node with different inputs,
-which is genuine map-reduce. **Subgraphs** — a graph as a node, so a 40-node system stays
-readable. Plus the subgraph trap that silently duplicates your data in both languages.
+**Today you learn:** Conditional edges stop being enough once a graph does real work. A node
+can't route and update state in one move, one step can't run many times in parallel, and a
+40-node graph becomes unreadable. You fix all three with `Command`, `Send` and **subgraphs**,
+and build a StudyBuddy research assistant that splits a topic, researches the parts in parallel
+and merges them. You also meet a subgraph trap that silently duplicates your data, in both
+languages.
+
+> 📖 **Words you'll meet today**
+>
+> - **Channel** — one named field in the graph's state, such as `log` or `findings`.
+> - **Reducer** — the rule that combines a new value into a channel, for example "append to the
+>   list".
+> - **Superstep** — one round of the graph: every active node runs, then all their updates are
+>   applied.
+> - **Fan-out** — starting several copies of work at once, then joining their results in one
+>   later step.
+> - **Map-reduce** — do the same job on many items in parallel (map), then combine the results
+>   (reduce).
+> - **`Command`** — a node return value that updates state *and* says which node runs next.
+> - **`Send`** — a marker that runs one node once per item, each copy with its own small input.
+> - **Subgraph** — a complete, compiled graph used as a single node inside another graph.
 
 ---
 
@@ -175,6 +192,18 @@ The critical difference from a plain parallel edge:
 
 That's map-reduce. `Send` is the map; the reducer is the reduce.
 
+> 💡 **The industry name: orchestrator-workers.** Anthropic's essay "Building Effective Agents"
+> (December 2024) calls this shape the **orchestrator-workers** pattern. One step — usually a
+> model call — splits the job at run time, so nobody fixes the number of parts in advance.
+> Workers then do the parts in parallel. Finally, a join step combines their results. In
+> LangGraph the split is a node plus a conditional edge that returns `Send`s. The workers are
+> copies of one node, and the join is the reducer plus the merge node.
+
+A related pattern from the same essay is **evaluator-optimizer**: generate a draft, critique it,
+revise it, and repeat. In LangGraph you build it as a node plus a conditional edge that loops
+back until the critic passes the draft or a limit is hit. The critique-and-revise cycle from
+Day 17 is a small version of it. You build the full pattern step by step on Day 36.
+
 ### Subgraph — a graph as a node
 
 ```
@@ -207,6 +236,9 @@ own state, its own diagram, and its own tests. Same idea as a function call.
 
 ### 3.1 What `Command` actually is
 
+> 💬 **In plain words:** `Command` lets one node say both "here is what changed" and "go here
+> next". You still have to list the places it is allowed to go.
+
 A `Command` is a return value that carries **two** things instead of one:
 
 ```
@@ -234,6 +266,9 @@ Verified: Python infers destinations from `Command[Literal[...]]`; JS requires t
 error you'd get from a missing edge, because that's exactly what it is.
 
 ### 3.2 What `Send` actually is
+
+> 💬 **In plain words:** `Send` runs the same node many times at once, each copy with its own
+> small input. Each copy sees only that input, and a reducer combines their results.
 
 ```
    new Send("research", { question: "what is a CA?" })
@@ -275,6 +310,9 @@ Three copies, three different inputs, one superstep, merged by an append reducer
 
 ### 3.3 `Send` vs a `for` loop — the actual difference
 
+> 💬 **In plain words:** Use `Send` when each item is slow, like a model call, or when you need
+> to watch, retry or pause items one by one. For quick, cheap items, a loop is fine.
+
 ```
    ┌────────────────────┬────────────────┬─────────────────────────────┐
    │                    │  for loop      │  Send                       │
@@ -288,11 +326,14 @@ Three copies, three different inputs, one superstep, merged by an append reducer
    └────────────────────┴────────────────┴─────────────────────────────┘
 ```
 
-If N is small and the work is cheap, a loop inside one node is fine and simpler. `Send` earns
-its keep when the items are **slow** (model calls, network) or when you need to **see, retry,
+If N is small and the work is cheap, a loop inside one node is fine and simpler. `Send` is
+worth it when the items are **slow** (model calls, network) or when you need to **see, retry,
 or interrupt** individual items.
 
 ### 3.4 What a subgraph shares with its parent
+
+> 💬 **In plain words:** A subgraph receives the parent's channels that have the same names, and
+> hands back everything it holds when it ends. On a list that appends, that adds data twice.
 
 This is the whole design, and it's the source of today's trap:
 
@@ -326,6 +367,9 @@ fixes; §7 mistake #4 is the short version.
 
 ### 3.5 Escaping a subgraph with `Command.PARENT`
 
+> 💬 **In plain words:** `Command.PARENT` lets a node inside a subgraph jump straight to a node
+> in the outer graph. Save it for real escapes, such as errors you can't recover from.
+
 Sometimes an inner node needs to jump to a node in the **parent** — "this is unrecoverable,
 go straight to the error handler."
 
@@ -356,7 +400,7 @@ import { StateGraph, Annotation, Command, START, END } from "@langchain/langgrap
 import { ChatGroq } from "@langchain/groq";
 import { z } from "zod";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile" });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b" });
 
 const State = Annotation.Root({
   question: Annotation(),
@@ -366,7 +410,8 @@ const State = Annotation.Root({
 });
 
 const classifier = model.withStructuredOutput(
-  z.object({ kind: z.enum(["concept", "code", "exam"]) })
+  z.object({ kind: z.enum(["concept", "code", "exam"]) }),
+  { method: "jsonSchema" }          // see the ⚠️ note below the diagram
 );
 
 // ONE function: does the work, records it, AND decides where to go
@@ -393,11 +438,16 @@ const app = new StateGraph(State)
   .compile();
 
 console.log(await app.invoke({ question: "why does my recursion never terminate?" }));
-// { question: '…', kind: 'code', answer: '…', log: [ 'classified as code', 'debugged' ] }
+// { question: '…', kind: 'concept', answer: '…a beginner explanation…',
+//   log: [ 'classified as concept', 'explained' ] }
 ```
 
-The diagram renders `Command` routes as **dotted lines**, exactly like conditional edges —
-because that's what they are:
+That is real output from `openai/gpt-oss-120b`, October 2026. The model called the question
+a `concept` question, not `code`; your label may differ. Either way the log shows one
+decision and one matching route.
+
+The diagram draws `Command` routes as **dotted lines**, exactly like conditional edges. That's
+because, underneath, that's what they are.
 
 ```mermaid
 graph TD;
@@ -416,6 +466,15 @@ graph TD;
 	drill --> __end__;
 ```
 
+> ⚠️ **Structured output on GPT-OSS.** Every `withStructuredOutput` / `with_structured_output`
+> today uses JSON-schema mode. With the default (tool calling), `openai/gpt-oss-120b` often
+> answered in plain text instead of calling the tool. Python then failed with
+> `400 Tool choice is required, but model did not call a tool` (4 of 4 tries, October 2026).
+> JSON-schema mode asks the provider to force the reply into your schema, so there is no tool
+> call to skip. In JS, `{ method: "jsonSchema" }` always turns on Groq's strict mode
+> (`@langchain/groq` 1.3.1). In Python, add `strict=True` yourself. Without it, one reply came
+> back with the schema itself wrapped around the answer, and parsing failed.
+
 ### 4.2 When to use `Command` vs a conditional edge
 
 ```
@@ -432,10 +491,10 @@ A useful tiebreaker: **can you write the router as a pure function of state, in 
 If yes, use a conditional edge — it keeps routing logic visible and separately testable. If
 the router would have to re-run a model call or re-parse a big blob, use `Command`.
 
-> 🧪 The cost of `Command` is testability. A conditional edge is a pure function you can
-> table-test with no mocks. A `Command`-returning node bundles the decision with the I/O, so
-> you need a fake model to test its routing. Worth it when the alternative is duplicating the
-> decision; not worth it for `score >= 8`.
+> 🧪 The cost of `Command` is testability. A conditional edge is a pure function you can table-test
+> (check against a table of inputs and expected outputs) with no mocks. A `Command`-returning node
+> bundles the decision with the I/O, so you need a fake model to test its routing. Worth it when
+> the alternative is duplicating the decision; not worth it for `score >= 8`.
 
 ### 4.3 `Send` — the map-reduce research graph
 
@@ -446,7 +505,7 @@ import { StateGraph, Annotation, Send, START, END } from "@langchain/langgraph";
 import { ChatGroq } from "@langchain/groq";
 import { z } from "zod";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.3 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.3 });
 
 const ResearchState = Annotation.Root({
   topic: Annotation(),
@@ -460,7 +519,8 @@ const splitter = model.withStructuredOutput(
   z.object({
     questions: z.array(z.string()).min(2).max(6)
       .describe("independent sub-questions that together cover the topic"),
-  })
+  }),
+  { method: "jsonSchema" }
 );
 
 async function split(state) {
@@ -529,9 +589,10 @@ console.log(`\n${out.findings.length} sub-questions researched in parallel`);
 Four model calls in the wall-clock time of one. `merge` runs **once**, not four times —
 multiple edges into a node is a join, exactly as on Day 17.
 
-> ⚠️ **`findings` must have an append reducer.** With last-write-wins, three of the four
-> results vanish silently. This is the #1 `Send` bug and it produces a study guide that looks
-> fine but is missing three-quarters of the research.
+> ⚠️ **`findings` must have an append reducer.** Without one, the four parallel writes collide
+> and current versions stop the run with `InvalidUpdateError` ("can only receive one value per
+> step") — re-verified October 2026 on langgraph JS 1.4.20 and Python 1.2.14. This is the #1
+> `Send` bug.
 
 ### 4.4 `Send` with a private worker schema
 
@@ -667,8 +728,8 @@ then folds the inherited part in a second time.
 At one subgraph boundary it's an annoyance. Nest three subgraphs inside a loop and your
 `messages` channel grows exponentially.
 
-**Fix A — a wrapper node (recommended).** Give the subgraph its own channel names and
-translate at the boundary:
+**Fix A — a wrapper node (recommended).** A wrapper node is a plain function node that calls
+the subgraph for you. Give the subgraph its own channel names and translate at the boundary:
 
 ```js
 const InnerState = Annotation.Root({
@@ -799,7 +860,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from langchain_groq import ChatGroq
 
-model = ChatGroq(model="llama-3.3-70b-versatile")
+model = ChatGroq(model="openai/gpt-oss-120b")
 
 class State(TypedDict):
     question: str
@@ -810,7 +871,7 @@ class State(TypedDict):
 class Kind(BaseModel):
     kind: Literal["concept", "code", "exam"]
 
-classifier = model.with_structured_output(Kind)
+classifier = model.with_structured_output(Kind, method="json_schema", strict=True)  # §4.1 ⚠️
 
 # The RETURN TYPE ANNOTATION declares the destinations — no `ends` needed
 def classify(state: State) -> Command[Literal["explain", "debug", "drill"]]:
@@ -834,7 +895,8 @@ builder.add_edge("drill", END)
 app = builder.compile()
 
 print(app.invoke({"question": "why does my recursion never terminate?"}))
-# {'question': '…', 'kind': 'code', 'answer': '…', 'log': ['classified as code', 'debugged']}
+# {'question': '…', 'kind': 'concept', 'answer': '…a beginner explanation…',
+#  'log': ['classified as concept', 'explained']}          ← real run; your label may differ
 ```
 
 > 📦 **The key JS/Python difference.** Python reads `Command[Literal[...]]` from the function's
@@ -869,7 +931,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 from langchain_groq import ChatGroq
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 
 class ResearchState(TypedDict):
     topic: str
@@ -884,7 +946,7 @@ class Split(BaseModel):
         min_length=2, max_length=6,
     )
 
-splitter = model.with_structured_output(Split)
+splitter = model.with_structured_output(Split, method="json_schema", strict=True)
 
 def split(state: ResearchState) -> dict:
     out = splitter.invoke(
@@ -933,7 +995,9 @@ print(out["guide"])
 print(f'\n{len(out["findings"])} sub-questions researched in parallel')
 ```
 
-Verified minimal version:
+The full model version above was not re-run end to end on `openai/gpt-oss-120b` (rate limits
+during the October 2026 check). Its JSON-schema `Split` call was run on its own and returned 4
+or 5 sub-questions. The fan-out itself was verified with plain nodes and no model:
 
 ```python
 # topics ["x","y","z"] → three Sends → an append reducer
@@ -1102,7 +1166,7 @@ ob.add_edge(START, "sub")
 ob.add_edge("rescue", END)
 
 print(ob.compile().invoke({"log": []}))
-# {'log': ['escaping', 'rescued']}       ✅ verified
+# {'log': ['unrecoverable', 'rescued']}  ✅ verified (langgraph 1.2.14)
 ```
 
 > 📦 Python compiles this without extra declarations; **JS requires `ends: ["rescue"]`** on the
@@ -1182,10 +1246,10 @@ you find it.
    RUN     merge(state) — sees all three findings
 ```
 
-Two things to note. The fold order in APPLY is **not guaranteed**, which is why the worker
-carries an `index` and `merge` sorts by it — never rely on `findings` arriving in the order
-you sent them. And ROUTE deduplicates: three copies with one successor activate that
-successor once.
+Two things to note. The fold order in APPLY (the order in which the reducer combines the writes)
+is **not guaranteed**. That's why the worker carries an `index` and `merge` sorts by it. Never
+rely on `findings` arriving in the order you sent them. And ROUTE deduplicates: three copies with
+one successor activate that successor once.
 
 ### 6.2 Why `Send` payloads replace state instead of merging
 
@@ -1203,9 +1267,9 @@ instead, for three reasons:
                    would mean 50 copies of the whole conversation in flight.
 ```
 
-The cost is that you must pass everything a worker needs **explicitly** in the payload —
-including things like `topic` that feel ambient. That explicitness is the point: the payload
-is the worker's argument list.
+The cost is that you must pass everything a worker needs **explicitly** in the payload. That
+includes things like `topic` that feel as if they are always there. That explicitness is the
+point: the payload is the worker's argument list.
 
 ### 6.3 What a subgraph node really does
 
@@ -1261,10 +1325,10 @@ or a return annotation (Python).
    500+       this is a job queue, not a graph. Use one.
 ```
 
-`Send` gives you unbounded concurrency: 200 sends means 200 simultaneous model calls, which
-means 429s. Cap it by chunking — `Send` batches of 10 items and let each worker loop
-internally, giving you 20 concurrent copies instead of 200. That's the one place a `for` loop
-inside a node is the *right* answer.
+`Send` gives you unbounded concurrency: 200 sends means 200 simultaneous model calls, which means
+429s (HTTP "too many requests" errors). Cap it by chunking — `Send` batches of 10 items and let
+each worker loop internally, giving you 20 concurrent copies instead of 200. That's the one place
+a `for` loop inside a node is the *right* answer.
 
 ---
 
@@ -1277,8 +1341,9 @@ inside a node is the *right* answer.
 ✅ findings: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] })
 ```
 
-Five workers, one surviving result, no error. The #1 `Send` bug — and the output still looks
-plausible, which is what makes it dangerous.
+Five workers writing one last-write-wins channel in the same superstep. Current versions raise
+`InvalidUpdateError` ("can only receive one value per step"), re-verified October 2026. The #1
+`Send` bug — the fix is always a combining reducer.
 
 ### ❌ 2. Expecting the worker to see the parent's state
 
@@ -1378,8 +1443,8 @@ The routing rule is now a pure one-line function you can table-test with no mock
 ```
 
 If you can't describe the subgraph's contract in one sentence — what goes in, what comes out
-— it's a code-folding exercise, not an abstraction, and it'll leak state through five shared
-channels.
+— it isn't an abstraction. It's a code-folding exercise (code hidden out of sight, not a real
+unit), and it will leak state through five shared channels.
 
 ### ❌ 11. Forgetting `merge` runs once
 
@@ -1577,9 +1642,9 @@ use, and why. Some need two.
 **The two that people get wrong:**
 
 - **#3.** The instinct is a conditional edge because "routing = edges". But the classification
-  came from a model call inside the node. A router would have to read `state.kind` — which
-  works, and honestly is fine — but you now have the decision expressed twice: once as the
-  enum the model returned, once as the mapping in the router. `Command` collapses them. The
+  came from a model call inside the node. A router would have to read `state.kind`. That
+  works, and honestly it's fine. But now the decision is written twice: once as the enum the
+  model returned, and once as the mapping in the router. `Command` collapses them. The
   counter-argument is testability (§4.2), and it's a real trade-off, not a rule.
 
 - **#2 vs #6.** Both are `Send`, but #2 needs a concurrency cap and #6 doesn't. Twelve PDFs
@@ -1611,7 +1676,7 @@ Predict, then run.
 
 | # | Symptom | Why |
 |---|---|---|
-| 1 | Exactly **one** result survives. No error. | Last-write-wins channel; four writes discarded. Which one survives depends on fold order, so it's also non-deterministic. |
+| 1 | The run stops: JS `InvalidUpdateError: Invalid update for channel "findings" … LastValue can only receive one value per step.` / Python `InvalidUpdateError: At key 'findings': Can receive only one value per step.` (re-verified October 2026) | A last-write-wins channel accepts one write per superstep, and four workers wrote at once. Add a combining reducer. |
 | 2 | `undefined` (JS) / `None` (Python) interpolated into the prompt. The model answers *something*, confidently. | A `Send` payload replaces state for that invocation. The parent's channels are not inherited. |
 | 3 | `UnreachableNodeError: Node \`handler\` is not reachable.` at compile time (JS). Python: the same class of error unless the return annotation declares it. | The builder can't read inside a function body, so it can't know where `goto` points. Declare with `ends` (JS) or `Command[Literal[...]]` (Python). |
 | 4 | The graph **halts silently**. Downstream nodes never run; their channels are `undefined`/absent; exit code 0. | An empty `Send` list activates no nodes. If nothing else is active, the graph is finished. |
@@ -1626,9 +1691,9 @@ Predict, then run.
    pass 3:  ...
 ```
 
-Each iteration roughly doubles. With `messages`, three loops of a subgraph is enough to blow
-your context window — and the error you get is a token-limit rejection from the provider, which
-points nowhere near the actual cause.
+Each iteration roughly doubles. With `messages`, three loops of a subgraph are enough to
+overflow your context window. The error you get is a token-limit rejection from the provider,
+and it points nowhere near the actual cause.
 
 **How you'd catch it in practice:** stream with `subgraphs: true` and look at the subgraph
 node's update. If it contains anything the parent already had, you have this bug:
@@ -1680,7 +1745,7 @@ import { StateGraph, Annotation, Send, Command, START, END } from "@langchain/la
 import { ChatGroq } from "@langchain/groq";
 import { z } from "zod";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.3 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.3 });
 
 // ── THE QUIZ SUBGRAPH — its own state, its own tests ────────────────────
 const QuizState = Annotation.Root({
@@ -1705,11 +1770,16 @@ const quizGraph = new StateGraph(QuizState)
   .compile();
 
 // ── THE PARENT STATE ────────────────────────────────────────────────────
+const CLEAR = "CLEAR";   // a sentinel the reducer understands, like addMessages and RemoveMessage
+
 const State = Annotation.Root({
   topic: Annotation(),
   angle: Annotation({ reducer: (a, b) => b ?? a, default: () => "" }),
   subQuestions: Annotation({ reducer: (a, b) => b ?? a, default: () => [] }),
-  findings: Annotation({ reducer: (a, b) => a.concat(b), default: () => [] }),  // Send target
+  findings: Annotation({                                   // Send target
+    reducer: (a, b) => (b === CLEAR ? [] : a.concat(b)),   // append, but CLEAR empties it
+    default: () => [],
+  }),
   replans: Annotation({ reducer: (a, b) => a + b, default: () => 0 }),
   outline: Annotation(),
   quiz: Annotation(),
@@ -1717,7 +1787,8 @@ const State = Annotation.Root({
 
 // ── 1. PLAN ─────────────────────────────────────────────────────────────
 const planner = model.withStructuredOutput(
-  z.object({ questions: z.array(z.string()).min(2).max(5) })
+  z.object({ questions: z.array(z.string()).min(2).max(5) }),
+  { method: "jsonSchema" }
 );
 
 async function plan(state) {
@@ -1725,8 +1796,7 @@ async function plan(state) {
     `Break "${state.topic}" into 2-5 independent sub-questions a beginner needs answered.` +
       (state.angle ? `\nAvoid these angles, they didn't work: ${state.angle}` : "")
   );
-  // clear findings on a replan so old unsupported ones don't count
-  return { subQuestions: questions, replans: state.replans === 0 ? 0 : 0 };
+  return { subQuestions: questions };     // old findings were already cleared by `gather`
 }
 
 // ── 2. FAN OUT (with the zero case handled) ─────────────────────────────
@@ -1749,7 +1819,8 @@ async function research(state) {
 
 // ── 4. VERIFY — runs per finding, also via Send ─────────────────────────
 const verifier = model.withStructuredOutput(
-  z.object({ supported: z.boolean(), reason: z.string() })
+  z.object({ supported: z.boolean(), reason: z.string() }),
+  { method: "jsonSchema" }
 );
 
 async function verify(state) {
@@ -1771,13 +1842,13 @@ function gather(state) {
   const good = state.findings.filter((f) => f.verified && f.supported);
 
   if (good.length >= 2 || state.replans >= 2) {           // 4 ✅ two exits
-    return new Command({ goto: "outline" });
+    return new Command({ goto: "build_outline" });
   }
   return new Command({
     update: {
       replans: 1,
       angle: state.subQuestions.join("; "),
-      findings: [],                                       // note: needs an overwrite path
+      findings: CLEAR,                                    // start the next round empty
     },
     goto: "plan",
   });
@@ -1803,15 +1874,15 @@ const app = new StateGraph(State)
   .addNode("plan", plan)
   .addNode("research", research)
   .addNode("verify", verify)
-  .addNode("gather", gather, { ends: ["plan", "outline"] })     // Command destinations
-  .addNode("outline", outline)
-  .addNode("quiz", makeQuiz)
+  .addNode("gather", gather, { ends: ["plan", "build_outline"] })   // Command destinations
+  .addNode("build_outline", outline)     // JS refuses a node named like a channel ("outline")
+  .addNode("build_quiz", makeQuiz)
   .addEdge(START, "plan")
   .addConditionalEdges("plan", fanOut, ["research", "gather"])
   .addConditionalEdges("research", fanVerify, ["verify", "gather"])
   .addEdge("verify", "gather")
-  .addEdge("outline", "quiz")
-  .addEdge("quiz", END)
+  .addEdge("build_outline", "build_quiz")
+  .addEdge("build_quiz", END)
   .compile();
 
 // ── RUN ─────────────────────────────────────────────────────────────────
@@ -1834,7 +1905,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command, Send
 from langchain_groq import ChatGroq
 
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 
 # ── THE QUIZ SUBGRAPH ───────────────────────────────────────────────────
 class QuizState(TypedDict):
@@ -1853,11 +1924,16 @@ qb.add_edge(START, "draft"); qb.add_edge("draft", "prune"); qb.add_edge("prune",
 quiz_graph = qb.compile()
 
 # ── THE PARENT STATE ────────────────────────────────────────────────────
+CLEAR = "CLEAR"   # a sentinel the reducer understands, like add_messages and RemoveMessage
+
+def add_or_clear(old: list, new) -> list:
+    return [] if new == CLEAR else old + new          # append, but CLEAR empties it
+
 class State(TypedDict):
     topic: str
     angle: str
     sub_questions: list[str]
-    findings: Annotated[list[dict], operator.add]      # Send target
+    findings: Annotated[list[dict], add_or_clear]      # Send target
     replans: Annotated[int, operator.add]
     outline: str
     quiz: list[str]
@@ -1866,7 +1942,7 @@ class State(TypedDict):
 class Plan(BaseModel):
     questions: list[str] = Field(min_length=2, max_length=5)
 
-planner = model.with_structured_output(Plan)
+planner = model.with_structured_output(Plan, method="json_schema", strict=True)
 
 def plan(state: State) -> dict:
     extra = (f'\nAvoid these angles, they did not work: {state["angle"]}'
@@ -1897,7 +1973,7 @@ class Verdict(BaseModel):
     supported: bool
     reason: str
 
-verifier = model.with_structured_output(Verdict)
+verifier = model.with_structured_output(Verdict, method="json_schema", strict=True)
 
 def verify(state: dict) -> dict:
     f = state["finding"]
@@ -1913,12 +1989,13 @@ def fan_verify(state: State):
     return [Send("verify", {"finding": f}) for f in unverified]
 
 # ── 5. GATHER — the loop decision, as a Command ─────────────────────────
-def gather(state: State) -> Command[Literal["plan", "outline"]]:
+def gather(state: State) -> Command[Literal["plan", "build_outline"]]:
     good = [f for f in state["findings"] if f.get("verified") and f.get("supported")]
     if len(good) >= 2 or state.get("replans", 0) >= 2:        # 4 ✅ two exits
-        return Command(goto="outline")
+        return Command(goto="build_outline")
     return Command(
-        update={"replans": 1, "angle": "; ".join(state["sub_questions"])},
+        update={"replans": 1, "angle": "; ".join(state["sub_questions"]),
+                "findings": CLEAR},                           # start the next round empty
         goto="plan",
     )
 
@@ -1939,14 +2016,14 @@ b.add_node("plan", plan)
 b.add_node("research", research)
 b.add_node("verify", verify)
 b.add_node("gather", gather)
-b.add_node("outline", outline)
-b.add_node("quiz", make_quiz)
+b.add_node("build_outline", outline)     # same node names as the JS version
+b.add_node("build_quiz", make_quiz)
 b.add_edge(START, "plan")
 b.add_conditional_edges("plan", fan_out, ["research", "gather"])
 b.add_conditional_edges("research", fan_verify, ["verify", "gather"])
 b.add_edge("verify", "gather")
-b.add_edge("outline", "quiz")
-b.add_edge("quiz", END)
+b.add_edge("build_outline", "build_quiz")
+b.add_edge("build_quiz", END)
 app = b.compile()
 
 out = app.invoke({"topic": "How HTTPS works", "findings": [], "replans": 0})
@@ -1959,7 +2036,7 @@ print(f'\nreplans: {out["replans"]} · findings: {len(out["findings"])} '
 print("\n" + app.get_graph(xray=True).draw_mermaid())
 ```
 
-**Five design decisions worth defending:**
+**Six design decisions worth defending:**
 
 1. **`verify` is a second `Send` fan-out, not a loop inside `research`.** Verification is a
    separate model call with a different prompt and a different failure mode. Splitting it
@@ -1985,12 +2062,33 @@ print("\n" + app.get_graph(xray=True).draw_mermaid())
    last-write-wins — but the moment someone gives it an append reducer, the duplication bug
    appears. The wrapper makes it structurally impossible.
 
-**One honest weakness:** clearing `findings` on a replan is awkward, because an append
-reducer has no "clear" operation — the `findings: []` in the JS version does nothing. In
-production you'd either add a `generation` counter to each finding and filter by the current
-generation, or use a custom reducer that understands a sentinel (the way `addMessages`
-understands `RemoveMessage`). That's a genuine limitation of append reducers, and noticing it
-is the point of the exercise.
+6. **`findings` has a reducer that can clear.** A replan must start from an empty list.
+   Otherwise the old round's findings still count in `gather`, and `fanVerify` sends the old
+   unverified copies to `verify` again. A plain append reducer has no "clear" operation:
+   returning `findings: []` appends nothing and changes nothing. So the reducer understands a
+   sentinel — a special marker value, here `CLEAR` — the way `addMessages` understands
+   `RemoveMessage`. `gather` writes `CLEAR` in the same `Command` that loops back to `plan`.
+   The other option is a `generation` number on each finding, filtered by the current round.
+
+**Verified without a model** (a scripted fake model: round-1 findings are "unsupported",
+round-2 findings "supported"; langgraph JS 1.4.20 and Python 1.2.14 print the same):
+
+```
+  [gather] replans=0 findings=4 good=0
+  [gather] replans=1 findings=4 good=2      ← round 1 was cleared; 4, not 8
+replans: 1 · findings: 4 · supported: 2
+```
+
+`findings: 4` counts each finding twice: the unverified original plus its verified copy.
+That's why `gather` and `outline` filter on `verified` and `supported`. The `[gather]` lines
+come from one `console.log` / `print` added to `gather` for this check. A live run on
+`openai/gpt-oss-120b` was blocked by rate limits during the October 2026 check, so treat the
+model's wording and the number of replans as untested.
+
+> 📦 **Node names.** The nodes are `build_outline` and `build_quiz`, not `outline` and
+> `quiz`. JS refuses a node named like a state channel (`outline is already being used as a
+> state attribute (a.k.a. a channel), cannot also be used as a node name.`). Python 1.2.14
+> accepts it, but both versions use the same names so the graphs match.
 </details>
 
 ---
@@ -2183,18 +2281,23 @@ with an unreachable-node error, because the builder can't read inside a function
 the diagram, per-item retry policies, per-item stream events, per-item failure isolation, and
 interruptibility between items.
 
-A loop wins when items are cheap and fast (no network), when N is large enough that N
-concurrent calls would hit rate limits, or when items must be processed in order. In practice
-a hybrid is common: `Send` batches of 10 and loop inside the worker, capping concurrency at
-20 instead of 200.
+A loop wins in three cases:
+
+- the items are cheap and fast (no network);
+- N is so large that N concurrent calls would hit rate limits;
+- the items must be processed in order.
+
+In practice a hybrid is common: `Send` batches of 10 and loop inside the worker, capping
+concurrency at 20 instead of 200.
 
 ---
 
 **Q7. Three `Send` workers write `results`. What must be true, and what if it isn't?**
 
-`results` must have a **combining reducer** (concat). Without one it's last-write-wins and
-two of the three results are silently discarded — no error, and the output still looks
-plausible. It's also non-deterministic which one survives, since fold order isn't specified.
+`results` must have a **combining reducer** (concat). Without one it's last-write-wins, which
+accepts only one write per superstep — current versions raise `InvalidUpdateError` when three
+workers write at once (re-verified October 2026). Even with a reducer, the merge order isn't
+specified.
 
 Corollary: never rely on arrival order either. Carry an index in each payload and sort in the
 merge node.
@@ -2212,9 +2315,9 @@ second time:
 parent ["before"] → subgraph returns ["before","inner"] → parent ["before","before","inner"]
 ```
 
-Verified in both languages. Inside a loop it compounds per iteration, which can blow a
-context window in three passes — and the resulting error is a provider token-limit rejection
-that points nowhere near the cause.
+Verified in both languages. Inside a loop it compounds on every iteration and can overflow a
+context window in three passes. The resulting error is a provider token-limit rejection, which
+points nowhere near the cause.
 
 The fix is a wrapper node: a plain function that invokes the subgraph with an explicit input
 and returns an explicit output. Renaming channels also works but is fragile.
@@ -2279,9 +2382,9 @@ Not 500 `Send`s — that's 500 concurrent calls and 500 429s. The design:
                  A silent partial success is worse than a loud failure.
 ```
 
-Two things I'd say unprompted: **state holds document ids, never document text** (Day 18's
-cost model — 500 PDFs in state is gigabytes of checkpoint I/O), and at this scale you should
-ask whether this belongs in a graph at all. 500 documents with retries and rate limits is a
+Two things I'd say without being asked. First, **state holds document ids, never document text**
+(Day 18's cost model: 500 PDFs in state is gigabytes of checkpoint I/O). Second, at this scale you
+should ask whether this belongs in a graph at all. 500 documents with retries and rate limits is a
 job queue. A graph is right if there's genuine per-document *reasoning* and you want
 interruptibility; it's the wrong tool if it's mechanical extraction.
 
@@ -2295,7 +2398,7 @@ possible interactions, so nothing is locally reasonable.
 1. **Map who writes what.** Grep every node's return keys. Channels written by one node and
    read by one adjacent node are private — they should move inside a subgraph.
 2. **Group by contract, not adjacency.** For each candidate group, write the one-sentence
-   contract *first*: "given a draft, return an approved draft or a rejection reason." If you
+   contract *first*, such as "given a draft, return an approved draft or a rejection reason". If you
    can't write it, it isn't a subgraph — it's code folding, and it'll leak state.
 3. **Extract with wrapper nodes.** Never wire a compiled subgraph directly as a node: the
    wrapper is where the contract, the translation, and the error handling live, and it makes
@@ -2394,10 +2497,15 @@ accidental topology changes in code review, which is exactly when they're cheap 
 ### Tomorrow
 
 **[Day 20 — Persistence & Checkpointing](day-20-persistence-and-checkpointing.md)**: everything
-you've built so far dies when the process does. Tomorrow you add a checkpointer and get four
-things at once — conversations that survive a restart, `thread_id` as the unit of a
-conversation, the full state history of any run, and **time travel**: rewind to any past
-checkpoint and re-run from there with different input. It's also the prerequisite for Day 21,
+you've built so far dies when the process does. Tomorrow you add a checkpointer — a component
+that saves the graph's state after every step. You get four things at once:
+
+- conversations that survive a restart;
+- `thread_id` as the unit of a conversation;
+- the full state history of any run;
+- **time travel**: rewind to any past checkpoint and re-run from there with different input.
+
+It's also the prerequisite for Day 21,
 because you can't pause for a human without somewhere to put the paused state.
 
 ### Quick self-check
@@ -2416,7 +2524,7 @@ because you can't pause for a human without somewhere to put the paused state.
    *single-item array* rather than a bare value — the reducer concatenates arrays.)
 
 2. **The subgraph shares the `messages` channel name with the parent.** It inherits the
-   parent's messages on the way in, and returns its **entire final state** on the way out, so
+   parent's messages on the way in. On the way out it returns its **entire final state**. So
    the parent's append reducer folds the inherited messages in a second time. Each loop
    iteration roughly doubles them. Fix: a wrapper node that invokes the subgraph with an
    explicit input and returns only what's new — or give the subgraph different channel names.
@@ -2424,8 +2532,8 @@ because you can't pause for a human without somewhere to put the paused state.
 3. **The destination declaration.** In JS, `.addNode("n", fn, { ends: ["review"] })`; in
    Python, annotate the return as `Command[Literal["review"]]` or pass
    `destinations=("review",)`. The builder can't see inside a function body, so it doesn't
-   know `review` is reachable and reports it as unreachable — the same error a missing edge
-   gives you, because that's effectively what it is.
+   know `review` is reachable. It reports it as unreachable. That's the same error a missing
+   edge gives you, because, in effect, that's what it is.
 </details>
 
 ---

@@ -94,7 +94,7 @@ app = b.compile(checkpointer=InMemorySaver())
 |---|---|---|
 | run | `await app.invoke(input, config)` | `app.invoke(input, config)` |
 | thread | `{ configurable: { thread_id: "t1" } }` | `{"configurable": {"thread_id": "t1"}}` |
-| recursion cap | `{ recursionLimit: 50 }` (default 25) | `{"recursion_limit": 50}` |
+| recursion cap | `{ recursionLimit: 50 }` (default 25) | `{"recursion_limit": 50}` (default **10007** in langgraph 1.2.x — always set it) |
 | stream | `for await (const c of await app.stream(input, { streamMode: "updates" }))` | `for c in app.stream(input, config, stream_mode="updates")` |
 | several modes | `streamMode: ["updates", "messages", "custom"]` → `[mode, chunk]` | `stream_mode=[...]` → `(mode, chunk)` |
 | nested graphs | `subgraphs: true` → `[namespace, chunk]` | `subgraphs=True` → `(namespace, chunk)` |
@@ -170,7 +170,7 @@ Python's default `retry_on` does **not** retry `ValueError`, `TypeError`, `Runti
 | Symptom | Cause |
 |---|---|
 | `invoke` returns `undefined` / `None` | a node wrote an undeclared key |
-| one result instead of N after fan-out | last-write-wins channel |
+| `InvalidUpdateError: … can only receive one value per step` after fan-out | last-write-wins channel — add a combining reducer |
 | list items doubled | returning the full list with an append reducer; subgraph sharing a channel |
 | `GraphRecursionError` | a loop without a budget exit |
 | conversation resets | unstable `thread_id` or in-memory checkpointer across processes |

@@ -2,11 +2,28 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 05](day-05-prompts-and-templates.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** how to get *typed, validated objects* out of a model instead of a blob of
-text. `StringOutputParser`, `JsonOutputParser`, `withStructuredOutput`, schema design that
-actually improves accuracy, and what to do when validation fails.
+**Today you learn:** A model answers in free text, and free text is hard to store or check in
+code. Today you get *typed, validated objects* out of the model instead, using output parsers
+(`StringOutputParser`, `JsonOutputParser`) and structured output (`withStructuredOutput`). You
+also learn schema design that improves accuracy, and what to do when validation fails.
 
 This is the day LLM output becomes safe to put in a database.
+
+> 📖 **Words you'll meet today**
+>
+> - **Output parser** — a step at the end of a chain that turns the model's reply into a string,
+>   object or list.
+> - **Schema** — a description of the exact shape your data must have: field names, types and
+>   allowed values.
+> - **Zod / Pydantic** — libraries for writing schemas: Zod in JavaScript, Pydantic in Python.
+> - **Structured output** — asking the model for an object that matches your schema, then
+>   validating it.
+> - **JSON Schema** — a standard format for describing JSON data; your schema is converted to it.
+> - **Enum** — a field that may only hold one value from a fixed list, such as low, medium or
+>   high.
+> - **Nullable field** — a field that is allowed to be `null`, meaning "not present".
+> - **Business rule** — a check on meaning that a schema cannot express, such as "items sum to
+>   the total".
 
 ---
 
@@ -20,8 +37,8 @@ console.log(res.text);
 // "The name is Wasif and the age is 27."
 ```
 
-Now put that in a database. You need `{ name: "Wasif", age: 27 }`. So you regex it. And on
-Day 02 you already felt how that goes:
+Now put that in a database. You need `{ name: "Wasif", age: 27 }`. So you pull the values out
+with a regex (a text-matching pattern). On Day 02 you already saw how that goes:
 
 ```js
 const answer = cot.match(/ANSWER:\s*([\d.]+)/)?.[1];   // ← fragile
@@ -80,14 +97,21 @@ choose a format at all.**
      tool_call.args  →  validate  →  typed object ✅
 ```
 
+The "~3-10% failure" figure in the Level 1 box is illustrative, not measured — the real
+rate depends on the model, the prompt and the schema. Log your own parse failures to find it.
+
 ---
 
 ## 3. First principles
 
 ### 3.1 What an output parser is
 
-A parser is just a `Runnable` that takes the model's output and returns something else. That's
-it. Because it's a `Runnable`, it goes on the end of a chain:
+> 💬 **In plain words:** a parser is the last step of a chain. It takes the model's reply and
+> hands you something easier to use, such as a string or an object.
+
+A parser is just a `Runnable` that takes the model's output and returns something else. (A
+Runnable is LangChain's standard building block, a step you can call and chain; Day 07 covers it
+fully.) That's it. Because it's a `Runnable`, it goes on the end of a chain:
 
 ```
 prompt  →  model  →  parser
@@ -104,6 +128,9 @@ prompt  →  model  →  parser
 
 ### 3.2 `StringOutputParser` — the one you'll use most
 
+> 💬 **In plain words:** this parser turns the model's message object into plain text, so the
+> next step (or a web page) gets a simple string.
+
 ```js
 const chain = prompt.pipe(model).pipe(new StringOutputParser());
 const text = await chain.invoke({ q: "hi" });   // a plain string, not an AIMessage
@@ -115,6 +142,9 @@ which is what a web response wants.
 
 ### 3.3 `withStructuredOutput` — the one that matters
 
+> 💬 **In plain words:** you describe the object you want, and the model returns exactly that
+> object, already checked. No parsing code is needed.
+
 ```js
 import * as z from "zod";
 
@@ -123,12 +153,14 @@ const Person = z.object({
   age: z.number().int().describe("Age in years"),
 });
 
-const extractor = model.withStructuredOutput(Person);
+// method "jsonSchema": the reliable choice for this course's Groq models (§3.5 explains why)
+const extractor = model.withStructuredOutput(Person, { method: "jsonSchema" });
 const result = await extractor.invoke("Wasif is 27 and lives in Lahore.");
-// → { name: "Wasif", age: 27 }   ← a real object. Validated. No parsing.
+// → { name: 'Wasif', age: 27 }   ← a real object. Validated. No parsing.
 ```
 
 No prompt engineering about JSON. No parser. No regex. The schema *is* the instruction.
+(Real output, `openai/gpt-oss-120b`, 8 October 2026.)
 
 **Python is identical with Pydantic:**
 
@@ -137,7 +169,7 @@ class Person(BaseModel):
     name: str = Field(description="The person's full name")
     age: int = Field(description="Age in years")
 
-extractor = model.with_structured_output(Person)
+extractor = model.with_structured_output(Person, method="json_schema", strict=True)
 result = extractor.invoke("Wasif is 27 and lives in Lahore.")
 # → Person(name='Wasif', age=27)
 ```
@@ -147,6 +179,9 @@ result = extractor.invoke("Wasif is 27 and lives in Lahore.")
 > if not stated")` gets you correct behaviour on missing data. Schema design *is* prompt design.
 
 ### 3.4 Schema design patterns that improve accuracy
+
+> 💬 **In plain words:** how you write the schema changes how well the model answers. Fixed
+> choices, an allowed "unknown", and reasoning first all make answers more reliable.
 
 **Use enums instead of free strings:**
 
@@ -165,7 +200,8 @@ age: z.number()
 age: z.number().nullable().describe("Age in years, or null if not stated"),
 ```
 
-This single change removes a large fraction of hallucinated field values.
+This single change removes a large fraction of hallucinated field values (values the model
+made up).
 
 **Ask for reasoning *inside* the schema (structured CoT):**
 
@@ -177,8 +213,9 @@ const Classification = z.object({
 });
 ```
 
-Field order matters — the model generates fields in schema order, so `reasoning` first means it
-literally thinks before committing to `label`. You get chain-of-thought *and* a clean object.
+Field order matters. The model generates fields in schema order, so `reasoning` first means it
+literally thinks before committing to `label`. You get chain-of-thought (CoT — reasoning written
+before the answer, from Day 02) *and* a clean object.
 
 **Add a confidence field and route on it:**
 
@@ -186,7 +223,7 @@ literally thinks before committing to `label`. You get chain-of-thought *and* a 
 if (result.confidence < 0.7) escalateToHuman(result);
 ```
 
-Self-reported confidence is imperfect but a genuinely useful cheap signal.
+Self-reported confidence is imperfect, but it is a cheap and useful signal.
 
 **Nest for structure, but not too deep:**
 
@@ -206,46 +243,80 @@ Two or three levels is fine. Beyond that, accuracy drops sharply — split into 
 
 ### 3.5 The two strategies behind `withStructuredOutput`
 
-Under the hood there are two mechanisms:
+> 💬 **In plain words:** LangChain can enforce your schema in three ways. Tool calling is the
+> default. JSON schema hands the schema to the provider, and it is the one to use with this
+> course's Groq models. JSON mode is the weak backup.
+
+Under the hood there are three mechanisms:
 
 | Method | How | When |
 |---|---|---|
 | **Tool calling** (default) | Schema becomes a tool definition; model emits `tool_call.args` | Provider supports tools — nearly all do |
+| **JSON schema** | `response_format: json_schema` — the schema itself goes to the provider | Provider supports it. ✅ Use this with GPT-OSS on Groq |
 | **JSON mode** | `response_format: json_object` + schema in the prompt | Provider has JSON mode but weak tool support |
 
 ```js
-model.withStructuredOutput(Schema, { method: "jsonMode" });   // force JSON mode
-model.withStructuredOutput(Schema, { includeRaw: true });     // get the raw message too
+model.withStructuredOutput(Schema, { method: "jsonSchema" });   // ✅ recommended for GPT-OSS
+model.withStructuredOutput(Schema, { method: "jsonMode" });     // force JSON mode
+model.withStructuredOutput(Schema, { includeRaw: true });       // get the raw message too
 ```
+
+```python
+model.with_structured_output(Schema, method="json_schema", strict=True)   # ✅ for GPT-OSS
+model.with_structured_output(Schema, method="json_mode")
+model.with_structured_output(Schema, include_raw=True)
+```
+
+All three methods worked with `openai/gpt-oss-120b` and `-20b` on Groq, in both languages
+(checked 7 October 2026). But the default, tool calling, is **flaky** with these models. Now and
+then the model chats instead of calling the tool, and Groq answers `400 Tool choice is required,
+but model did not call a tool`. §5.2 shows it happening. JSON schema avoided that in our runs,
+so every Groq example in this chapter passes it. §6 still walks through tool calling, because
+it is the default you will meet with other providers.
 
 `includeRaw: true` returns `{ raw: AIMessage, parsed: object | null }` — useful when you need
 token usage, or want to handle parse failure yourself rather than throwing.
 
 ### 3.6 When it fails, and what to do
 
+> 💬 **In plain words:** structured output is reliable, not perfect. Plan for failure: inspect
+> the raw reply, retry, or switch to another model.
+
 Structured output can still fail:
 
 - The model refuses ("I can't extract that")
+- The model chats instead of filling the schema, and the provider rejects the reply with an
+  error (Groq: `400 … tool_use_failed`, which you will meet in §5.2)
+- The JSON schema method can fail too: Groq answers `400 Failed to validate JSON`
+  (`json_validate_failed`). We saw it twice in a row on `openai/gpt-oss-20b` with §5.6's quiz
+  at `temperature=0`; the same call at `0.4` worked
 - Content genuinely doesn't contain the fields
 - The provider's constraint is imperfect for deeply nested schemas
 - A timeout mid-generation
 
-**Three layers of defence:**
+**Use three layers of defence.**
 
 ```js
+const opts = { method: "jsonSchema" };
+
 // 1. includeRaw so you can inspect instead of throwing
-const { raw, parsed } = await model.withStructuredOutput(Schema, { includeRaw: true })
+const { raw, parsed } = await model.withStructuredOutput(Schema, { ...opts, includeRaw: true })
                                    .invoke(input);
 if (!parsed) { /* handle gracefully */ }
 
 // 2. Retries
-model.withStructuredOutput(Schema).withRetry({ stopAfterAttempt: 3 })
+model.withStructuredOutput(Schema, opts).withRetry({ stopAfterAttempt: 3 })
 
 // 3. Fallback to a different model
-model.withStructuredOutput(Schema).withFallbacks([other.withStructuredOutput(Schema)])
+model.withStructuredOutput(Schema, opts).withFallbacks([other.withStructuredOutput(Schema)])
 ```
 
-And the manual level-1 approach, for providers without tool support:
+Layer 1 only catches *parse* failures. A provider error such as the `400` above is still
+thrown: in our Python test, `include_raw=True` raised the same `BadRequestError`. Layers 2 and 3
+(or a plain `try`) are what catch those. And with the JSON schema method a parse failure is
+rare: the model is forced into the schema's shape, so it may invent values instead (§4.4).
+
+For providers without tool support, use the manual level-1 approach.
 
 ```js
 const parser = new JsonOutputParser();
@@ -253,24 +324,35 @@ const fixing = OutputFixingParser.fromLLM(model, parser);   // asks the model to
 ```
 
 `OutputFixingParser` feeds the broken output *and* the error message back to the model and asks
-for a corrected version. Costs an extra call; saves the request.
+for a corrected version. It costs an extra call, but it saves the request.
 
 ### 3.7 Streaming structured output
 
-Structured output can stream — you get **progressively complete partial objects**:
+> 💬 **In plain words:** you can watch an object fill in while the model writes it. Each update
+> is the whole object so far, not just the new part. With Groq, you need `JsonOutputParser` for
+> that.
+
+You might expect `.stream()` on a structured chain to give **progressively complete partial
+objects**. With this course's Groq models it doesn't. In our runs (8 October 2026, both
+languages, the default and `jsonSchema` methods), the stream gave **one chunk**: the finished
+object.
+
+`JsonOutputParser` does stream partial objects, because it parses the text as it arrives. The
+first four chunks of a real JavaScript run (83 chunks in total):
 
 ```js
-for await (const partial of await chain.stream(input)) {
+for await (const partial of await model.pipe(new JsonOutputParser()).stream(input)) {
   console.log(partial);
-  // { }
-  // { title: "Rain" }
-  // { title: "Rainbows", bullets: ["Light refracts"] }
-  // { title: "Rainbows", bullets: ["Light refracts", "..."] }   ← complete
+  // {}
+  // { title: '' }
+  // { title: 'The' }
+  // { title: 'The Power' }    … and so on, until the object is complete
 }
 ```
 
 This is how you build a UI that fills in fields as they arrive. Note each chunk is the
-**accumulated** object, not a delta.
+**accumulated** object, not a delta. The catch: `JsonOutputParser` enforces no schema, so
+validate the final object yourself (§4.5 does).
 
 ---
 
@@ -279,6 +361,10 @@ This is how you build a UI that fills in fields as they arrive. Note each chunk 
 ```bash
 npm install langchain @langchain/core @langchain/groq zod dotenv
 ```
+
+> 📝 Outputs in `// comments` in §4.1 show the expected shape. The printed runs from §4.2 on
+> are real ones, recorded against Groq (`openai/gpt-oss-120b`) on 8 October 2026. Your wording
+> will differ.
 
 ### 4.1 String and JSON parsers
 
@@ -290,7 +376,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser, JsonOutputParser,
          CommaSeparatedListOutputParser } from "@langchain/core/output_parsers";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 // ── StringOutputParser ───────────────────────────────────────────────────
 const prompt = ChatPromptTemplate.fromMessages([["human", "Name one {thing}. One word only."]]);
@@ -335,7 +421,7 @@ import "dotenv/config";
 import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const SupportTicket = z.object({
   // Reasoning FIRST — the model generates fields in order, so this is CoT.
@@ -358,7 +444,12 @@ const SupportTicket = z.object({
     .describe("Your confidence in this classification, 0 to 1"),
 });
 
-const classifier = model.withStructuredOutput(SupportTicket, { name: "classify_ticket" });
+// method "jsonSchema" sends the schema to Groq itself (§3.5). With GPT-OSS it is more
+// reliable than the default tool-calling method; see the Python run in §5.2.
+const classifier = model.withStructuredOutput(SupportTicket, {
+  name: "classify_ticket",
+  method: "jsonSchema",
+});
 
 const TICKETS = [
   "URGENT!!! Nobody on my team can log in since the update. We have a demo in 20 minutes.",
@@ -368,8 +459,14 @@ const TICKETS = [
 ];
 
 for (const t of TICKETS) {
-  const r = await classifier.invoke(t);
   console.log(`\n"${t.slice(0, 50)}..."`);
+  let r;
+  try {
+    r = await classifier.invoke(t);
+  } catch (err) {                       // the provider can refuse to fill the schema (§3.6)
+    console.log(`  ❌ ${err.message.slice(0, 90)}`);
+    continue;
+  }
   console.log(`  ${r.category}/${r.urgency} · ${r.customerSentiment} · conf=${r.confidence}`);
   console.log(`  summary: ${r.summary}`);
   console.log(`  feature: ${r.affectedFeature ?? "(none)"}`);
@@ -377,8 +474,39 @@ for (const t of TICKETS) {
 }
 ```
 
-Note `"hi"` — with `affectedFeature` nullable and a confidence field, the model can honestly say
-"I don't know" instead of inventing a category.
+What one real run printed (`openai/gpt-oss-120b`, `jsonSchema` method, 8 October 2026 — your
+wording will differ):
+
+```
+"URGENT!!! Nobody on my team can log in since the u..."
+  BUG/critical · angry · conf=0.97
+  summary: Team cannot log in after update, demo in 20 minutes.
+  feature: login
+
+"Hey, would be lovely if you added a dark mode at s..."
+  FEATURE/low · calm · conf=0.99
+  summary: Request to add dark mode feature
+  feature: dark mode
+
+"I've been charged £49 twice this month and support..."
+  BILLING/high · frustrated · conf=0.97
+  summary: Charged £49 twice this month, no support response for 6 days.
+  feature: billing
+
+"hi..."
+  OTHER/low · calm · conf=1
+  summary: User greeting, no issue reported
+  feature: (none)
+```
+
+Look at `"hi"`. Because `affectedFeature` is nullable and `OTHER` exists, the model has an honest
+answer for a message that isn't a ticket. It doesn't have to invent a bug. Notice too that it
+reported `conf=1` for a message with nothing in it: self-reported confidence is a weak signal,
+so don't trust it alone. And `feature: billing` on the third ticket is arguable, because the
+customer named no product feature. Small judgement calls like this are why Day 25 measures.
+
+The `try` is there because `"hi"` is the input most likely to fail outright. With the default
+tool-calling method, it did fail in Python — see §5.2.
 
 ### 4.3 Nested schemas — invoice extraction
 
@@ -388,7 +516,7 @@ import "dotenv/config";
 import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const LineItem = z.object({
   description: z.string(),
@@ -420,7 +548,7 @@ VAT (20%): $31.39
 TOTAL DUE: $188.36
 `;
 
-const result = await model.withStructuredOutput(Invoice).invoke(
+const result = await model.withStructuredOutput(Invoice, { method: "jsonSchema" }).invoke(
   `Extract the invoice data:\n\n${TEXT}`
 );
 
@@ -432,6 +560,17 @@ const ok = Math.abs(computed - result.subtotal) < 0.01;
 console.log(`\nsubtotal check: computed ${computed.toFixed(2)} vs stated ` +
             `${result.subtotal.toFixed(2)} ${ok ? "✅" : "❌ MISMATCH — flag for review"}`);
 ```
+
+In our run, every field came back correct: vendor, `INV-2024-0891`, `2024-03-14`, `USD`, the
+three line items, and `156.97` / `31.39` / `188.36`. Then the last line printed:
+
+```
+subtotal check: computed 155.97 vs stated 156.97 ❌ MISMATCH — flag for review
+```
+
+That is not the model's mistake. Do the sum: 12 × 4.50 + 3 × 29.99 + 12.00 = 155.97. The
+invoice itself prints the wrong subtotal. The model copied it faithfully, and the check caught
+it.
 
 > 💡 That arithmetic check is the pattern to remember: **structured output makes the model's
 > answer verifiable.** You can't cross-check a paragraph of prose; you can absolutely check
@@ -446,7 +585,7 @@ import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const Schema = z.object({
   species: z.string().describe("The animal species mentioned"),
@@ -454,7 +593,7 @@ const Schema = z.object({
 });
 
 // ── includeRaw: inspect instead of throwing ──────────────────────────────
-const safe = model.withStructuredOutput(Schema, { includeRaw: true });
+const safe = model.withStructuredOutput(Schema, { method: "jsonSchema", includeRaw: true });
 
 for (const text of ["I saw three foxes in the garden.", "The weather is nice today."]) {
   const { raw, parsed } = await safe.invoke(text);
@@ -467,14 +606,28 @@ for (const text of ["I saw three foxes in the garden.", "The weather is nice tod
 
 // ── retries + cross-provider fallback ────────────────────────────────────
 const resilient = model
-  .withStructuredOutput(Schema)
+  .withStructuredOutput(Schema, { method: "jsonSchema" })
   .withRetry({ stopAfterAttempt: 3 })
   .withFallbacks([
-    new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash" }).withStructuredOutput(Schema),
+    new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash" }).withStructuredOutput(Schema),
   ]);
 
 console.log(await resilient.invoke("Two cats sat on the wall."));
 ```
+
+What one real run printed:
+
+```
+✅ I saw three foxes in the garde… → { species: 'fox', count: 3 } [393 tok]
+✅ The weather is nice today.… → { species: 'none', count: 0 } [399 tok]
+{ species: 'cat', count: 2 }
+```
+
+Look at the second line. There is no animal, yet `parsed` is not `null`. The JSON schema method
+makes Groq produce a schema-shaped reply, so the model filled the fields with `'none'` and `0`.
+`includeRaw` catches replies that fail to parse; it cannot catch a reply that parses but means
+nothing. Business rules catch that (Exercise 3). Here, a schema where `species` is nullable
+would let the model say "no animal" honestly.
 
 ### 4.5 Streaming structured output
 
@@ -483,8 +636,9 @@ console.log(await resilient.invoke("Two cats sat on the wall."));
 import "dotenv/config";
 import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
+import { JsonOutputParser } from "@langchain/core/output_parsers";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const Article = z.object({
   title: z.string().describe("A catchy title"),
@@ -492,14 +646,43 @@ const Article = z.object({
   conclusion: z.string(),
 });
 
-const chain = model.withStructuredOutput(Article);
-
-console.log("watch the object fill in:\n");
+// 1. Structured output: validated, but on Groq the stream is ONE chunk (§3.7).
+const chain = model.withStructuredOutput(Article, { method: "jsonSchema" });
+let chunks = 0;
 for await (const partial of await chain.stream("Write a short article about why sleep matters.")) {
-  console.clear();
-  console.log(JSON.stringify(partial, null, 2));   // each chunk is the ACCUMULATED object
+  chunks++;
 }
+console.log(`withStructuredOutput: ${chunks} chunk(s)`);
+
+// 2. JsonOutputParser: partial objects as the text arrives. No schema is enforced.
+const live = model.pipe(new JsonOutputParser());
+let last;
+chunks = 0;
+for await (const partial of await live.stream(
+  "Write a short article about why sleep matters. Reply with JSON only, with keys " +
+  '"title", "keyPoints" (4 strings) and "conclusion".')) {
+  chunks++;
+  last = partial;                       // each chunk is the ACCUMULATED object so far
+  if (chunks <= 4) console.log(JSON.stringify(partial));
+}
+console.log(`JsonOutputParser: ${chunks} chunks`);
+console.log("final object valid:", Article.safeParse(last).success);   // validate it yourself
 ```
+
+What one real run printed:
+
+```
+withStructuredOutput: 1 chunk(s)
+{}
+{"title":""}
+{"title":"The"}
+{"title":"The Importance"}
+JsonOutputParser: 102 chunks
+final object valid: true
+```
+
+Pick by need. For a form that fills in on screen, stream through `JsonOutputParser` and
+validate at the end. When you only need the finished, validated object, use structured output.
 
 ### 4.6 The full pipeline: prompt → model → structured
 
@@ -510,7 +693,7 @@ import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const Quiz = z.object({
   questions: z.array(z.object({
@@ -527,7 +710,8 @@ const prompt = ChatPromptTemplate.fromMessages([
   ["human", "Create a {n}-question quiz about: {topic}"],
 ]);
 
-const chain = prompt.pipe(model.withStructuredOutput(Quiz));   // ← prompt | model | schema
+const chain = prompt.pipe(model.withStructuredOutput(Quiz, { method: "jsonSchema" }));
+//                    ↑ prompt | model | schema
 
 const quiz = await chain.invoke({ level: "beginner", n: 3, topic: "how HTTP works" });
 
@@ -536,6 +720,17 @@ quiz.questions.forEach((q, i) => {
   q.options.forEach((o, j) => console.log(`   ${j === q.correctIndex ? "✅" : "  "} ${o}`));
   console.log(`   → ${q.explanation}`);
 });
+```
+
+The start of one real run:
+
+```
+1. What does HTTP stand for?
+   ✅ HyperText Transfer Protocol
+      Hyperlink Transfer Procedure
+      HyperText Transmission Process
+      Home Transfer Protocol
+   → HTTP stands for HyperText Transfer Protocol, the foundation of data communication for the web.
 ```
 
 ---
@@ -558,7 +753,7 @@ from langchain_core.output_parsers import (
 )
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 # ── StrOutputParser (note: Str, not String, in Python) ───────────────────
 prompt = ChatPromptTemplate.from_messages([("human", "Name one {thing}. One word only.")])
@@ -608,7 +803,7 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class SupportTicket(BaseModel):
     """Classification of a customer support ticket."""
@@ -631,7 +826,10 @@ class SupportTicket(BaseModel):
 
     confidence: float = Field(ge=0, le=1, description="Your confidence, 0 to 1")
 
-classifier = model.with_structured_output(SupportTicket)
+# method="json_schema" sends the schema to Groq itself (§3.5). With GPT-OSS it is more
+# reliable than the default tool-calling method — see the run below. strict=True asks Groq to
+# enforce the schema exactly.
+classifier = model.with_structured_output(SupportTicket, method="json_schema", strict=True)
 
 TICKETS = [
     "URGENT!!! Nobody on my team can log in since the update. We have a demo in 20 minutes.",
@@ -641,14 +839,74 @@ TICKETS = [
 ]
 
 for t in TICKETS:
-    r = classifier.invoke(t)
     print(f'\n"{t[:50]}..."')
+    try:
+        r = classifier.invoke(t)
+    except Exception as err:            # the provider can refuse to fill the schema (§3.6)
+        print(f"  ❌ {str(err)[:90]}")
+        continue
     print(f"  {r.category}/{r.urgency} · {r.customer_sentiment} · conf={r.confidence}")
     print(f"  summary: {r.summary}")
     print(f"  feature: {r.affected_feature or '(none)'}")
     if r.confidence < 0.7:
         print("  ⚠️  low confidence → route to human")
 ```
+
+What one real run printed (`openai/gpt-oss-120b`, `json_schema` method, 8 October 2026 — your
+wording will differ):
+
+```
+"URGENT!!! Nobody on my team can log in since the u..."
+  BUG/critical · frustrated · conf=0.97
+  summary: Team cannot log in after update; demo in 20 minutes.
+  feature: login
+
+"Hey, would be lovely if you added a dark mode at s..."
+  FEATURE/low · calm · conf=0.99
+  summary: User suggests adding dark mode
+  feature: dark mode
+
+"I've been charged £49 twice this month and support..."
+  BILLING/high · frustrated · conf=0.97
+  summary: Charged £49 twice this month, no support response for 6 days.
+  feature: (none)
+
+"hi..."
+  OTHER/low · calm · conf=0.95
+  summary: User says hi
+  feature: (none)
+```
+
+**Why not the default method?** We first ran this file with plain
+`model.with_structured_output(SupportTicket)`, which uses tool calling. The first three tickets
+came back fine. `"hi"` failed, in all three runs we tried at `temperature=0`:
+
+```
+"hi..."
+  ❌ Error code: 400 - {'error': {'message': 'Tool choice is required, but model did not call a
+```
+
+The full error was:
+
+```
+groq.BadRequestError: Error code: 400 - {'error': {'message': 'Tool choice is required, but
+model did not call a tool', 'type': 'invalid_request_error', 'code': 'tool_use_failed',
+'failed_generation': 'Hello! How can I help you today?'}}
+```
+
+The model was told it *must* call the schema tool, and it chatted back instead. Groq rejects
+that reply with a `400`. Because it failed every time, a plain retry would not have helped. It
+is flaky rather than always broken. The JavaScript run of the default method answered `"hi"`
+fine. Another chapter's tests saw tool calling fail on four of four Python calls, with a
+different schema.
+
+Switching to `method="json_schema"` fixed it: the same `"hi"` came back as `OTHER`. Use
+`strict=True` with it. Without it, a test in another chapter got one reply wrapped inside the
+schema, and parsing failed with an `OutputParserException`. In JavaScript, `method:
+"jsonSchema"` always sends strict mode, so there is nothing to add.
+
+The lesson for every model, not just this one, is §3.6: structured output can fail, so never
+call it bare in a loop that must not crash.
 
 > 💡 **The docstring is not decoration.** In Python, a Pydantic model's docstring becomes the
 > schema's top-level `description`, which is sent to the model. Always write one.
@@ -663,7 +921,7 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class LineItem(BaseModel):
     description: str
@@ -694,7 +952,8 @@ VAT (20%): $31.39
 TOTAL DUE: $188.36
 """
 
-result = model.with_structured_output(Invoice).invoke(f"Extract the invoice data:\n\n{TEXT}")
+extractor = model.with_structured_output(Invoice, method="json_schema", strict=True)
+result = extractor.invoke(f"Extract the invoice data:\n\n{TEXT}")
 print(result.model_dump_json(indent=2))
 
 # You can now VALIDATE the model's arithmetic — a real production check:
@@ -714,7 +973,7 @@ from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class Sighting(BaseModel):
     """An animal sighting."""
@@ -722,7 +981,8 @@ class Sighting(BaseModel):
     count: int = Field(description="How many, or 0 if not stated")
 
 # ── include_raw: inspect instead of throwing ─────────────────────────────
-safe = model.with_structured_output(Sighting, include_raw=True)
+safe = model.with_structured_output(Sighting, method="json_schema", strict=True,
+                                   include_raw=True)
 
 for text in ["I saw three foxes in the garden.", "The weather is nice today."]:
     out = safe.invoke(text)
@@ -735,10 +995,10 @@ for text in ["I saw three foxes in the garden.", "The weather is nice today."]:
 
 # ── retries + cross-provider fallback ────────────────────────────────────
 resilient = (
-    model.with_structured_output(Sighting)
+    model.with_structured_output(Sighting, method="json_schema", strict=True)
     .with_retry(stop_after_attempt=3)
     .with_fallbacks([
-        ChatGoogleGenerativeAI(model="gemini-2.5-flash").with_structured_output(Sighting)
+        ChatGoogleGenerativeAI(model="gemini-3.8-flash").with_structured_output(Sighting)
     ])
 )
 
@@ -751,11 +1011,12 @@ print(resilient.invoke("Two cats sat on the wall."))
 # day06_streaming_structured.py
 import json
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from langchain_groq import ChatGroq
+from langchain_core.output_parsers import JsonOutputParser
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class Article(BaseModel):
     """A short article."""
@@ -763,13 +1024,28 @@ class Article(BaseModel):
     key_points: list[str] = Field(description="4 key points")
     conclusion: str
 
-chain = model.with_structured_output(Article)
+# 1. Structured output: validated, but on Groq the stream is ONE chunk (§3.7).
+chain = model.with_structured_output(Article, method="json_schema", strict=True)
+chunks = sum(1 for _ in chain.stream("Write a short article about why sleep matters."))
+print(f"with_structured_output: {chunks} chunk(s)")
 
-print("watch the object fill in:\n")
-for partial in chain.stream("Write a short article about why sleep matters."):
-    # Each chunk is the ACCUMULATED object (a dict while incomplete).
-    print(json.dumps(partial if isinstance(partial, dict) else partial.model_dump(), indent=2))
-    print("---")
+# 2. JsonOutputParser: partial objects as the text arrives. No schema is enforced.
+live = model | JsonOutputParser()
+chunks, last = 0, None
+for partial in live.stream(
+        "Write a short article about why sleep matters. Reply with JSON only, with keys "
+        '"title", "key_points" (4 strings) and "conclusion".'):
+    chunks += 1
+    last = partial                      # each chunk is the ACCUMULATED object so far
+    if chunks <= 4:
+        print(json.dumps(partial))
+print(f"JsonOutputParser: {chunks} chunks")
+
+try:                                    # validate the final object yourself
+    Article.model_validate(last)
+    print("final object valid: True")
+except ValidationError:
+    print("final object valid: False")
 ```
 
 ### 5.6 The full pipeline: prompt → model → structured
@@ -782,7 +1058,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class Question(BaseModel):
     question: str
@@ -800,7 +1076,8 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "Create a {n}-question quiz about: {topic}"),
 ])
 
-chain = prompt | model.with_structured_output(Quiz)      # ← prompt | model | schema
+chain = prompt | model.with_structured_output(Quiz, method="json_schema", strict=True)
+#             ↑ prompt | model | schema
 
 quiz = chain.invoke({"level": "beginner", "n": 3, "topic": "how HTTP works"})
 
@@ -818,6 +1095,7 @@ for i, q in enumerate(quiz.questions, 1):
 | Schema library | Zod | Pydantic |
 | String parser | `StringOutputParser` | `StrOutputParser` ⚠️ |
 | Method | `withStructuredOutput(S)` | `with_structured_output(S)` |
+| JSON schema mode | `{ method: "jsonSchema" }` (always strict) | `method="json_schema", strict=True` |
 | Raw included | `{ includeRaw: true }` → `{raw, parsed}` | `include_raw=True` → `{"raw", "parsed"}` |
 | Return type | plain object | Pydantic model instance (use `.model_dump()` for a dict) |
 | Field description | `.describe("...")` | `Field(description="...")` |
@@ -869,7 +1147,7 @@ throw away the "execute the function" part and keep the arguments.
 
 That's why:
 - Providers without tool support fall back to JSON mode
-- Field descriptions matter (they're tool parameter descriptions → prompt text)
+- Field descriptions matter (they become tool parameter descriptions, which are prompt text)
 - Deeply nested schemas degrade (the constraint gets harder to satisfy)
 - It composes with `.withRetry()` and `.withFallbacks()` — it's still just a `Runnable`
 
@@ -882,12 +1160,19 @@ The model generates the JSON **left to right, one token at a time** (Day 01). So
 { reasoning: ..., label: ... }   // reasons, THEN commits  ← better
 ```
 
-This is chain-of-thought expressed in a schema. It costs a few output tokens and measurably
-improves classification accuracy on hard cases. Put `reasoning` first, always.
+This is chain-of-thought expressed in a schema. It costs a few output tokens and tends to
+improve classification accuracy on hard cases (check it against your own labelled examples). Put `reasoning` first, always.
+
+One twist with this course's Groq models. GPT-OSS is a *reasoning model*: it writes hidden
+reasoning tokens before any visible output, so it already "thinks first". A `reasoning` field
+still earns its place. It makes that thinking visible and storable, and it helps models that
+don't reason on their own. Whether it also raises accuracy on a reasoning model is something to
+measure on your own examples, not assume.
 
 ### Why `JsonOutputParser` handles markdown fences
 
-Models trained on lots of markdown will wrap JSON in fences roughly 1 call in 20:
+Models trained on lots of markdown will sometimes wrap JSON in fences (how often depends on
+the model and prompt — often enough that you must handle it):
 
 ````
 ```json
@@ -895,9 +1180,9 @@ Models trained on lots of markdown will wrap JSON in fences roughly 1 call in 20
 ```
 ````
 
-`JsonOutputParser` strips fences, trims prose before/after, and handles partial JSON while
-streaming. That's ~50 lines of edge cases you'd otherwise rediscover in production, one bug at
-a time.
+`JsonOutputParser` strips fences, trims prose before and after, and handles partial JSON while
+streaming. That's about 50 lines of edge cases you'd otherwise rediscover in production, one bug
+at a time.
 
 <details>
 <summary>📜 Legacy note: older parsing approaches</summary>
@@ -951,7 +1236,8 @@ phoneNumber: z.string()   // model MUST produce one → it invents one
 
 **❌ Putting `reasoning` last**
 
-The model commits to an answer and then rationalises. ✅ Reasoning first.
+The model commits to an answer and then rationalises (invents a justification afterwards).
+✅ Reasoning first.
 
 ---
 
@@ -960,7 +1246,7 @@ The model commits to an answer and then rationalises. ✅ Reasoning first.
 ```js
 z.object({ a: z.object({ b: z.object({ c: z.object({ d: ... }) }) }) })
 ```
-Accuracy falls off a cliff. ✅ Flatten, or split into multiple calls and assemble in code.
+Accuracy drops sharply. ✅ Flatten, or split into multiple calls and assemble in code.
 
 ---
 
@@ -970,7 +1256,7 @@ Accuracy falls off a cliff. ✅ Flatten, or split into multiple calls and assemb
 const r = await chain.invoke(text);
 db.insert(r);                          // throws on refusal, timeout, or empty input
 ```
-✅ `includeRaw: true`, or wrap with retry + fallback, and validate business rules (like the
+✅ `includeRaw: true`, or wrap with retry and fallback, and validate business rules (like the
 invoice arithmetic check) before writing to a database.
 
 ---
@@ -1008,7 +1294,7 @@ import "dotenv/config";
 import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const Solution = z.object({
   reasoning: z.string().describe("Step-by-step working. Write this FIRST, before the answer."),
@@ -1016,7 +1302,7 @@ const Solution = z.object({
   confidence: z.number().min(0).max(1).describe("How confident you are, 0 to 1"),
 });
 
-const solver = model.withStructuredOutput(Solution);
+const solver = model.withStructuredOutput(Solution, { method: "jsonSchema" });
 
 const PROBLEMS = [
   ["A shop has 23 apples, sells 7, buys 3 crates of 12. How many?", 52],
@@ -1045,7 +1331,7 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class Solution(BaseModel):
     """The worked solution to a word problem."""
@@ -1053,7 +1339,7 @@ class Solution(BaseModel):
     answer: float = Field(description="The final numeric answer")
     confidence: float = Field(ge=0, le=1, description="How confident you are, 0 to 1")
 
-solver = model.with_structured_output(Solution)
+solver = model.with_structured_output(Solution, method="json_schema", strict=True)
 
 PROBLEMS = [
     ("A shop has 23 apples, sells 7, buys 3 crates of 12. How many?", 52),
@@ -1102,7 +1388,7 @@ import "dotenv/config";
 import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const V1 = z.object({
   title: z.string(),
@@ -1150,7 +1436,7 @@ const TRANSCRIPTS = [
 
 for (const [name, schema] of [["V1", V1], ["V2", V2], ["V3", V3]]) {
   console.log(`\n${"═".repeat(60)}\n${name}\n${"═".repeat(60)}`);
-  const extractor = model.withStructuredOutput(schema);
+  const extractor = model.withStructuredOutput(schema, { method: "jsonSchema" });
 
   for (const [i, t] of TRANSCRIPTS.entries()) {
     try {
@@ -1173,7 +1459,7 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class V1(BaseModel):
     title: str
@@ -1220,7 +1506,7 @@ Priya: let's park it until we hear back.""",
 
 for name, schema in [("V1", V1), ("V2", V2), ("V3", V3)]:
     print(f"\n{'═' * 60}\n{name}\n{'═' * 60}")
-    extractor = model.with_structured_output(schema)
+    extractor = model.with_structured_output(schema, method="json_schema", strict=True)
 
     for i, t in enumerate(TRANSCRIPTS, 1):
         try:
@@ -1232,29 +1518,36 @@ for name, schema in [("V1", V1), ("V2", V2), ("V3", V3)]:
             print(f"\ntranscript {i}: ❌ {str(e)[:60]}")
 ```
 
-**What you should see:**
+**What our runs showed** (`openai/gpt-oss-20b`, 8 October 2026; JavaScript and Python agreed
+on every cell below — your wording will differ):
 
 | | V1 | V2 | V3 |
 |---|---|---|---|
 | `attendees` | `"Sara, Tom"` — a string you must re-parse | `["Sara","Tom"]` ✅ | `["Sara","Tom"]` ✅ |
-| `nextMeeting` on transcript 2 | invented a date, or `"N/A"`, or `"none"` | `null` ✅ | `null` ✅ |
-| `priority` | `"High"`, `"medium-high"`, `"P2"` — inconsistent | one of three values ✅ | ✅ |
-| Empty transcript | hallucinated a whole meeting | mostly empty, some invention | low `confidence` flags it ✅ |
+| next meeting, transcript 1 ("same time next Tuesday?") | `"next Tuesday"` — free text | `"2026-10-10"` — an invented date ❌ | `null`, and `reasoning` says the date is vague ✅ |
+| next meeting, transcript 2 | the string `"None"` | `null` ✅ | `null` ✅ |
+| `priority` | `"High"`, `"Low"` — free text, any casing | one of three values ✅ | ✅ |
+| almost-empty transcript 2 | `attendees: "Unknown"`, `decisions: "None"` — strings that look like data | empty lists ✅ | empty lists, `confidence` 0.2 (JS) and 0.4 (PY) ✅ |
 
-**The headline lesson:** V1 → V2 is the biggest jump, and it costs nothing but a few minutes of
-schema design. `nullable` + descriptions eliminate most hallucinated fields, because you've made
-"I don't know" a *representable* answer. V3's confidence field then gives you an automatic
-routing signal for the cases that are still wrong.
+**The headline lesson:** V1 to V2 is the biggest jump, and it costs nothing but a few minutes of
+schema design. Arrays, enums and `null` give you data your code can use, because you've made
+"I don't know" a *representable* answer. But look at V2's invented date: a nullable field
+allows "unknown"; it doesn't force it. V3's `reasoning` field made the model notice the date
+was vague, and its `confidence` gives you a routing signal for the cases that are still weak.
 </details>
 
 ---
 
 ### Exercise 3 — Extraction with validation rules ●●●○○
 
-Build a receipt extractor where the schema captures line items and totals, then add **business
-rule validation in code**: line items must sum to the subtotal, tax must be 0–30% of subtotal,
-and total must equal subtotal + tax. Report each violation. Test on a receipt with a
-deliberate arithmetic error.
+Build a receipt extractor where the schema captures line items and totals. Then add **business
+rule validation in code**:
+
+- line items must sum to the subtotal;
+- tax must be 0–30% of subtotal;
+- total must equal subtotal plus tax.
+
+Report each violation. Test on a receipt with a deliberate arithmetic error.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1265,7 +1558,7 @@ import "dotenv/config";
 import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const Receipt = z.object({
   merchant: z.string(),
@@ -1317,7 +1610,7 @@ const RECEIPTS = {
     TOTAL:   15.00         <-- doesn't add up either`,
 };
 
-const extractor = model.withStructuredOutput(Receipt);
+const extractor = model.withStructuredOutput(Receipt, { method: "jsonSchema" });
 
 for (const [name, text] of Object.entries(RECEIPTS)) {
   const r = await extractor.invoke(`Extract this receipt EXACTLY as printed:\n\n${text}`);
@@ -1343,7 +1636,7 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 class LineItem(BaseModel):
     name: str
@@ -1397,7 +1690,7 @@ RECEIPTS = {
     TOTAL:   15.00         <-- doesn't add up either""",
 }
 
-extractor = model.with_structured_output(Receipt)
+extractor = model.with_structured_output(Receipt, method="json_schema", strict=True)
 
 for name, text in RECEIPTS.items():
     r = extractor.invoke(f"Extract this receipt EXACTLY as printed:\n\n{text}")
@@ -1414,6 +1707,13 @@ for name, text in RECEIPTS.items():
         for v in violations:
             print(f"     · {v}")
 ```
+
+**What our runs showed** (`openai/gpt-oss-20b`, 8 October 2026). Both languages passed the
+clean receipt. On the broken one, Python transcribed `12.00 + 4.50 = 15.00` and flagged all
+three violations. The JavaScript run did something worse: it read the `<-- should be 8.10`
+notes and returned `8.10 + 0.00 = 8.10`, so every check passed. The model wrote what it thought
+was right, not what was printed. Rule checks only work on a faithful copy, so test your
+extractor on documents that carry no hints.
 
 **The architectural point, and it's the important one for interviews:**
 
@@ -1434,10 +1734,15 @@ risk, and it's the same idea as Day 21's human-in-the-loop, applied at the data 
 
 ### Exercise 4 — Graceful degradation ●●●○○
 
-Build `extractSafely(text, schema)` that tries, in order: (1) structured output on the primary
-model, (2) retry, (3) fallback to a second provider, (4) JSON mode + `JsonOutputParser`,
-(5) return `null` with a reason. Log which tier succeeded. Test by breaking the primary model's
-API key.
+Build `extractSafely(text, schema)`. It tries these tiers, in order:
+
+1. structured output on the primary model;
+2. retry;
+3. fallback to a second provider;
+4. JSON mode with `JsonOutputParser`;
+5. return `null` with a reason.
+
+Log which tier succeeded. Test by breaking the primary model's API key.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1461,11 +1766,11 @@ async function extractSafely(text, schema, { primary, secondary }) {
   const attempts = [
     {
       tier: "1-structured-primary",
-      run: () => primary.withStructuredOutput(schema).invoke(text),
+      run: () => primary.withStructuredOutput(schema, { method: "jsonSchema" }).invoke(text),
     },
     {
       tier: "2-structured-primary-retry",
-      run: () => primary.withStructuredOutput(schema)
+      run: () => primary.withStructuredOutput(schema, { method: "jsonSchema" })
                         .withRetry({ stopAfterAttempt: 3 }).invoke(text),
     },
     {
@@ -1502,9 +1807,9 @@ async function extractSafely(text, schema, { primary, secondary }) {
 }
 
 // ── test: primary is deliberately broken ─────────────────────────────────
-const broken = new ChatGroq({ model: "llama-3.3-70b-versatile", apiKey: "gsk_invalid" });
-const working = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
-const gemini = new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", temperature: 0 });
+const broken = new ChatGroq({ model: "openai/gpt-oss-120b", apiKey: "gsk_invalid" });
+const working = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
+const gemini = new ChatGoogleGenerativeAI({ model: "gemini-3.8-flash", temperature: 0 });
 
 const TEXT = "Reach out to Aisha Khan (aisha@northwind.co) who leads eng at Northwind Labs.";
 
@@ -1551,9 +1856,10 @@ def extract_safely(text, schema, primary, secondary):
 
     attempts = [
         ("1-structured-primary",
-         lambda: primary.with_structured_output(schema).invoke(text)),
+         lambda: primary.with_structured_output(schema, method="json_schema", strict=True)
+                        .invoke(text)),
         ("2-structured-primary-retry",
-         lambda: primary.with_structured_output(schema)
+         lambda: primary.with_structured_output(schema, method="json_schema", strict=True)
                         .with_retry(stop_after_attempt=3).invoke(text)),
         ("3-structured-fallback-provider",
          lambda: secondary.with_structured_output(schema).invoke(text)),
@@ -1571,9 +1877,9 @@ def extract_safely(text, schema, primary, secondary):
 
 
 # ── test: primary is deliberately broken ─────────────────────────────────
-broken  = ChatGroq(model="llama-3.3-70b-versatile", api_key="gsk_invalid")
-working = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
-gemini  = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+broken  = ChatGroq(model="openai/gpt-oss-120b", api_key="gsk_invalid")
+working = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+gemini  = ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0)
 
 TEXT = "Reach out to Aisha Khan (aisha@northwind.co) who leads eng at Northwind Labs."
 
@@ -1589,7 +1895,7 @@ for e in r["errors"]:
     print("  ·", e)
 ```
 
-**Two things worth stealing from this for real systems:**
+**Two things worth copying into real systems:**
 
 1. **Return the tier, don't just return the data.** If tier 3 starts firing on 40% of requests,
    your primary provider is degraded and nobody would know — the system silently "works". Emit
@@ -1597,24 +1903,28 @@ for e in r["errors"]:
    hide for a week.
 
 2. **Notice the brace escaping in tier 4.** You're embedding a JSON Schema *into a prompt
-   template*, and JSON is full of `{`. That's yesterday's lesson biting exactly where you'd
-   expect. It's also a good argument for staying at tier 1–3 whenever possible: tier 4
+   template*, and JSON is full of `{`. That's yesterday's lesson causing trouble exactly where
+   you'd expect. It's also a good argument for staying at tier 1–3 whenever possible: tier 4
    re-introduces every problem structured output was invented to remove.
 
-**A note on tier ordering:** tier 2 (retry the primary) before tier 3 (switch provider) is
-deliberate — transient 429/500 errors are far more common than a genuinely broken provider, and
+**A note on tier ordering:** putting tier 2 (retry the primary) before tier 3 (switch provider)
+is deliberate. Short-lived 429/500 errors are far more common than a truly broken provider. And
 retrying is cheaper than a cross-provider call. But cap it: three retries on a hard 401 is three
-wasted seconds. That's why Day 03's retry wrapper checked whether the status was retryable at all.
+wasted seconds. That's why Day 0B's retry wrapper checked whether the status was retryable at all.
 </details>
 
 ---
 
 ### Exercise 5 — StudyBuddy quiz engine ●●●●○
 
-Build a quiz generator that: takes a topic and difficulty, produces N questions with 4 options
-each via structured output, validates that `correctIndex` is in range and that options are
-distinct, runs an interactive CLI quiz, and produces a structured performance report at the end
-(also via structured output) suggesting what to study next.
+Build a quiz generator that:
+
+- takes a topic and difficulty;
+- produces N questions with 4 options each, via structured output;
+- validates that `correctIndex` is in range and that options are distinct;
+- runs an interactive CLI quiz;
+- produces a structured performance report at the end (also via structured output) suggesting
+  what to study next.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1628,7 +1938,7 @@ import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.4 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.4 });
 
 // ── schemas ──────────────────────────────────────────────────────────────
 const Question = z.object({
@@ -1683,7 +1993,7 @@ function validateQuiz(quiz) {
 }
 
 async function generateQuiz(topic, difficulty, n, maxAttempts = 3) {
-  const chain = quizPrompt.pipe(model.withStructuredOutput(Quiz));
+  const chain = quizPrompt.pipe(model.withStructuredOutput(Quiz, { method: "jsonSchema" }));
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const quiz = await chain.invoke({ topic, difficulty, n });
@@ -1733,7 +2043,7 @@ const reportChain = ChatPromptTemplate.fromMessages([
              "Be encouraging but honest. Never suggest studying something they got right."],
   ["human", "Topic: {topic}\nDifficulty: {difficulty}\nScore: {score}/{total}\n\n" +
             "Per-question results:\n{results}"],
-]).pipe(model.withStructuredOutput(Report));
+]).pipe(model.withStructuredOutput(Report, { method: "jsonSchema" }));
 
 const report = await reportChain.invoke({
   topic, difficulty, score, total: results.length,
@@ -1759,7 +2069,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.4)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.4)
 
 # ── schemas ──────────────────────────────────────────────────────────────
 class Question(BaseModel):
@@ -1813,7 +2123,7 @@ def validate_quiz(quiz: Quiz) -> list[str]:
     return problems
 
 def generate_quiz(topic, difficulty, n, max_attempts=3):
-    chain = quiz_prompt | model.with_structured_output(Quiz)
+    chain = quiz_prompt | model.with_structured_output(Quiz, method="json_schema", strict=True)
 
     for attempt in range(1, max_attempts + 1):
         quiz = chain.invoke({"topic": topic, "difficulty": difficulty, "n": n})
@@ -1862,7 +2172,7 @@ report_chain = ChatPromptTemplate.from_messages([
                "Be encouraging but honest. Never suggest studying something they got right."),
     ("human", "Topic: {topic}\nDifficulty: {difficulty}\nScore: {score}/{total}\n\n"
               "Per-question results:\n{results}"),
-]) | model.with_structured_output(Report)
+]) | model.with_structured_output(Report, method="json_schema", strict=True)
 
 report = report_chain.invoke({
     "topic": topic, "difficulty": difficulty, "score": score, "total": len(results),
@@ -1926,18 +2236,19 @@ constraint, so the model's output is shaped correctly by construction rather tha
 <summary><b>Q: What is Zod, and what's the Python equivalent?</b></summary>
 
 Zod is a TypeScript-first runtime schema and validation library. Pydantic is the Python
-equivalent. Both let you declare a schema once and use it for three things: runtime validation,
-static types, and — critically here — generating the JSON Schema that gets sent to the model.
+equivalent. Both let you declare a schema once and use it for three things. The first two are
+runtime validation and static types. The third matters most here: generating the JSON Schema
+that gets sent to the model.
 Field descriptions in either are sent to the model as prompt text.
 </details>
 
 <details>
 <summary><b>Q: Why not just prompt "respond in JSON" and call JSON.parse?</b></summary>
 
-It fails a few percent of the time, and the failures are the expensive kind: markdown code
-fences, a leading "Sure, here's the JSON:", trailing commentary, or valid JSON with the wrong
-keys. `JsonOutputParser` handles the formatting noise; only a schema constraint handles the
-wrong-shape problem. At production volume, "a few percent" is a lot of 500s.
+It fails a few percent of the time, and the failures are the expensive kind. You get markdown
+code fences, a leading "Sure, here's the JSON:", trailing commentary, or valid JSON with the
+wrong keys. `JsonOutputParser` handles the formatting noise. Only a schema constraint handles
+the wrong-shape problem. At production volume, "a few percent" is a lot of 500s (server errors).
 </details>
 
 ### Intermediate
@@ -1952,8 +2263,10 @@ rather than as content; LangChain extracts `.args`, validates against the origin
 returns the typed object.
 
 So it's tool calling with one forced tool where you keep the arguments and never execute
-anything. Providers without tool support fall back to JSON mode with the schema described in
-the prompt — a weaker guarantee.
+anything. That is the default method. The JSON schema method (`jsonSchema` / `json_schema`)
+sends the schema as `response_format` instead, and the object arrives as the message content;
+with this course's Groq models it is the more reliable one. Providers without tool support fall
+back to JSON mode with the schema described in the prompt — a weaker guarantee.
 </details>
 
 <details>
@@ -1962,7 +2275,7 @@ the prompt — a weaker guarantee.
 The model generates the object left to right, one token at a time, each token conditioned on the
 previous ones. A `reasoning` field placed **before** `label` means the model works through the
 problem before committing to an answer — chain-of-thought inside the schema. Placed after, it
-commits first and rationalises, which is measurably worse on hard cases. Same reason CoT works
+commits first and rationalises, which tends to be worse on hard cases. Same reason CoT works
 at all: tokens are compute.
 </details>
 
@@ -1970,8 +2283,8 @@ at all: tokens are compute.
 <summary><b>Q: How do you handle a field the input might not contain?</b></summary>
 
 Make it nullable/optional and say so in the description: `.nullable().describe("...or null if
-not stated")`. If the field is required, the model has no valid way to express "not present", so
-it invents a value — this is one of the largest sources of hallucinated data in extraction
+not stated")`. If the field is required, the model has no valid way to express "not present".
+So it invents a value. This is one of the largest sources of hallucinated data in extraction
 pipelines. Making "unknown" representable is the fix. Adding a `confidence` field on top gives
 you a routing signal for the remaining low-quality cases.
 </details>
@@ -1997,18 +2310,23 @@ auto-process, violating ones go to human review.
 optional, enums for currency/status, a `reasoning` field first, a `confidence` field last,
 `temperature: 0`. Batch with a concurrency cap to stay inside rate limits.
 
-**Validation, in layers** — schema (framework), then business rules (line items sum to subtotal,
-tax within a plausible band, total = subtotal + tax, date parseable and not in the future,
-vendor resolvable against the supplier table). Each failing rule is a signal, not just a
-rejection.
+**Validation, in layers** — first the schema (handled by the framework), then business rules:
+
+- line items sum to the subtotal;
+- tax falls within a plausible band;
+- total equals subtotal plus tax;
+- the date parses and is not in the future;
+- the vendor can be found in the supplier table.
+
+Each failing rule is a signal, not just a rejection.
 
 **Routing** — auto-post only when all rules pass *and* confidence is high. Everything else goes
 to a human review queue, ordered by value at risk. This is how you get 99.5% end-to-end without
 needing 99.5% from the model.
 
 **Escalation** — cheap model first; on low confidence or rule violation, retry once with a
-larger model before queuing for a human. Most teams find the small model handles 80–90% of
-documents.
+larger model before queuing for a human. In many pipelines the small model handles most
+documents — measure the share on your own golden set before you budget around it.
 
 **Measurement** — a golden set of a few hundred hand-labelled invoices, field-level accuracy
 (not document-level), run on every prompt/schema/model change. Track per-field error rates;
@@ -2018,9 +2336,13 @@ they're rarely uniform, and the fix for a bad `date` field is different from a b
 few-shot examples (retrieved dynamically per input) and as new golden-set entries. This is what
 actually moves you from 95% to 99.5%.
 
-**Ops** — idempotency keys so a retry can't double-post; a dead-letter queue for repeated
-failures; cost and latency dashboards per field; alerting on confidence-distribution drift,
-which is your early warning that a provider changed a model underneath you.
+**Ops** — four pieces:
+
+- idempotency keys (a unique ID per invoice) so a retry can't post the same invoice twice;
+- a dead-letter queue (a holding area) for inputs that fail repeatedly;
+- cost and latency dashboards per field;
+- alerts when the spread of confidence scores drifts. That drift is your early warning that a
+  provider changed a model without telling you.
 </details>
 
 <details>
@@ -2047,12 +2369,12 @@ what it doesn't know.
 <details>
 <summary><b>Q: Your structured output works on 95% of inputs. Get to 99%. Walk through your approach.</b></summary>
 
-**Diagnose before fixing.** Collect the 5% failures and cluster them. In my experience they
-split into roughly: inputs genuinely missing the field, inputs where the field is ambiguous,
+**Diagnose before fixing.** Collect the 5% failures and cluster them. They typically
+split into a few buckets: inputs genuinely missing the field, inputs where the field is ambiguous,
 schema-too-deep failures, and provider flakiness. Each has a different fix, and guessing wastes
 weeks.
 
-Then, in rough ROI order:
+Then, roughly in order of return on investment (biggest gain for least effort first):
 
 1. **Make unknowns representable** — nullable fields with explicit "or null if absent"
    descriptions. Usually the single biggest win, because it converts "invents a value" into
@@ -2065,7 +2387,7 @@ Then, in rough ROI order:
    assemble in code.
 6. **Dynamic few-shot** — retrieve the k most similar previously-corrected examples and include
    them. This is what specifically targets the ambiguous cluster.
-7. **Escalate on low confidence** — route the bottom decile to a stronger model. Cheap model on
+7. **Escalate on low confidence** — route the lowest-confidence 10% to a stronger model. Cheap model on
    90% of traffic, expensive path where it's needed.
 8. **Retry + cross-provider fallback** — handles the flakiness cluster, and log which tier fired
    so silent degradation is visible.
@@ -2084,10 +2406,16 @@ review queue, not a better prompt.
 - ✅ `JsonOutputParser` parses JSON and strips markdown fences for you
 - ✅ `withStructuredOutput(schema)` is the default choice — validated, typed objects
 - ✅ It works by binding your schema as a **forced tool call** — Day 02's mechanism, reused
+- ✅ With GPT-OSS on Groq, pass the JSON schema method instead — tool calling is flaky there
 - ✅ Descriptions are prompt text; enums beat free strings; nullable beats required
 - ✅ Put `reasoning` **first** in the schema — that's chain-of-thought for free
 - ✅ Schemas guarantee shape, never meaning — add business-rule validation in code
 - ✅ Handle failure with `includeRaw`, retries, and cross-provider fallbacks — and log which fired
+
+> 📏 **Measure it:** Pick three `TICKETS` from §4.2 (`day06-structured.js`) and note the
+> expected category: BUG for the login failure, FEATURE for dark mode, BILLING for the
+> double charge. It passes when all three come back as typed objects and
+> every category matches your note. Day 25 turns this habit into a proper evaluation suite.
 
 ### Tomorrow
 
@@ -2114,3 +2442,11 @@ works. Tomorrow: `RunnableSequence`, `RunnableParallel`, `RunnableLambda`, `Runn
 3. Business-rule validation. Schemas enforce shape (types, enums, ranges), not semantics
    (arithmetic, cross-field consistency, referential integrity). That layer is always your code.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 05 — Prompts & Templates](day-05-prompts-and-templates.md)** · **[Week 1 index](README.md)** · **[Day 07 — LCEL & Runnables (the #1 interview topic) →](day-07-lcel-and-runnables.md)**
+
+</div>

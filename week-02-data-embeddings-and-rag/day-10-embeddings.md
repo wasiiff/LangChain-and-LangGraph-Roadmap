@@ -1,13 +1,24 @@
 # Day 10 — Embeddings: Vectors, Similarity & Model Choice
 
-> ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 09](day-09-documents-and-splitting.md) · 🧩 **Difficulty:** ●●●○○
+> ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 09](day-09-documents-and-splitting.md) · maths refresher: [Day 0C](../week-00-start-here/day-00c-just-enough-maths.md) · 🧩 **Difficulty:** ●●●○○
 
-**Today you learn:** what an embedding actually *is*, the three similarity metrics worked out by
-hand, how to choose an embedding model, and the practical concerns — dimensions, cost, batching,
-caching, normalisation — that decide whether your retrieval is fast and cheap or slow and
-expensive.
+**Today you learn:** Keyword search cannot tell that "money back" and "refund" mean the same
+thing. Today you fix that with **embeddings**: what they are, how to compare them by hand, and
+how to choose a model. You also learn the practical choices that decide whether your search is
+fast and cheap or slow and expensive.
 
 By the end you'll have built a working semantic search engine with no vector database at all.
+
+> 📖 **Words you'll meet today**
+>
+> - **Embedding** — a list of numbers that represents the meaning of a piece of text.
+> - **Vector** — an ordered list of numbers. You can picture it as a point, or an arrow, in space.
+> - **Dimensions** — how many numbers a vector holds. Embedding sizes are usually 384 to 3072.
+> - **Semantic search** — search that matches by meaning rather than by shared words.
+> - **Cosine similarity** — a score from -1 to 1 for how closely two vectors point the same way.
+> - **Normalised vector** — a vector scaled to length 1, so only its direction is left.
+> - **Context limit** — the most tokens a model reads in one go. Longer text is cut off.
+> - **Top-k** — the k results with the highest scores, for example the best 3 chunks.
 
 ---
 
@@ -41,8 +52,9 @@ Yet any human sees instantly that these are about the same thing.
    ✓ instant, no model needed         ✗ needs an embedding call
 ```
 
-Embeddings are how you get the right-hand column. (And note the bottom rows — that's why
-production systems use *both*, which is Day 11's hybrid search.)
+Embeddings give you the right-hand column. But look at the bottom rows: semantic search is weak
+exactly where keyword search is strong. That's why production systems use *both*. Combining the
+two is called hybrid search, and it's Day 11's topic.
 
 ---
 
@@ -58,18 +70,21 @@ production systems use *both*, which is Day 11's hybrid search.)
    "pizza"   ──▶ [-0.62, 0.11, -0.30, ..., 0.88 ]   768 very different numbers
 ```
 
-An embedding is a **point in high-dimensional space** where distance means dissimilarity. Every
-piece of text becomes a point; texts about similar things land near each other.
+An embedding is a **point in high-dimensional space**: a space with hundreds of directions
+instead of two or three. The further apart two points are, the less similar their texts. Every
+piece of text becomes a point, and texts about similar things land near each other.
 
 > 🧠 **Analogy.** Think of a map of a country. Every town has a (latitude, longitude) — two
 > numbers. Towns near each other on the map are near each other in reality. An embedding is the
 > same idea with 768 or 1536 coordinates instead of 2, and "nearness" means *similar meaning*
-> instead of *physical proximity*.
+> instead of *being close on the ground*.
 >
 > You can't picture 768 dimensions. You don't need to — all the maths works exactly the same as
 > it does in 2D.
 
 ### The three similarity metrics
+
+A similarity metric is a formula that turns two vectors into one score. Three are in common use.
 
 ```
               B
@@ -101,8 +116,8 @@ piece of text becomes a point; texts about similar things land near each other.
    cosine ranking     ==  euclidean ranking  (same order, different numbers)
 ```
 
-So for normalised embeddings, *the choice of metric doesn't change which documents you retrieve*
-— only the numbers you see. Use cosine, understand why, and move on.
+So for normalised embeddings, *the choice of metric doesn't change which documents you
+retrieve*. It only changes the numbers you see. Use cosine, understand why, and move on.
 
 ### The pipeline
 
@@ -126,17 +141,24 @@ So for normalised embeddings, *the choice of metric doesn't change which documen
 
 ### 3.1 Where embeddings come from
 
-An embedding model is a neural network trained so that **texts with similar meaning produce
-nearby vectors**. Training typically uses pairs known to be related — a question and its answer,
-a title and its article, two paraphrases — and pushes their vectors together while pushing
-unrelated pairs apart (contrastive learning).
+> 💬 **In plain words:** a model learns from examples which texts belong together. It is only
+> good at the kind of matching it practised during training.
 
-The consequence that matters practically: **an embedding model is only good at the kind of
-similarity it was trained on.** A model trained on question→passage pairs is good at retrieval.
-A model trained on sentence paraphrases is good at deduplication. They're not interchangeable,
-which is why benchmark scores are task-specific.
+An embedding model is a neural network trained so that **texts with similar meaning produce
+nearby vectors**. Training usually uses pairs of texts known to be related: a question and its
+answer, a title and its article, or two paraphrases (two wordings of the same idea). Training
+pulls the vectors of each pair together and pushes unrelated pairs apart. This method is called
+contrastive learning.
+
+The practical consequence: **an embedding model is only good at the kind of similarity it was
+trained on.** A model trained on question→passage pairs is good at retrieval. A model trained on
+sentence paraphrases is good at deduplication. They're not interchangeable. That's why benchmark
+scores (results on standard tests) are task-specific.
 
 ### 3.2 Cosine similarity, by hand
+
+> 💬 **In plain words:** cosine similarity checks whether two vectors point the same way and
+> ignores how long they are. For text, that's usually exactly what you want.
 
 Take two tiny 3-dimensional vectors:
 
@@ -145,13 +167,14 @@ A = [1, 2, 3]
 B = [2, 4, 6]        ← exactly 2× A: same DIRECTION, different LENGTH
 ```
 
-**Dot product:** multiply element-wise, sum.
+**Dot product:** multiply the matching elements in pairs, then add up the results.
 
 ```
 A·B = (1×2) + (2×4) + (3×6) = 2 + 8 + 18 = 28
 ```
 
-**Magnitudes:** square root of the sum of squares.
+**Magnitudes** (the length of each vector): square every element, add them up, and take the
+square root.
 
 ```
 |A| = √(1² + 2² + 3²) = √14  ≈ 3.742
@@ -165,21 +188,24 @@ cos = 28 / (3.742 × 7.483) = 28 / 28.0 = 1.0
 ```
 
 **Exactly 1.0** — perfectly similar, because they point the same way. That's the key property:
-cosine ignores magnitude. `[1,2,3]` and `[100,200,300]` are identical in direction, and for text
-that's what you want — a long document about refunds and a short sentence about refunds should
+cosine ignores magnitude. `[1,2,3]` and `[100,200,300]` are identical in direction. For text,
+that's what you want: a long document about refunds and a short sentence about refunds should
 match.
 
-**Euclidean on the same pair:**
+**Euclidean distance** (the straight-line distance between the two points) **on the same pair:**
 
 ```
 √((1-2)² + (2-4)² + (3-6)²) = √(1 + 4 + 9) = √14 ≈ 3.742
 ```
 
 Not zero — euclidean says they're *different*, because it cares about length. This is why
-euclidean on un-normalised text embeddings behaves oddly: a longer document gets a
-longer vector and looks "further away" purely because of length.
+euclidean behaves oddly on text embeddings that are not normalised (see §3.3). A longer document
+gets a longer vector and looks "further away" purely because of its length.
 
 ### 3.3 Normalisation
+
+> 💬 **In plain words:** normalising stretches or shrinks every vector to length 1. After that,
+> cosine and the dot product give the same number, and the dot product is cheaper.
 
 Normalising means scaling a vector to length 1 while keeping its direction:
 
@@ -199,11 +225,14 @@ The cosine **is** the dot product. That's why vector databases store normalised 
 dot product — it's the same answer with fewer operations.
 
 > ⚠️ **Check whether your model normalises.** OpenAI and most modern models return normalised
-> vectors. Some local/HuggingFace models don't. If yours doesn't and you use dot product, long
-> documents will dominate your results for no good reason. Exercise 1 shows how to check in one
-> line.
+> vectors. Some local or HuggingFace models don't (HuggingFace is a popular site for sharing
+> open models). If yours doesn't and you use dot product, long documents will dominate your
+> results for no good reason. Exercise 1 shows how to check in one line.
 
 ### 3.4 Dimensions
+
+> 💬 **In plain words:** more dimensions can mean better quality, but every extra number costs
+> storage and search time.
 
 | Dimensions | Typical models | Trade-off |
 |---|---|---|
@@ -211,7 +240,7 @@ dot product — it's the same answer with fewer operations.
 | 768 | nomic-embed-text, BGE-base | **Sweet spot for most work** |
 | 1024 | BGE-large, Voyage | Better quality, 33% more storage |
 | 1536 | OpenAI text-embedding-3-small | Strong, widely supported |
-| 3072 | OpenAI text-embedding-3-large | Best quality, 4× the storage of 768 |
+| 3072 | OpenAI text-embedding-3-large, Google gemini-embedding-2 | Best quality, 4× the storage of 768 |
 
 Storage maths, so it's concrete:
 
@@ -220,21 +249,25 @@ Storage maths, so it's concrete:
 1,000,000 chunks × 3072 dims × 4 bytes          = 12.3 GB
 ```
 
-Plus index overhead (often 1.5–2×). Dimensions also drive **query latency** — every comparison
-touches every dimension.
+Add index overhead on top: the extra data a database keeps so it can search fast (often
+1.5–2×). Dimensions also drive **query latency** (how long a search takes), because every
+comparison touches every dimension.
 
-**Matryoshka embeddings** are worth knowing about: some models (OpenAI v3, Nomic) are trained so
-you can *truncate* the vector and keep most of the quality. Ask for 1536 dimensions from a
-3072-dim model and lose only a little accuracy. That's a real lever when storage matters.
+**Matryoshka embeddings** are worth knowing about. They're named after Russian nesting dolls.
+Some models (OpenAI v3, Nomic, Google's gemini-embedding-2) are trained so you can *truncate*
+the vector (cut off its end) and keep most of the quality. Ask for 1536 dimensions from a
+3072-dim model and lose only a little accuracy. That's a real option when storage matters.
 
 ### 3.5 Choosing a model
+
+> 💬 **In plain words:** check language, subject area and chunk size first. Leaderboard scores
+> come last, because they test tasks that may not look like yours.
 
 | Model | Dims | Cost | Notes |
 |---|---|---|---|
 | **`nomic-embed-text`** (Ollama) | 768 | **free, local** | Our default. Good quality, 8K context |
 | `all-MiniLM-L6-v2` | 384 | free, local | Tiny and fast; weaker but often enough |
-| **`text-embedding-004`** (Google) | 768 | free tier | Our cloud default |
-| `gemini-embedding-001` (Google) | 3072 | free tier | Higher quality, truncatable |
+| **`gemini-embedding-2`** (Google) | 3072 | free tier | Our cloud default. Can be cut to 768 (§4.1) |
 | `text-embedding-3-small` (OpenAI) | 1536 | $0.02/1M | Excellent baseline, very widely used |
 | `text-embedding-3-large` (OpenAI) | 3072 | $0.13/1M | Best-in-class general purpose |
 | `voyage-3` (Voyage) | 1024 | paid | Often tops retrieval benchmarks |
@@ -244,31 +277,35 @@ you can *truncate* the vector and keep most of the quality. Ask for 1536 dimensi
 
 1. **Does it handle your language?** Most models are English-first. For multilingual content,
    BGE-M3 or Cohere multilingual are meaningfully better.
-2. **Does it handle your domain?** Code, legal and medical text have specialised models that beat
-   general ones substantially.
+2. **Does it handle your domain** (your subject area)? Code, legal and medical text have
+   specialised models that beat general ones substantially.
 3. **What's your context limit?** If your chunks are 2000 tokens and the model truncates at 512,
    you're silently discarding most of every chunk. This is a common, invisible bug.
-4. **Cost and latency at your volume.** Embedding 10M chunks is a real bill.
-5. **Benchmark scores** (MTEB) — useful but *last*, because they're averages over tasks that may
-   not resemble yours.
+4. **Cost and latency at your volume.** Embedding 10M chunks costs real money.
+5. **Benchmark scores** (MTEB, a public leaderboard that tests embedding models on many tasks).
+   They're useful but come *last*, because they're averages over tasks that may not resemble
+   yours.
 
 > 🚨 **The rule that will save you a re-index:** you cannot mix embedding models. Vectors from
-> different models are in different spaces and comparing them is meaningless. Changing model
-> means **re-embedding everything**. Choose deliberately, and record the model name in your
-> store's metadata so you can detect a mismatch.
+> different models live in different spaces, so comparing them is meaningless. Changing model
+> means **re-embedding everything** — a full re-index. Choose deliberately, and record the
+> model name in your store's metadata so you can detect a mismatch.
 
 ### 3.6 Asymmetric search: queries vs documents
 
-A subtle but important point. In retrieval, the query and the document are *different kinds of
-text*:
+> 💬 **In plain words:** some models need to know whether a text is a question or a document.
+> LangChain's two embedding methods tell them which one it is.
+
+This point is subtle but important. In retrieval, the query and the document are *different
+kinds of text*.
 
 ```
 query:    "how long for a refund?"          ← short, a question
 document: "Refunds are processed within…"   ← longer, a statement
 ```
 
-Some models are trained for this asymmetry and expect a **prefix** telling them which side
-they're embedding:
+Some models are trained for this asymmetry (the two sides being different). They expect a
+**prefix** — a short label at the start of the text — that says which side it is.
 
 ```
 nomic-embed-text:   "search_query: how long for a refund?"
@@ -278,15 +315,19 @@ BGE:                "Represent this sentence for searching relevant passages: {q
                     (documents get no prefix)
 ```
 
-**Using the wrong prefix, or none, measurably degrades retrieval.** LangChain's integrations
-usually handle this via `embedQuery` vs `embedDocuments` — which is exactly why those are two
-separate methods rather than one.
+**Using the wrong prefix, or none, makes retrieval measurably worse.** LangChain's integrations
+usually add the right prefix for you: `embedQuery` for queries and `embedDocuments` for
+documents. That's exactly why there are two separate methods rather than one.
 
 > 🔑 **This is the answer to "why does the embeddings interface have two methods?"** It's not
-> just batching convenience. `embedQuery` and `embedDocuments` can apply different prefixes,
-> and for asymmetric models they produce different vectors for identical text.
+> only so you can send many texts at once (batching). `embedQuery` and `embedDocuments` can
+> apply different prefixes, and for asymmetric models they produce different vectors for
+> identical text.
 
 ### 3.7 The embeddings interface
+
+> 💬 **In plain words:** there are two calls — one for a single query, one for a list of
+> documents.
 
 ```js
 embeddings.embedQuery("text")            // → number[]        one query
@@ -298,16 +339,21 @@ embeddings.embed_query("text")           # → list[float]
 embeddings.embed_documents(["a", "b"])   # → list[list[float]]
 ```
 
-Always use `embedDocuments` for bulk work — it batches into far fewer HTTP requests.
+Always use `embedDocuments` for bulk work. It groups texts into batches, so it sends far fewer
+HTTP requests.
 
 ### 3.8 Caching
 
-Embedding the same text twice is pure waste. Two levels:
+> 💬 **In plain words:** once you've embedded a text, save the result and reuse it instead of
+> paying for it again.
+
+Embedding the same text twice is pure waste. Caching (saving results to reuse later) works at
+two levels:
 
 - **Ingest-time:** hash the chunk text; skip anything already embedded (Day 09's `contentHash`).
 - **Query-time:** cache query embeddings. In support-style traffic, repeated questions are common.
 
-LangChain ships `CacheBackedEmbeddings` for this, shown in §4.5 / §5.5.
+LangChain ships `CacheBackedEmbeddings` for this, shown in §4.5 and §5.5.
 
 ---
 
@@ -351,10 +397,16 @@ console.log("magnitude:", magnitude.toFixed(6),
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 
 const embeddings = new GoogleGenerativeAIEmbeddings({
-  model: "text-embedding-004",          // 768 dims, free tier
+  model: "gemini-embedding-2",          // 3072 dims by default, free tier
+  // outputDimensionality: 768,         // optional: ask for a shorter vector
 });
 ```
 Everything else in this file is identical — that's the `Embeddings` interface doing its job.
+
+What we measured (`@langchain/google-genai` 2.3.2, October 2026): `dimensions: 3072` and
+`magnitude: 1.000000`, so the vectors are normalised. With `outputDimensionality: 768` it
+returned 768 numbers, still with magnitude `1.000000`. (Older tutorials use a model that no
+longer exists — see §7.)
 </details>
 
 ### 4.2 The three metrics, implemented
@@ -420,10 +472,8 @@ const keywordScore = (q, d) => {
 };
 
 // ── semantic score: cosine of embeddings ─────────────────────────────────
-const [queryVec, ...docVecs] = await Promise.all([
-  embeddings.embedQuery(QUERY),
-  ...CHUNKS.map((c) => embeddings.embedQuery(c)),
-]);
+const queryVec = await embeddings.embedQuery(QUERY);         // the question → query method
+const docVecs = await embeddings.embedDocuments(CHUNKS);     // the chunks → documents method
 
 console.log(`query: "${QUERY}"\n`);
 console.log("keyword  semantic  chunk");
@@ -443,8 +493,8 @@ CHUNKS.map((c, i) => ({
   );
 ```
 
-The refund chunk scores **0.00 on keywords** and highest on semantics. That gap is the entire
-reason embeddings exist.
+The refund chunk scores **0.00 on keywords** and highest on meaning (the semantic score). That
+gap is the entire reason embeddings exist.
 
 ### 4.4 embedQuery vs embedDocuments
 
@@ -517,9 +567,10 @@ for await (const k of store.yieldKeys()) keys.push(k);
 console.log(`cached vectors: ${keys.length}`);
 ```
 
-> ⚠️ **The `namespace` is not optional.** Without it, switching embedding models would return
-> the *old* model's cached vectors for the same text — silently corrupting your index with mixed
-> vector spaces. Always namespace by model name.
+> ⚠️ **The `namespace` is not optional.** Without it, after you switch embedding models, the
+> cache would return the *old* model's vectors for the same text. That silently corrupts your
+> index with vectors from two different spaces. Always namespace by model name (use the model
+> name as the cache's label).
 
 ### 4.6 A complete semantic search engine — no database
 
@@ -592,8 +643,9 @@ for (const { doc, score } of await store.search("delivery time", 2, (d) => d.met
 }
 ```
 
-**You just built a vector store.** Tomorrow's real ones add persistence, approximate indexes for
-speed at scale, and native metadata filtering — but this is the whole idea.
+**You just built a vector store**: a place that keeps vectors and finds the nearest ones.
+Tomorrow's real ones add persistence (data that survives a restart), approximate indexes for
+speed on large collections, and built-in metadata filtering. But this is the whole idea.
 
 ---
 
@@ -633,10 +685,16 @@ print(f"magnitude: {magnitude:.6f}",
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/text-embedding-004",     # 768 dims, free tier
+    model="models/gemini-embedding-2",     # 3072 dims by default, free tier
+    # output_dimensionality=768,           # optional: ask for a shorter vector
 )
 ```
 Everything else is identical — that's the `Embeddings` interface doing its job.
+
+What we measured (`langchain-google-genai` 4.4.0, October 2026): 3072 dimensions, magnitude
+`1.000000`, and `output_dimensionality=768` gave 768 numbers, still normalised. This model is
+**symmetric**: `embed_query` and `embed_documents` on the same sentence gave cosine `1.000000`.
+So §4.4's query/document test would print "SYMMETRIC" for it.
 </details>
 
 ### 5.2 The three metrics, implemented
@@ -679,14 +737,14 @@ if __name__ == "__main__":
     print(f"cos(Ân,B̂n) = {cosine(An, Bn):.6f}")         # 1.000000  ← identical
 ```
 
-> 💡 **In production use numpy**, not loops — it's 50–100× faster:
+> 💡 **In production use numpy**, not loops. It's 50–100× faster.
 > ```python
 > import numpy as np
 > a, b = np.array(vec_a), np.array(vec_b)
 > cos = a @ b / (np.linalg.norm(a) * np.linalg.norm(b))
 > ```
-> For a whole corpus at once: `matrix @ query / (norms * np.linalg.norm(query))` scores every
-> document in one vectorised operation.
+> For a whole corpus at once, use `matrix @ query / (norms * np.linalg.norm(query))`. It scores
+> every document in one vectorised operation (one call that works on the whole array at once).
 
 ### 5.3 Semantic vs keyword search
 
@@ -899,7 +957,7 @@ for doc, score in store.search("delivery time", 2,
 | | JavaScript | Python |
 |---|---|---|
 | Ollama embeddings | `new OllamaEmbeddings({ model })` | `OllamaEmbeddings(model=...)` |
-| Google embeddings | `model: "text-embedding-004"` | `model="models/text-embedding-004"` ⚠️ prefix |
+| Google embeddings | `model: "gemini-embedding-2"` | `model="models/gemini-embedding-2"` |
 | Query | `await embeddings.embedQuery(s)` | `embeddings.embed_query(s)` |
 | Documents | `await embeddings.embedDocuments([...])` | `embeddings.embed_documents([...])` |
 | Cache class | `@langchain/classic/embeddings/cache_backed` | `langchain_classic.embeddings` |
@@ -907,9 +965,11 @@ for doc, score in store.search("delivery time", 2,
 | Byte store | `InMemoryStore` (`@langchain/classic/storage/in_memory`) | `InMemoryByteStore` (`langchain_core.stores`) |
 | Vector maths | manual loops (or a lib) | **numpy** — use it |
 
-> ⚠️ **Google model-name gotcha:** Python needs the `models/` prefix
-> (`"models/text-embedding-004"`), JS does not (`"text-embedding-004"`). This trips people up
-> constantly when porting code between the two.
+> 📦 **The `models/` prefix.** Older versions of `langchain-google-genai` needed it in Python
+> (`"models/..."`) and older JS did not, which tripped people up when porting code. With the
+> current packages both spellings work: we measured `"gemini-embedding-2"` and
+> `"models/gemini-embedding-2"` in Python 4.4.0 (both 3072 dims), and the JS class strips the
+> prefix itself. This course keeps `models/` in Python so the code also runs on older versions.
 
 ---
 
@@ -946,9 +1006,10 @@ for doc, score in store.search("delivery time", 2,
 
 **Two consequences that explain real bugs:**
 
-1. **Pooling is why long chunks dilute.** Averaging 2,000 token vectors covering five topics
-   produces a vector near the centroid of all five — close to nothing in particular. That's the
-   mechanical reason behind Day 09's chunk-size advice.
+1. **Pooling is why long chunks dilute.** Pooling combines many token vectors into one, usually
+   by averaging. Average 2,000 token vectors that cover five topics, and you get a vector near
+   the centroid (the average point) of all five. It is close to nothing in particular. That's
+   the mechanical reason behind Day 09's chunk-size advice.
 
 2. **Truncation is silent.** If the model's limit is 512 tokens and your chunk is 2,000, most
    models just **drop the rest without an error**. Your chunk's vector represents only its first
@@ -963,28 +1024,32 @@ For **normalised** vectors, the two are mathematically linked:
 euclidean² = |A|² + |B|² - 2(A·B) = 1 + 1 - 2cos = 2(1 - cos)
 ```
 
-So euclidean distance is a strictly decreasing function of cosine similarity — **the ranking is
-identical**. Cosine wins on convention because its range (-1 to 1) is interpretable and it's
-what nearly all documentation and vector stores assume.
+So euclidean distance is a strictly decreasing function of cosine similarity: when cosine goes
+up, euclidean distance always goes down. **The ranking is identical.** Cosine wins by
+convention. Its range (-1 to 1) is easy to interpret, and nearly all documentation and vector
+stores assume it.
 
-For **un-normalised** vectors they genuinely differ, and euclidean will favour documents of
-similar *length* to the query — almost never what you want in retrieval.
+For **un-normalised** vectors they genuinely differ. Euclidean will favour documents of similar
+*length* to the query, which is almost never what you want in retrieval.
 
 ### Why the numbers cluster around 0.5–0.9
 
-New users are often puzzled that unrelated texts score 0.5 rather than 0.
+New users are often puzzled that unrelated texts score well above 0. The exact baseline
+depends on the embedding model — with common models it often lands somewhere around 0.3–0.5,
+but measure your own. The value below is illustrative:
 
 ```
 "refund policy"  vs  "pizza toppings"     →  cosine ≈ 0.45
 ```
 
-Real embedding spaces are **anisotropic** — the vectors don't spread evenly over the whole
-sphere; they occupy a narrow cone. So even unrelated text shares a baseline similarity.
+Real embedding spaces are **anisotropic**: the vectors don't spread evenly over the whole
+sphere. Instead, they crowd into a narrow cone. So even unrelated texts share a baseline
+similarity (a minimum score they get anyway).
 
 **The practical implication:** an absolute threshold like `score > 0.8` is model-specific and
-brittle. What matters is the *relative* ranking and the *gap* between the top result and the
-rest. If you must threshold, calibrate it on your own data and re-calibrate whenever you change
-models.
+brittle (it breaks easily). What matters is the *relative* ranking and the *gap* between the top
+result and the rest. If you must threshold, calibrate it on your own data and re-calibrate
+whenever you change models.
 
 ### Cost at scale
 
@@ -995,8 +1060,8 @@ models.
 | 1M chunks | OpenAI 3-large ($0.13/1M) | ~$65 |
 | 1M chunks | Ollama local | $0 + your GPU time |
 
-Ingest is a one-off; **queries are forever**. One embedding per query is cheap individually but
-at 1M queries/day it adds up, which is why query-embedding caches earn their keep.
+Ingest is a one-off cost, but **queries are forever**. One embedding per query is cheap on its
+own, but at 1M queries/day it adds up. That's why query-embedding caches are worth having.
 
 ---
 
@@ -1006,7 +1071,7 @@ at 1M queries/day it adds up, which is why query-embedding caches earn their kee
 
 Vectors from different models live in different spaces. Comparing them produces meaningless
 numbers — and no error.
-✅ One model per index. Store the model name in metadata. Changing model = full re-index.
+✅ One model per index. Store the model name in metadata. Changing model means a full re-index.
 
 ---
 
@@ -1035,7 +1100,8 @@ A 2,000-token chunk in a 512-token model is silently truncated to its first 512 
 
 **❌ Assuming cosine 0.0 means "unrelated"**
 
-Unrelated text typically scores 0.3–0.5, not 0.
+Unrelated text typically scores well above 0 (often around 0.3–0.5, depending on the model —
+measure yours).
 ✅ Judge by relative gaps, not absolute values.
 
 ---
@@ -1049,8 +1115,8 @@ chunks (Day 09) and skip unchanged ones.
 
 **❌ Forgetting the `namespace` on a cache**
 
-Switch models, and the cache happily returns the old model's vectors for the same text — mixing
-vector spaces invisibly.
+Switch models, and the cache still returns the old model's vectors for the same text. Vector
+spaces get mixed without anyone noticing.
 ✅ `namespace: model.name`, always.
 
 ---
@@ -1063,9 +1129,12 @@ vector spaces invisibly.
 
 ---
 
-**❌ Python: forgetting the `models/` prefix on Google embeddings**
+**❌ Copying an old Google embedding model name**
 
-`"text-embedding-004"` fails in Python; it needs `"models/text-embedding-004"`. JS doesn't.
+Older tutorials use `text-embedding-004`. Google shut it down in January 2026, and it now fails
+with a `404` ("… is not found for API version v1beta").
+✅ Use `gemini-embedding-2`. It returns 3072 numbers, not 768, so re-check any storage sums and
+any index created for 768 dimensions.
 
 ---
 
@@ -1168,12 +1237,13 @@ for i, vi in enumerate(vecs):
 print("\n(* = similarity above 0.75)")
 ```
 
-**What to look for in the output:**
+**What to look for in the output** (the scores below are illustrative — exact values depend on
+the model, so read your own matrix):
 
 1. **Magnitude ≈ 1.0** → the model normalises. Note it; it means cosine and dot product agree.
 2. **`[0]` vs `[1]` ≈ 0.85–0.95** — the paraphrases match strongly despite sharing almost no
    words. That's the whole point of embeddings.
-3. **`[3]` (pizza) ≈ 0.4–0.5 against everything** — *not* 0. This is the anisotropy from §6.
+3. **`[3]` (pizza) well above 0 against everything (often around 0.3–0.5)** — *not* 0. This is the anisotropy from §6.
    Unrelated does not mean zero.
 4. **`[4]` vs `[5]` (ERR_4471 vs ERR_4472) ≈ 0.97+** — nearly identical, despite being different
    error codes. **This is the embedding failure mode that motivates hybrid search.** If a user
@@ -1188,8 +1258,8 @@ demonstration of when *not* to trust embeddings.
 ### Exercise 2 — Metric comparison ●●○○○
 
 Take a set of documents and one query. Rank the documents three ways: cosine, euclidean, and dot
-product — first with the raw vectors, then with explicitly normalised vectors. Show that after
-normalisation all three produce the same *ordering*.
+product. Do it first with the raw vectors, then with explicitly normalised vectors. Show that
+after normalisation all three produce the same *ordering*.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1305,17 +1375,18 @@ for i, d in enumerate(DOCS):
 
 **The takeaway for interviews:** for normalised embeddings the metric choice is a performance
 and convention decision, not a quality one. Vector databases use dot product internally because
-it's the cheapest operation, and report cosine because it's the interpretable one. The place the
-choice *does* matter is un-normalised vectors, where euclidean starts ranking by document length.
+it's the cheapest operation, and report cosine because it's the easiest to interpret. The choice
+*does* matter for un-normalised vectors, where euclidean starts ranking by document length.
 </details>
 
 ---
 
 ### Exercise 3 — Model bake-off ●●●○○
 
-Compare two embedding models on the same retrieval task using an eval set. Measure recall@1 and
-recall@3, embedding latency, and dimensions. Reuse the eval-harness idea from Day 09 but with
-real embeddings this time.
+Compare two embedding models on the same retrieval task using an eval set (questions with known
+answers). Measure recall@1 and recall@3: how often the right chunk is the top result, or in the
+top 3. Also measure embedding latency and dimensions. Reuse the eval-harness idea from Day 09,
+but with real embeddings this time.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1356,7 +1427,7 @@ const CASES = [
 
 const MODELS = {
   "nomic (768d, local)": new OllamaEmbeddings({ model: "nomic-embed-text" }),
-  "gemini (768d, cloud)": new GoogleGenerativeAIEmbeddings({ model: "text-embedding-004" }),
+  "gemini (3072d, cloud)": new GoogleGenerativeAIEmbeddings({ model: "gemini-embedding-2" }),
 };
 
 console.log("model                   dims  ingestMs  queryMs  R@1   R@3");
@@ -1369,7 +1440,8 @@ for (const [name, embeddings] of Object.entries(MODELS)) {
     const ingestMs = Date.now() - t0;
 
     const t1 = Date.now();
-    const queryVecs = await embeddings.embedDocuments(CASES.map((c) => c[0]));
+    const queryVecs = [];                    // queries use the QUERY method (§3.6)
+    for (const [question] of CASES) queryVecs.push(await embeddings.embedQuery(question));
     const queryMs = Math.round((Date.now() - t1) / CASES.length);
 
     let hits1 = 0, hits3 = 0;
@@ -1431,7 +1503,7 @@ CASES = [
 
 MODELS = {
     "nomic (768d, local)": OllamaEmbeddings(model="nomic-embed-text"),
-    "gemini (768d, cloud)": GoogleGenerativeAIEmbeddings(model="models/text-embedding-004"),
+    "gemini (3072d, cloud)": GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2"),
 }
 
 print("model                   dims  ingestMs  queryMs  R@1   R@3")
@@ -1444,7 +1516,8 @@ for name, embeddings in MODELS.items():
         ingest_ms = (time.time() - t0) * 1000
 
         t1 = time.time()
-        query_vecs = embeddings.embed_documents([c[0] for c in CASES])
+        # queries use the QUERY method (§3.6), one call each, like a real search
+        query_vecs = [embeddings.embed_query(question) for question, _ in CASES]
         query_ms = (time.time() - t1) * 1000 / len(CASES)
 
         hits1 = hits3 = 0
@@ -1462,25 +1535,31 @@ for name, embeddings in MODELS.items():
         print(f"{name:<22}  skipped: {str(e)[:40]}")
 ```
 
-**Typical result:**
+**Typical result** (illustrative — the shape of the table, not a measured run; only the
+`dims` column was checked, against a live `gemini-embedding-2` call in October 2026):
 
 ```
 model                   dims  ingestMs  queryMs  R@1   R@3
 ------------------------------------------------------------------
 nomic (768d, local)      768       340       28  0.88  1.00
-gemini (768d, cloud)     768       610       74  0.88  1.00
+gemini (3072d, cloud)   3072       610       74  0.88  1.00
 ```
 
-**Four things worth drawing out:**
+**Four things to look for in your own table:**
 
-1. **A free local model matches a cloud model** on a task like this. Reaching for the most
-   expensive embedding model by default is a common and costly reflex.
-2. **R@3 saturates at 1.00 while R@1 doesn't.** If your pipeline retrieves 3–5 chunks and
-   reranks (Day 13), embedding-model choice matters far less than if you retrieve exactly one.
-3. **Latency differs by ~3×** — local wins on round-trip time, which matters per query, forever.
-4. **Both models fail the same case.** Look at which one: it's usually the query whose phrasing
-   is furthest from the document's. That's a *query rewriting* problem (Day 13), not an
-   embedding-model problem — and swapping models will never fix it.
+1. **A free local model can match a cloud model** on a task like this. Many people pick the most
+   expensive embedding model by default. That habit is common and costly. Note the `dims`
+   column too: Gemini's 3072 numbers per chunk take 4× the storage of nomic's 768, unless you
+   set `outputDimensionality` (§4.1).
+2. **R@3 saturates at 1.00 while R@1 doesn't** — R@3 has already hit its maximum. Suppose your
+   pipeline retrieves 3–5 chunks and then reranks them (re-scores them with a second model,
+   Day 13). Then the embedding model matters far less than if you retrieve exactly one.
+3. **Latency differs.** Local usually wins on round-trip time, and you pay that time on every
+   query, for ever.
+4. **If both models fail the same case,** look at which one: it's usually the query whose phrasing
+   is furthest from the document's. That's a *query rewriting* problem (Day 13: rewording the
+   question before searching), not an embedding-model problem. Swapping models will never fix
+   it.
 
 **Extend this** with your own corpus and 20+ real questions before committing to a model. The
 decision is expensive to reverse: changing models means re-embedding everything.
@@ -1490,9 +1569,9 @@ decision is expensive to reverse: changing models means re-embedding everything.
 
 ### Exercise 4 — Semantic deduplication ●●●○○
 
-Build a tool that finds near-duplicate chunks in a corpus using embeddings — the same problem
-Day 09's exact content hash *couldn't* solve, because near-duplicates differ by a word or two.
-Cluster chunks above a similarity threshold and report the groups.
+Build a tool that uses embeddings to find near-duplicate chunks in a corpus. Day 09's exact
+content hash *couldn't* solve this, because near-duplicates differ by a word or two. Cluster
+(group) the chunks whose similarity is above a threshold, and report the groups.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1638,36 +1717,48 @@ print(f"{len(CHUNKS)} chunks → {len(CHUNKS) - removed} after dedup ({removed} 
 **Why this matters in production, and why it's not just tidiness:**
 
 Near-duplicate chunks actively *damage* retrieval. If your top-5 results are five paraphrases of
-the same sentence, you've spent your entire context budget on one fact and starved the answer of
-everything else. Deduplicating at ingest is one of the cheapest quality wins available.
+the same sentence, you've spent your entire context budget on one fact. The answer gets nothing
+else to work with. Deduplicating at ingest is one of the cheapest quality wins available.
 
-Real corpora are full of these: boilerplate footers, the same policy restated across pages,
+Real corpora are full of these. Think of boilerplate footers (the same standard text at the
+bottom of every page), the same policy restated across pages,
 documentation copied between versions, minutes repeating the previous meeting's decisions.
 
 **Three implementation notes:**
 
-1. **Union-Find handles transitivity.** If A≈B and B≈C but A and C fall just below the
-   threshold, they should still be one cluster. Naive pairwise grouping splits them.
-2. **The threshold is model-specific.** 0.90 works for nomic; calibrate on your own data by
-   printing the score distribution and finding where genuine duplicates separate from merely
-   related content.
-3. **This is O(n²).** Fine for thousands of chunks, hopeless for millions — at that scale you
-   use the approximate index in your vector database to find candidate neighbours first, then
-   compare only those. That's tomorrow's topic.
+1. **Union-Find handles transitivity.** Union-Find is a simple data structure for merging
+   groups. Transitivity means: if A is close to B, and B is close to C, all three belong
+   together — even when A and C fall just below the threshold. Naive pairwise grouping splits
+   them.
+2. **The threshold is model-specific.** 0.90 works for nomic. To calibrate on your own data,
+   print the score distribution and find where genuine duplicates separate from merely related
+   content.
+3. **This is O(n²)**: the work grows with the square of the number of chunks. That's fine for
+   thousands of chunks and hopeless for millions. At that scale, you use the approximate index
+   in your vector database to find likely neighbours first, then compare only those. That's
+   tomorrow's topic.
 
-**The alternative to dropping duplicates** is MMR retrieval (Day 13), which selects for
-*diversity* at query time instead. Deduping at ingest is cheaper; MMR handles duplicates you
-didn't catch. Mature systems do both.
+**The alternative to dropping duplicates** is MMR retrieval (Maximal Marginal Relevance,
+Day 13). It selects for *diversity* at query time instead: results must be relevant and also
+different from each other. Deduping at ingest is cheaper. MMR handles duplicates you didn't
+catch. Mature systems do both.
 </details>
 
 ---
 
 ### Exercise 5 — 🏆 Production embedding pipeline ●●●●●
 
-Build an ingestion pipeline that: loads chunks, deduplicates by content hash, embeds in batches
-with a concurrency limit, retries on failure, caches to disk so re-runs are free, tracks cost and
-progress, and saves the index to a JSON file that can be reloaded for search. Then build a search
-CLI over it.
+Build an ingestion pipeline that:
+
+- loads chunks;
+- deduplicates them by content hash;
+- embeds in batches, with a concurrency limit (a cap on how many requests run at once);
+- retries on failure;
+- caches to disk, so re-runs are free;
+- tracks cost and progress;
+- saves the index to a JSON file that can be reloaded for search.
+
+Then build a search CLI (command-line tool) over it.
 
 <details>
 <summary>✅ Solution</summary>
@@ -2025,27 +2116,32 @@ python embed_pipeline.py search
 
 **Seven production behaviours packed in here:**
 
-1. **The cache key includes the model name** (`hash(`${MODEL}:${text}`)`). This is the safeguard
-   from §7 made concrete — switching models can never return stale vectors from the old space.
+1. **The cache key includes the model name** (`` hash(`${MODEL}:${text}`) ``). This is the
+   safeguard from §7 made concrete. Switching models can never return stale (out-of-date) vectors from the
+   old space.
 2. **The index records its model and dimensions.** At search time you construct the *same*
    embedder. Without this, an index and a query can silently drift into different spaces.
-3. **Bounded concurrency, not unbounded `Promise.all`.** Firing 500 batches at once gets you
-   rate-limited (Day 03). Three concurrent batches of 32 is a sane default.
-4. **Retry with jittered backoff** around each batch, so one transient failure doesn't kill a
+3. **Bounded concurrency, not unbounded `Promise.all`.** Sending 500 batches at once gets you
+   rate-limited: the provider starts refusing requests (Day 0B). Three concurrent batches of 32
+   is a sensible default.
+4. **Retry with jittered backoff** around each batch. Backoff means waiting longer before each
+   retry. Jitter adds a little randomness to the wait. Now one brief failure doesn't kill a
    30-minute ingest.
 5. **Deduplication before embedding**, so you never pay to embed identical text twice.
-6. **Progress output with a rate.** On a real corpus this runs for minutes; a silent script that
-   might be hung is genuinely stressful, and the rate lets you estimate completion.
+6. **Progress output with a rate.** On a real corpus this runs for minutes. A silent script that
+   might be stuck is genuinely stressful, and the rate lets you estimate when it will finish.
 7. **Re-running is nearly free.** Change one chunk in a 10,000-chunk corpus and only that chunk
    is re-embedded. This is what makes iterating on chunk size (Day 09's Exercise 5) practical
-   rather than punishing.
+   rather than painful.
 
 **What this deliberately isn't:** it loads every vector into memory and scans all of them per
-query — O(n) per search. Fine to a few tens of thousands of chunks; hopeless at millions.
-Persistence is a JSON blob, there's no incremental delete, and no metadata-filtered index.
+query. That's O(n) per search: the time grows in step with the number of chunks. It's fine up to
+a few tens of thousands of chunks and hopeless at millions. Persistence is one big JSON file,
+there's no incremental delete, and there's no metadata-filtered index.
 
-Those three gaps — approximate indexes for sub-linear search, real persistence, and native
-filtering — are exactly what a vector database provides. **That's tomorrow.**
+A vector database fills exactly those three gaps. It gives you approximate indexes for
+sub-linear search (faster than checking every vector), real persistence, and built-in filtering.
+**That's tomorrow.**
 </details>
 
 ---
@@ -2068,18 +2164,18 @@ back" matches "refund" even with zero words in common.
 
 The cosine of the angle between two vectors: `A·B / (|A| |B|)`. It ranges from -1 (opposite)
 through 0 (unrelated) to 1 (identical direction). Because it divides by the magnitudes, it
-measures *direction only* — so a long document and a short sentence about the same topic score as
-similar, which is exactly what you want for text retrieval.
+measures *direction only*. So a long document and a short sentence about the same topic score as
+similar. That's exactly what you want for text retrieval.
 </details>
 
 <details>
 <summary><b>Q: Cosine vs euclidean vs dot product — when does the choice matter?</b></summary>
 
-For **normalised** vectors (length 1), which most modern embedding models produce, cosine equals
-the dot product exactly, and euclidean produces the identical *ranking* — so the choice doesn't
+Most modern embedding models produce **normalised** vectors (length 1). For these, cosine equals
+the dot product exactly, and euclidean produces the identical *ranking*. So the choice doesn't
 affect which documents you retrieve, only the numbers you see.
 
-For **un-normalised** vectors they differ: dot product favours longer vectors, and euclidean
+For **un-normalised** vectors they differ. Dot product favours longer vectors, and euclidean
 treats magnitude as dissimilarity, so documents get ranked partly by length. That's rarely what
 you want. Vector databases typically store normalised vectors and use dot product, because it's
 the cheapest operation and gives the same answer as cosine.
@@ -2090,9 +2186,9 @@ the cheapest operation and gives the same answer as cosine.
 
 Two reasons. **Batching** — `embedDocuments` sends many texts in one request, which is much
 faster for ingest. And more subtly, **asymmetry**: some models are trained for query→document
-retrieval and expect a prefix telling them which side they're embedding (nomic uses
+retrieval. They expect a prefix that says which side they're embedding (nomic uses
 `search_query:` and `search_document:`). For those models the same text produces *different*
-vectors depending on the method, and using the wrong one measurably degrades retrieval.
+vectors depending on the method. Using the wrong one makes retrieval measurably worse.
 </details>
 
 ### Intermediate
@@ -2100,15 +2196,20 @@ vectors depending on the method, and using the wrong one measurably degrades ret
 <details>
 <summary><b>Q: How do you choose an embedding model?</b></summary>
 
-In rough priority order: does it support your **language**; does it suit your **domain** (code,
-legal and medical have specialised models that clearly beat general ones); what's its **context
-limit** versus your chunk size; what are **cost and latency** at your volume; and only then
-benchmark scores like MTEB, which are averages over tasks that may not resemble yours.
+In rough priority order:
 
-The decision is expensive to reverse — changing model means re-embedding the entire corpus — so
-it's worth building a small eval set of real questions and measuring recall@k on two or three
-candidates first. In practice a good free local model often matches a paid one on domain-specific
-retrieval.
+1. Does it support your **language**?
+2. Does it suit your **domain**? Code, legal and medical text have specialised models that
+   clearly beat general ones.
+3. What's its **context limit** compared with your chunk size?
+4. What are the **cost and latency** at your volume?
+5. Only then, benchmark scores like MTEB. These are averages over tasks that may not resemble
+   yours.
+
+The decision is expensive to reverse, because changing model means re-embedding the entire
+corpus. So it's worth building a small eval set of real questions first, and measuring recall@k
+on two or three candidates. In practice a good free local model often matches a paid one on
+domain-specific retrieval.
 </details>
 
 <details>
@@ -2118,7 +2219,7 @@ Different models produce vectors in entirely different spaces — different dime
 even at the same dimensionality the axes mean different things. Comparing a vector from model A
 to one from model B yields a number, but that number is meaningless, and nothing raises an error.
 
-Practically: pin one model per index, record the model name in the index metadata, namespace any
+In practice: pin one model per index and record its name in the index metadata. Namespace any
 embedding cache by model, and treat a model change as a full re-index. Failing to namespace the
 cache is a classic way to silently corrupt an index with mixed vectors.
 </details>
@@ -2126,11 +2227,13 @@ cache is a classic way to silently corrupt an index with mixed vectors.
 <details>
 <summary><b>Q: Why do unrelated texts score around 0.4 rather than 0?</b></summary>
 
-Embedding spaces are **anisotropic** — vectors don't spread evenly over the sphere but occupy a
-relatively narrow cone, so any two texts share a baseline similarity.
+Embedding spaces are **anisotropic**. Vectors don't spread evenly over the sphere; they crowd
+into a fairly narrow cone. So any two texts share a baseline similarity. "Around 0.4" is a
+ballpark for common models (often somewhere in 0.3–0.5); the exact baseline depends on the model,
+so measure it on yours.
 
 The practical consequence is that absolute thresholds (`score > 0.8`) are model-specific and
-brittle. Rank relatively and take top-k; if you need a threshold, calibrate it on your own data
+brittle. Rank relatively and take top-k. If you need a threshold, calibrate it on your own data
 and re-calibrate whenever you change models. Looking at the *gap* between the top hit and the
 rest is usually more informative than the absolute score.
 </details>
@@ -2140,12 +2243,12 @@ rest is usually more informative than the absolute score.
 
 An embedding is produced by pooling — usually averaging — the model's per-token vectors into one
 vector. A large chunk covering several topics averages to something near the centroid of all of
-them, which is close to nothing in particular. Small chunks produce sharper, more discriminative
+them. That's close to nothing in particular. Small chunks produce sharper, more discriminative
 vectors.
 
-There's also a hard failure mode: if the chunk exceeds the model's context limit, most models
-**silently truncate** it, so the vector represents only the first portion of the chunk with no
-error raised. Always check the model's limit against your chunk size.
+There's also a hard failure mode. If the chunk is longer than the model's context limit, most
+models **silently truncate** it. The vector then represents only the first part of the chunk,
+and no error is raised. Always check the model's limit against your chunk size.
 </details>
 
 ### Advanced
@@ -2156,11 +2259,13 @@ error raised. Always check the model's limit against your chunk size.
 Several distinct failure modes, each with a different fix:
 
 - **Exact identifiers.** `ERR_4471` and `ERR_4472` embed near-identically — the model encodes
-  "an error code", not the specific string. Same for part numbers, SKUs, version strings. Fix:
-  hybrid search with BM25 for lexical precision.
-- **Negation and antonyms.** "The refund was approved" and "The refund was denied" are highly
-  similar vectors, because they share almost all their semantics. Fix: this is genuinely hard —
-  reranking with a cross-encoder helps, since it sees query and document together.
+  "an error code", not the specific string. Same for part numbers, SKUs (product stock codes)
+  and version strings. Fix: hybrid search with BM25 (a keyword-ranking method) for exact word
+  matching.
+- **Negation and antonyms** (opposites). "The refund was approved" and "The refund was denied"
+  are highly similar vectors, because they share almost all their meaning. Fix: this is
+  genuinely hard. Reranking with a cross-encoder helps. A cross-encoder is a model that reads
+  the query and the document together, as one input.
 - **Numbers and comparisons.** "under £50" versus "over £50" barely differ. Fix: extract
   structured filters from the query and apply them as metadata filters (self-query retrieval,
   Day 13).
@@ -2177,33 +2282,37 @@ which is exactly the progression through Days 11 and 13.
 <details>
 <summary><b>Q: Design the embedding layer for a system with 50M documents and 10M queries/day.</b></summary>
 
-**Dimensions are the dominant cost lever.** 50M × 768 dims × 4 bytes ≈ 154 GB before index
-overhead; at 3072 dims that's 614 GB. I'd start at 768, or use a Matryoshka-capable model and
-truncate — you keep most of the quality at a fraction of the storage and get faster comparisons,
-since every distance computation touches every dimension.
+**Dimensions are the biggest cost lever.** 50M × 768 dims × 4 bytes ≈ 154 GB before index
+overhead. At 3072 dims that's 614 GB. I'd start at 768, or use a Matryoshka-capable model and
+truncate. You keep most of the quality at a fraction of the storage. Comparisons also get
+faster, since every distance computation touches every dimension.
 
-**Quantisation** is the next lever: int8 quantisation cuts memory ~4× with small recall loss;
-binary quantisation cuts it ~32× and is often used as a fast first-pass filter, rescoring the top
-candidates with full-precision vectors.
+**Quantisation** is the next lever: storing each number in fewer bits. int8 quantisation cuts
+memory ~4× with a small loss of recall. Binary quantisation cuts it ~32×. It is often used as a
+fast first-pass filter, and the top candidates are then re-scored with full-precision vectors.
 
 **Ingest** is a batch pipeline: content-hash and dedupe, embed in batches with bounded
-concurrency and retries, cache by `model:hash` so re-runs are incremental. 50M documents is a
-one-off cost you pay once and then only for deltas — so incremental ingest with deletion handling
-is essential, not optional.
+concurrency and retries, and cache by `model:hash` so re-runs are incremental. You pay for the
+50M documents once, then only for deltas (the changes). So incremental ingest with deletion
+handling is essential, not optional.
 
-**Query path** is where the recurring cost lives. 10M queries/day is 10M embedding calls;
-cache aggressively, because real query distributions are heavily skewed — a modest cache often
-covers a large share of traffic. Normalise queries (lowercase, trim) before hashing to raise the
-hit rate. Consider a small, fast model for query embedding if the model pair is trained for it.
+**Query path** is where the recurring cost lives. 10M queries/day is 10M embedding calls. Cache
+aggressively: real query distributions are heavily skewed (the same questions come up again and
+again), so a modest cache often covers a large share of traffic. Normalise queries (lowercase,
+trim) before hashing to raise the hit rate. Consider a small, fast model for query embedding if
+the model pair is trained for it.
 
-**Serving** needs an approximate index (HNSW or IVF) — exact search over 50M vectors is
-impossible at this latency. That's a recall/latency trade-off you tune deliberately, and it's
-tomorrow's topic.
+**Serving** needs an approximate index (HNSW or IVF, both explained tomorrow). Exact search over
+50M vectors is impossible at this latency. That's a recall/latency trade-off you tune
+deliberately, and it's tomorrow's topic.
 
-**Operationally**: pin the model version and record it with the index; plan for re-indexing as a
-first-class migration (dual-write to a new index, shadow-read to compare, then cut over); monitor
-recall against a golden set continuously, because quality drift from a changed provider model is
-otherwise invisible.
+**Operationally**:
+
+- Pin the model version and record it with the index.
+- Plan for re-indexing as a first-class migration. Dual-write to a new index (write to old and
+  new), shadow-read to compare (query both and check the results match), then cut over.
+- Monitor recall continuously against a golden set (fixed questions with known answers).
+  Otherwise, quality drift from a changed provider model is invisible.
 </details>
 
 <details>
@@ -2218,22 +2327,23 @@ I'd isolate the layer before changing anything, because these have completely di
    ranked low, something else is scoring higher — look at what and why. If its similarity is
    genuinely low, the problem is in the embedding step.
 3. **Check for a vector-space mismatch.** Was the index built with the same model *and the same
-   query/document method* as the search? A cache without a model namespace, or `embedQuery` at
-   ingest and `embedDocuments` at query time on an asymmetric model, both produce exactly this
-   symptom — plausible but subtly wrong results.
+   query/document method* as the search? A cache without a model namespace produces exactly
+   this symptom: plausible but subtly wrong results. So does using `embedQuery` at ingest and
+   `embedDocuments` at query time on an asymmetric model.
 4. **Check for silent truncation.** If chunks exceed the model's context limit, their vectors
    represent only the opening text. Long chunks that "should" match but don't are the tell.
 5. **Look at what *is* winning.** Near-duplicate boilerplate crowding the top-k is common, and is
    fixed by deduplication or MMR rather than by a better model.
 6. **Check the query-document phrasing gap.** If queries are terse keywords and documents are
-   prose, embeddings struggle; query rewriting or HyDE helps (Day 13).
+   prose, embeddings struggle. Query rewriting or HyDE (searching with a generated example
+   answer) helps (Day 13).
 7. **Check whether it's a lexical query in disguise** — an error code, a name, a version number.
    Those need keyword search, not vectors.
 
-The meta-point: "wrong results" is a symptom of at least five distinct causes across chunking,
-embedding, indexing and querying. Bisecting layer by layer with one known-good example is far
-faster than swapping models and hoping — and each bug you find should become a case in the eval
-set so it can't come back.
+The bigger point: "wrong results" is a symptom of at least five distinct causes, across
+chunking, embedding, indexing and querying. Bisect layer by layer: test each layer in turn with
+one known-good example. That is far faster than swapping models and hoping. Each bug you find
+should become a case in the eval set, so it can't come back.
 </details>
 
 ---
@@ -2241,23 +2351,26 @@ set so it can't come back.
 ## 10. Recap
 
 - ✅ An embedding is a point in high-dimensional space where nearness means similar meaning
-- ✅ Cosine = angle (the default); euclidean = distance; dot product = both combined
+- ✅ Cosine measures the angle (the default), euclidean measures distance, and dot product
+  combines both
 - ✅ **For normalised vectors, all three give the same ranking** — cosine equals dot product exactly
-- ✅ Most models normalise; check with `magnitude(v) ≈ 1.0`
+- ✅ Most models normalise — check that `magnitude(v) ≈ 1.0`
 - ✅ `embedQuery` vs `embedDocuments` differ by batching *and* by query/document prefixes
 - ✅ Dimensions drive storage and latency; Matryoshka models let you truncate
 - ✅ **Never mix models in one index** — namespace caches by model name
 - ✅ Long chunks dilute through pooling and truncate silently past the context limit
-- ✅ Unrelated text scores ~0.4, not 0 — rank relatively, don't copy absolute thresholds
-- ✅ Embeddings fail on exact identifiers, negation and numbers → hybrid search (tomorrow)
+- ✅ Unrelated text scores well above 0 (often ~0.3–0.5, model-dependent) — rank relatively,
+  don't copy absolute thresholds
+- ✅ Embeddings fail on exact identifiers, negation and numbers, which leads to hybrid search
+  (tomorrow)
 
 ### Tomorrow
 
 **[Day 11 — Vector databases](day-11-vector-databases.md)**: your search engine scans every
 vector on every query. At 50,000 chunks that's already too slow, and it forgets everything on
-restart. Tomorrow: HNSW and IVF indexes, the recall/latency trade-off, Chroma / FAISS / Qdrant /
-pgvector / Pinecone compared, metadata filtering done properly, and **hybrid search** — the fix
-for the `ERR_4471` problem you found today.
+restart. Tomorrow you meet HNSW and IVF indexes and the recall/latency trade-off. You compare
+Chroma, FAISS, Qdrant, pgvector and Pinecone, and do metadata filtering properly. Finally,
+**hybrid search** fixes the `ERR_4471` problem you found today.
 
 ### Quick self-check
 
@@ -2271,12 +2384,20 @@ for the `ERR_4471` problem you found today.
 1. **No.** For normalised vectors, euclidean distance is a strictly decreasing function of cosine
    similarity, so the ranking is identical — only the reported numbers differ. Cosine also equals
    the dot product exactly.
-2. Two reasons. **Pooling dilution**: the chunk's vector is the average of all its token vectors,
-   so a chunk spanning several topics lands near the centroid of all of them and matches none
-   sharply. And **silent truncation**: if 2,000 tokens exceeds the model's context limit, the tail
-   is dropped with no error, so the vector represents only the opening text.
+2. Two reasons. **Pooling dilution**: the chunk's vector is the average of all its token
+   vectors. A chunk that spans several topics lands near the centroid of all of them, and
+   matches none sharply. And **silent truncation**: if 2,000 tokens exceeds the model's context
+   limit, the tail is dropped with no error. The vector then represents only the opening text.
 3. Nothing visibly — and that's the danger. Queries embed into the new model's space, documents
    sit in the old one, similarity scores come back as plausible numbers, and results are subtly
    wrong with no error raised. You must re-embed the entire corpus, and namespace embedding
    caches by model so stale vectors can't be served.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 09 — Documents, Loaders, Splitting & Chunking Strategy](day-09-documents-and-splitting.md)** · **[Week 2 index](README.md)** · **[Day 11 — Vector Databases →](day-11-vector-databases.md)**
+
+</div>

@@ -2,12 +2,31 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 08](day-08-chains.md) · 🧩 **Difficulty:** ●●○○○
 
-**Today you learn:** the `Document` class and why metadata is the most under-used feature in
-RAG, loaders for PDF/CSV/JSON/HTML/Markdown, and **splitting** — recursive, structure-aware and
-token-aware — plus how to choose chunk size without guessing.
+**Today you learn:** Before you can search a long file, you must cut it into small pieces, and a
+bad cut can hide the answer completely. Today you learn the `Document` class and why its
+**metadata** is the most under-used feature in RAG. You learn **loaders** for PDF, CSV, JSON,
+HTML and Markdown. Then you learn **splitting** — recursive, structure-aware and token-aware —
+and how to choose chunk size without guessing.
 
 Chunking is where most RAG systems are silently broken. A perfect retriever over bad chunks
 returns bad answers, and it's very hard to debug after the fact.
+
+> 📖 **Words you'll meet today**
+>
+> - **Document** — LangChain's container for one piece of text plus facts about that text.
+> - **Metadata** — facts about a text, such as its source file, page or date. You filter and cite
+>   by it.
+> - **Loader** — code that reads a file (PDF, CSV, web page…) and turns it into Documents.
+> - **Text splitter** — code that cuts Documents into smaller pieces called **chunks**, ideally at
+>   natural breaks.
+> - **Chunk overlap** — text repeated at the end of one chunk and the start of the next, so
+>   sentences on the boundary stay whole.
+> - **Embedding** — a list of numbers that captures the meaning of a text (explained fully on
+>   Day 10).
+> - **Header injection** — copying a section's headings into each chunk's text, so the chunk
+>   still says what it is about.
+> - **Recall@k** — how often the right chunk appears in the top *k* search results. Higher is
+>   better.
 
 ---
 
@@ -48,8 +67,8 @@ Here's what that actually does to real content:
 Three separate disasters:
 
 1. **A word is cut in half** — `"pro" / "cessed"`. Both chunks now embed slightly wrong.
-2. **The table is decapitated.** Chunk 2 has rows but the heading `## Refund Policy` is gone, so
-   a chunk about refund windows doesn't contain the word "Refund Policy".
+2. **The table loses its heading.** Chunk 2 has rows but the heading `## Refund Policy` is gone.
+   So a chunk about refund windows doesn't contain the words "Refund Policy".
 3. **The table is cut mid-row.** `| Pro | 60 da` is not retrievable *or* readable.
 
 Now a user asks *"how long do I have to get a refund on Pro?"* The answer exists in your
@@ -78,7 +97,8 @@ model or the LLM. It's almost always the chunks.
 ```
 
 That distinction drives every design decision today. If a fact lives only in metadata, semantic
-search can't find it. If it lives only in `pageContent`, you can't filter on it.
+search (search by meaning) can't find it. If it lives only in `pageContent`, you can't filter on
+it.
 
 ### The pipeline
 
@@ -94,7 +114,7 @@ search can't find it. If it lives only in `pageContent`, you can't filter on it.
 
 ### How recursive splitting actually works
 
-This is the key algorithm and it's simpler than people assume:
+This is the key algorithm, and it's simpler than people think.
 
 ```
    Try to split on the BIGGEST separator first.
@@ -116,8 +136,8 @@ This is the key algorithm and it's simpler than people assume:
    step 3: para2 → ["line1", "line2"] → both fit ✅
 ```
 
-**The result:** chunks break at natural boundaries whenever possible, and only fall back to
-brutal cuts when a single paragraph is genuinely larger than the chunk size.
+**The result:** chunks break at natural boundaries whenever possible. They only fall back to
+hard cuts when a single paragraph is genuinely larger than the chunk size.
 
 ### Overlap
 
@@ -137,6 +157,9 @@ brutal cuts when a single paragraph is genuinely larger than the chunk size.
 ## 3. First principles
 
 ### 3.1 The Document class
+
+> 💬 **In plain words:** a Document is text plus facts about that text. Put facts you want to
+> filter by in metadata, and facts you want to search by in the text.
 
 ```js
 new Document({
@@ -160,8 +183,9 @@ new Document({
 | **Freshness** | Drop chunks where `lastUpdated < 2023` |
 | **Access control** | Only return chunks the user's role can see |
 
-That last one is not optional in a real product. If your vector store contains documents from
-multiple tenants and you don't filter by tenant, you have a data breach, not a search bug.
+That last one is not optional in a real product. Say your vector store holds documents from
+several tenants (separate customers sharing one system). If you don't filter by tenant, you have
+a data breach, not a search bug.
 
 > 🔑 **Design rule:** any fact you might want to *filter* by goes in metadata. Any fact you
 > might want to *search* by semantically must be in `pageContent`. Important facts often belong
@@ -169,7 +193,10 @@ multiple tenants and you don't filter by tenant, you have a data breach, not a s
 
 ### 3.2 Loaders
 
-A loader turns a file into `Document[]`. The granularity varies:
+> 💬 **In plain words:** a loader reads a file into Documents. Those pieces are rarely the right
+> size, so you almost always split them afterwards.
+
+A loader turns a file into `Document[]`. How much text goes into each Document varies:
 
 | Loader | Produces |
 |---|---|
@@ -180,11 +207,14 @@ A loader turns a file into `Document[]`. The granularity varies:
 | Directory loader | Recursively loads a folder |
 | Web loader | 1 document per URL |
 
-Loaders almost never produce correctly-sized chunks. A PDF page is usually too big; a CSV row is
-usually too small. **Load, then split** — with the exception of CSV, where rows are often already
+Loaders almost never produce correctly-sized chunks. A PDF page is usually too big, and a CSV row
+is usually too small. **Load, then split.** The exception is CSV, where rows are often already
 the right unit.
 
 ### 3.3 The splitters
+
+> 💬 **In plain words:** several splitters exist. Start with the recursive one, and switch only
+> when your content has a structure it can't see.
 
 | Splitter | Splits on | Use for |
 |---|---|---|
@@ -204,6 +234,9 @@ the right unit.
 
 ### 3.4 Choosing chunk size
 
+> 💬 **In plain words:** small chunks find precise matches, and large chunks keep more context.
+> The only reliable way to choose is to measure on real questions.
+
 There is no universal right answer, but there is a right *way to think about it*:
 
 ```
@@ -217,8 +250,8 @@ There is no universal right answer, but there is a right *way to think about it*
    ❌ answer may span several chunks       ❌ "lost in the middle" within a chunk
 ```
 
-**The dilution problem** is the one people miss. An embedding is a single vector for the whole
-chunk. A 2000-token chunk covering five topics produces a vector that is the *average* of five
+**The dilution problem** is the one people miss. An embedding is a single vector (one list of
+numbers) for the whole chunk. A 2000-token chunk covering five topics produces a vector that is the *average* of five
 topics — close to nothing in particular. Small chunks have sharper vectors.
 
 **Starting points by content type:**
@@ -236,17 +269,21 @@ topics — close to nothing in particular. Small chunks have sharper vectors.
 **Overlap rule of thumb: 10–20% of chunk size.** Zero overlap risks splitting a sentence that
 contains the answer. Too much overlap wastes storage and returns near-duplicate chunks.
 
-> 🎯 **The honest answer to "what chunk size?"** — build an eval set of ~30 real questions with
-> known answers, then measure **retrieval recall** (did the right chunk come back?) at several
-> chunk sizes. It takes an afternoon and it's the only way to know. Exercise 5 builds this.
+> 🎯 **The honest answer to "what chunk size?"** Build an eval set (a small test set) of ~30 real
+> questions with known answers. Then measure **retrieval recall** — did the right chunk come
+> back? — at several chunk sizes. It takes an afternoon, and it's the only way to know.
+> Exercise 5 builds this.
 
 ### 3.5 Token-aware vs character-aware
 
-Character splitting is an approximation. `chunkSize: 1000` chars ≈ 250 tokens for English prose,
-but ≈ 400 tokens for code, and ≈ 700 for Hindi (Day 01).
+> 💬 **In plain words:** counting characters only estimates the number of tokens. When a token
+> limit is strict, split by tokens instead.
 
-If you need a hard guarantee — because your embedding model has a token limit, or you're packing
-a fixed context budget — use a token-aware splitter.
+Character splitting is an approximation. `chunkSize: 1000` chars is about 250 tokens for English
+prose, but about 400 tokens for code, and about 700 for Hindi (Day 01).
+
+Sometimes you need a hard guarantee — because your embedding model has a token limit, or you're
+filling a fixed context budget. Then use a token-aware splitter.
 
 ```js
 // character-based (fast, approximate)
@@ -259,6 +296,9 @@ new TokenTextSplitter({ chunkSize: 250, chunkOverlap: 50 })
 Most teams use character-based with a conservative size. Use token-based when the limit is hard.
 
 ### 3.6 Header injection — the highest-ROI trick today
+
+> 💬 **In plain words:** copy each section's headings into its chunks, so bare table rows still
+> say what they are about. ROI (return on investment) means the most benefit for the effort.
 
 Remember the broken table from §1? The fix is to **put the structural context back into the
 chunk text**:
@@ -275,12 +315,13 @@ chunk text**:
       | Pro   | 60 days | £0 |
 ```
 
-Now the chunk *semantically contains* "refund policy", so a question about refunds retrieves it.
-This one change routinely moves retrieval recall by 10–20 points on structured documents, and it
-costs a handful of tokens per chunk.
+Now the chunk *semantically contains* "refund policy" — its meaning includes it — so a question
+about refunds retrieves it. This one change routinely moves retrieval recall by 10–20 points on
+structured documents, and it costs a handful of tokens per chunk.
 
-Python's `MarkdownHeaderTextSplitter` does this by putting headers in metadata; you then prepend
-them to the content. In JS you do it manually. Both shown in §4.4 / §5.4.
+Python's `MarkdownHeaderTextSplitter` does this by putting headers in metadata. You then prepend
+them to the content (add them at the start). In JS you do it manually. Both are shown in §4.4
+and §5.4.
 
 ---
 
@@ -582,8 +623,9 @@ const rows = await new CSVLoader("./products.csv").load();
 const web = await new CheerioWebBaseLoader("https://example.com").load();
 ```
 
-> ⚠️ PDF text extraction is genuinely hard. Multi-column layouts interleave, tables lose their
-> structure, and scanned PDFs contain no text at all (you need OCR). **Always print the extracted
+> ⚠️ PDF text extraction is genuinely hard. Multi-column layouts get mixed together, tables lose
+> their structure, and scanned PDFs contain no text at all. For those you need OCR (optical
+> character recognition — software that reads text from images). **Always print the extracted
 > text before trusting it.** More on this in §7.
 </details>
 
@@ -847,9 +889,9 @@ rows = CSVLoader("./products.csv").load()
 web = WebBaseLoader("https://example.com").load()
 ```
 
-> ⚠️ PDF text extraction is genuinely hard. Multi-column layouts interleave, tables lose their
-> structure, and scanned PDFs contain no text at all (you need OCR). **Always print the extracted
-> text before trusting it.**
+> ⚠️ PDF text extraction is genuinely hard. Multi-column layouts get mixed together, tables lose
+> their structure, and scanned PDFs contain no text at all (you need OCR). **Always print the
+> extracted text before trusting it.**
 </details>
 
 ### 5.7 JSON splitting (Python only)
@@ -947,8 +989,8 @@ new CharacterTextSplitter({ separator: "\n\n", chunkSize: 100 })
 It splits **only** on `\n\n`. If a paragraph is 5,000 characters with no blank line inside it,
 you get one 5,000-character chunk — `chunkSize` is silently exceeded, usually with a warning.
 
-`RecursiveCharacterTextSplitter` doesn't have this problem because it falls back through finer
-separators. **This is why it's the default recommendation**, and why `CharacterTextSplitter`
+`RecursiveCharacterTextSplitter` doesn't have this problem, because it falls back through finer
+separators. **This is why it's the default recommendation.** It's also why `CharacterTextSplitter`
 almost always turns out to be the wrong choice.
 
 ### How overlap is implemented
@@ -966,7 +1008,7 @@ half a word — unless the recursion already fell through to character-level spl
 
 ### Why metadata is copied but not merged
 
-`splitDocuments` copies the parent's metadata **by reference-free shallow copy** onto every
+`splitDocuments` copies the parent's metadata (a **shallow copy** — nested objects are still shared) onto every
 child. It doesn't add anything about position. That's why you nearly always want to enrich after
 splitting:
 
@@ -974,8 +1016,8 @@ splitting:
 { ...c.metadata, chunkIndex: i, totalChunks: chunks.length }
 ```
 
-`chunkIndex` in particular is how you implement "fetch the neighbouring chunks too" — the
-poor man's parent-document retriever (Day 13).
+`chunkIndex` in particular is how you implement "fetch the neighbouring chunks too". It is a
+simple, low-cost version of the parent-document retriever (Day 13).
 
 ---
 
@@ -997,9 +1039,9 @@ const chunks = await splitter.splitText(doc.pageContent);   // metadata LOST
 
 ---
 
-**❌ Chunk size chosen by vibes**
+**❌ Chunk size chosen by gut feeling**
 
-"1000 seemed reasonable" is how most RAG systems get their chunk size, and it's why so many
+"1000 seemed reasonable" is how most RAG systems get their chunk size. It's why so many
 underperform.
 ✅ Measure retrieval recall on a small eval set at 3–4 sizes. One afternoon, permanent payoff.
 
@@ -1014,8 +1056,8 @@ A sentence that straddles a boundary appears in neither chunk in complete form.
 
 **❌ Huge overlap "to be safe"**
 
-`chunkSize: 1000, chunkOverlap: 800` means 80% duplication: your store is 5× bigger, retrieval
-returns near-identical chunks, and you waste prompt tokens on repeats.
+`chunkSize: 1000, chunkOverlap: 800` means 80% duplication. Your store is 5 times bigger,
+retrieval returns near-identical chunks, and you waste prompt tokens on repeats.
 ✅ Keep it under ~25%.
 
 ---
@@ -1030,16 +1072,16 @@ word "refund".
 
 **❌ Trusting PDF extraction without looking at it**
 
-Multi-column academic PDFs interleave columns into nonsense. Scanned PDFs extract *nothing*.
-Tables become soup.
+Multi-column academic PDFs mix their columns together into nonsense. Scanned PDFs extract
+*nothing*. Tables become a jumble of words.
 ✅ Print the first 2,000 characters of every new PDF source before building anything on it. If
-it's scanned, you need OCR; if it's multi-column, you may need a layout-aware extractor.
+it's scanned, you need OCR. If it's multi-column, you may need a layout-aware extractor.
 
 ---
 
 **❌ Splitting code with the plain character splitter**
 
-Functions get cut in half; the fragment doesn't parse and doesn't embed meaningfully.
+Functions get cut in half. The fragment doesn't parse, and doesn't embed meaningfully.
 ✅ `fromLanguage` / `from_language`, which prefers syntactic boundaries.
 
 ---
@@ -1057,9 +1099,9 @@ only `pageContent` is embedded.
 ### Exercise 1 — Splitter comparison ●○○○○
 
 Take a markdown document with headings, a paragraph, a list and a table. Split it three ways:
-naive slicing, `CharacterTextSplitter`, and `RecursiveCharacterTextSplitter`. For each, report:
-chunk count, min/max/mean chunk length, and how many chunks contain a broken word or a broken
-table row.
+naive slicing, `CharacterTextSplitter`, and `RecursiveCharacterTextSplitter`. For each, report
+the chunk count and the min, max and mean chunk length. Also report how many chunks contain a
+broken word or a broken table row.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1207,8 +1249,8 @@ Recursive              n= 5  min= 46 max=196 mean=138  brokenWords=0  brokenTabl
 
 1. **Naive slicing breaks words and tables.** Every broken row is a chunk that can't be retrieved
    or rendered.
-2. **`CharacterTextSplitter` exceeded `chunkSize`** (max=248 > 200). It only splits on `\n\n`, so
-   any block without a blank line stays whole regardless of the limit. This is the surprise from
+2. **`CharacterTextSplitter` exceeded `chunkSize`** (max=248, which is over 200). It only splits
+   on `\n\n`, so any block without a blank line stays whole, whatever the limit. This is the surprise from
    §6 and the reason it's rarely the right choice.
 3. **Recursive stays under the limit *and* breaks cleanly.** It's the default for a reason.
 </details>
@@ -1218,9 +1260,9 @@ Recursive              n= 5  min= 46 max=196 mean=138  brokenWords=0  brokenTabl
 ### Exercise 2 — Header injection, measured ●●○○○
 
 Take a markdown document where a section's body doesn't repeat its heading (a table under
-`## Refund Policy`, for example). Split it twice — with and without header injection — then use
-simple keyword overlap to check whether a query like "refund window for Pro plan" would match
-the right chunk in each case.
+`## Refund Policy`, for example). Split it twice: once with header injection and once without.
+Then use simple keyword overlap to check whether a query like "refund window for Pro plan" would
+match the right chunk in each case.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1376,8 +1418,9 @@ match. The shipping chunk happens to score higher by accident.
 
 With the breadcrumb injected, the right chunk wins decisively.
 
-This is a lexical stand-in, but **the same failure happens with embeddings** — a chunk of bare
-table rows has a vector that means roughly "tabular data about durations", not "refund policy".
+This is a lexical stand-in (it matches exact words, not meaning). But **the same failure happens
+with embeddings.** A chunk of bare table rows has a vector that means roughly "tabular data about
+durations", not "refund policy".
 Day 12 lets you re-run this comparison with real embeddings, and the gap is just as large.
 </details>
 
@@ -1385,10 +1428,10 @@ Day 12 lets you re-run this comparison with real embeddings, and the gap is just
 
 ### Exercise 3 — Chunk size explorer ●●●○○
 
-Write a tool that takes a text file and a list of chunk sizes, and for each size reports: number
-of chunks, mean/median chunk length, estimated total tokens (including overlap duplication), and
-estimated storage cost at a given embedding dimension. Use it to build an intuition for the
-trade-off.
+Write a tool that takes a text file and a list of chunk sizes. For each size, it reports the
+number of chunks and the mean and median chunk length. It also reports the estimated total
+tokens (including overlap duplication) and the estimated storage cost at a given embedding
+dimension. Use it to build an intuition for the trade-off.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1486,11 +1529,11 @@ size  overlap  chunks  mean  median  totalTok  dup%   vectorMB
 
 **Three intuitions this builds:**
 
-1. **Storage scales inversely with chunk size** — 200-char chunks need 10× the vectors of
-   2000-char chunks. At millions of documents that's a real infrastructure cost.
-2. **Duplication from overlap is modest** at a sensible ratio — under 10% even at 15% overlap,
-   because overlap is capped by whole-piece boundaries. Crank overlap to 50% and watch this
-   column explode.
+1. **Storage scales inversely with chunk size** — 200-char chunks need 10 times the vectors of
+   2000-char chunks. At millions of documents, that's a real infrastructure cost.
+2. **Duplication from overlap is modest** at a sensible ratio. It stays under 10% even at 15%
+   overlap, because overlap is capped by whole-piece boundaries. Raise overlap to 50% and watch
+   this column shoot up.
 3. **Mean is consistently below the limit** — that's the §6 point that `chunkSize` is a maximum,
    not a target. Chunks end early at natural boundaries.
 
@@ -1503,10 +1546,10 @@ Exercise 5, and it's the measurement that actually matters.
 
 ### Exercise 4 — A robust document ingestion pipeline ●●●○○
 
-Build `ingest(filePath)` that: detects file type from the extension, picks the right loader and
-splitter, injects headers for markdown, enriches metadata with `chunkIndex`, `source`, and a
-content hash for deduplication, drops chunks below a minimum length, and reports statistics.
-Handle unknown extensions gracefully.
+Build `ingest(filePath)`. It detects the file type from the extension and picks the right loader
+and splitter. It injects headers for markdown. It enriches metadata with `chunkIndex`, `source`,
+and a content hash for deduplication (spotting repeated chunks). Finally, it drops chunks below
+a minimum length and reports statistics. Handle unknown extensions gracefully.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1754,7 +1797,7 @@ print(chunks[0].page_content[:200] if chunks else "(none)")
 print("metadata:", chunks[0].metadata if chunks else {})
 ```
 
-**Five production details worth stealing:**
+**Five production details worth copying:**
 
 1. **Per-type profiles.** Code wants zero overlap and syntactic boundaries; prose wants overlap.
    One global setting is always wrong for something.
@@ -1764,10 +1807,10 @@ print("metadata:", chunks[0].metadata if chunks else {})
 3. **Dropping tiny chunks.** A 12-character chunk (`"## Support"`) embeds to noise and only ever
    adds junk to results.
 4. **`modifiedAt` in metadata** — enables freshness filtering and staleness detection later.
-5. **Graceful unknown extensions.** It warns and falls back rather than throwing; ingestion
+5. **Graceful unknown extensions.** It warns and falls back rather than throwing. Ingestion
    pipelines run over messy directories and shouldn't die on a `.log` file.
 
-**The `totalChunks` backfill** is a small thing worth noticing: you can't know the total until
+**The `totalChunks` backfill** is a small thing worth noticing. You can't know the total until
 you've finished filtering, so it has to be a second pass. Setting it during the loop would give
 you wrong values on every chunk.
 </details>
@@ -1778,11 +1821,12 @@ you wrong values on every chunk.
 
 **This is the exercise that separates people who guess chunk size from people who know it.**
 
-Build a harness that: takes a document and a set of `{question, expectedAnswerSubstring}` pairs;
-for each chunk size, splits the document and finds which chunk actually contains the expected
-answer (ground truth); then scores chunks against each question with a simple lexical retriever
-and measures **recall@k** — did the correct chunk appear in the top *k*? Report a table so you
-can pick a size with evidence.
+Build a harness (a small test program) that takes a document and a set of
+`{question, expectedAnswerSubstring}` pairs. For each chunk size, it splits the document and
+finds which chunk actually contains the expected answer (the ground truth). It then scores the
+chunks against each question with a simple lexical retriever. Finally, it measures
+**recall@k**: did the correct chunk appear in the top *k*? Report a table so you can pick a size
+with evidence.
 
 <details>
 <summary>✅ Solution</summary>
@@ -2068,26 +2112,27 @@ document: 1547 chars · 7 test questions
 
 **Five things this harness teaches that no blog post can:**
 
-1. **R@1 peaks in the middle.** Too small and context fragments (the answer's supporting words
-   land in a neighbouring chunk); too large and the signal dilutes across topics. The peak is
-   your answer, and it is corpus-specific.
+1. **R@1 peaks in the middle.** Too small, and context fragments: the answer's supporting words
+   land in a neighbouring chunk. Too large, and the signal dilutes across topics. The peak is
+   your answer, and it depends on your corpus.
 2. **The `unfindable` column is the one people forget.** If the expected answer text spans a
-   chunk boundary, *no* retriever can return it — recall is capped no matter how good your
-   embeddings are. A non-zero count here means increase overlap or chunk size, and it's a
-   different problem from low recall.
-3. **R@5 saturates.** If you're going to retrieve 5 chunks and rerank (Day 13), chunk size
-   matters far less than if you retrieve 1. Your retrieval budget and your chunk size are
-   coupled decisions.
-4. **Ground truth is derived, not hand-labelled.** By checking which chunks *contain* the
-   expected substring, the harness recomputes truth for every chunk size automatically. That's
-   what makes sweeping sizes cheap — hand-labelling per size would be infeasible.
+   chunk boundary, *no* retriever can return it. Recall is capped, however good your embeddings
+   are. A non-zero count here means you should increase overlap or chunk size. It's a different
+   problem from low recall.
+3. **R@5 saturates (stops improving).** If you retrieve 5 chunks and rerank (Day 13), chunk
+   size matters far less than if you retrieve 1. Your retrieval budget and your chunk size are
+   linked decisions.
+4. **Ground truth is derived, not hand-labelled.** The harness checks which chunks *contain* the
+   expected substring, so it recomputes the truth for every chunk size automatically. That's
+   what makes testing many sizes cheap. Labelling by hand for each size would be impractical.
 5. **This works before you have embeddings.** The lexical retriever is a stand-in, so you can
    tune chunking on day one of a project without paying for a single embedding call. Swap in a
    real retriever on Day 12 and the harness is unchanged.
 
-**Use this on your own corpus.** Twenty real questions with known answers, half an hour of
-setup, and you'll have an evidence-based chunk size instead of a guess — plus a regression test
-that catches it when someone "improves" the splitter and quietly breaks retrieval.
+**Use this on your own corpus.** Twenty real questions with known answers and half an hour of
+setup give you an evidence-based chunk size instead of a guess. You also get a regression test
+(a test that catches things that used to work and now don't). It catches the day someone
+"improves" the splitter and quietly breaks retrieval.
 </details>
 
 ---
@@ -2100,27 +2145,27 @@ that catches it when someone "improves" the splitter and quietly breaks retrieva
 <summary><b>Q: What is a Document in LangChain?</b></summary>
 
 A container with two parts: `pageContent` (JS) / `page_content` (Python), the text, and
-`metadata`, an arbitrary dictionary. Only the text is embedded; metadata is what you filter,
-cite and access-control by. Loaders produce Documents, splitters consume and produce them, and
-retrievers return them.
+`metadata`, an arbitrary dictionary. Only the text is embedded. Metadata is what you filter,
+cite and access-control by. Loaders produce Documents, splitters take them in and produce more,
+and retrievers return them.
 </details>
 
 <details>
 <summary><b>Q: What does a text splitter do and why is it needed?</b></summary>
 
 It breaks documents into chunks small enough to embed meaningfully and to fit in a context
-window alongside a question. It's needed because loaders produce units that are the wrong size —
-a PDF page is too big, a CSV row often too small — and because an embedding of a huge chunk is a
-blurry average of everything in it, which retrieves poorly.
+window alongside a question. It's needed for two reasons. First, loaders produce units of the
+wrong size: a PDF page is too big, and a CSV row is often too small. Second, an embedding of a
+huge chunk is a blurry average of everything in it, which retrieves poorly.
 </details>
 
 <details>
 <summary><b>Q: Why is `RecursiveCharacterTextSplitter` the default recommendation?</b></summary>
 
-It tries a list of separators from coarsest to finest — paragraphs, then lines, then sentences,
-then spaces, then raw characters — and only falls back to a finer one when a piece is still too
-big. So it breaks at natural boundaries whenever possible and respects `chunkSize` regardless of
-the content's structure.
+It tries a list of separators from coarsest to finest: paragraphs, then lines, then sentences,
+then spaces, then raw characters. It only falls back to a finer one when a piece is still too
+big. So it breaks at natural boundaries whenever possible, and respects `chunkSize` whatever the
+content's structure.
 
 `CharacterTextSplitter` splits on a single separator only, so a long block without that
 separator silently exceeds `chunkSize`.
@@ -2129,9 +2174,9 @@ separator silently exceeds `chunkSize`.
 <details>
 <summary><b>Q: What is chunk overlap and why use it?</b></summary>
 
-Overlap repeats some content from the end of one chunk at the start of the next, so a sentence
-straddling a boundary appears complete in at least one chunk. Typical values are 10–20% of chunk
-size. Zero overlap risks splitting the answer; excessive overlap bloats storage and returns
+Overlap repeats some content from the end of one chunk at the start of the next. So a sentence
+that crosses a boundary appears complete in at least one chunk. Typical values are 10–20% of
+chunk size. Zero overlap risks splitting the answer. Too much overlap bloats storage and returns
 near-duplicate chunks. Zero overlap *is* correct for atomic units like CSV rows or Q&A pairs.
 </details>
 
@@ -2143,10 +2188,10 @@ near-duplicate chunks. Zero overlap *is* correct for atomic units like CSV rows 
 Measure it. Build ~20–30 real questions with known answers, then for several chunk sizes compute
 **retrieval recall@k** — how often the chunk containing the answer appears in the top *k*.
 
-The trade-off you're navigating: small chunks give precise, sharp embeddings but fragment
-context and may split the answer; large chunks preserve context but dilute the embedding across
-multiple topics and pull irrelevant text into the prompt. Recall@1 typically peaks somewhere in
-the middle, and where depends on your content.
+The trade-off you're balancing: small chunks give precise, sharp embeddings, but they fragment
+context and may split the answer. Large chunks preserve context, but they dilute the embedding
+across several topics and pull irrelevant text into the prompt. Recall@1 typically peaks
+somewhere in the middle, and where depends on your content.
 
 Sensible starting points: 800–1000 chars for prose, 500–800 for dense technical docs, one chunk
 per Q&A pair or contract clause where the content is already atomic. But start with those and
@@ -2156,13 +2201,13 @@ then measure.
 <details>
 <summary><b>Q: Why does putting headings into chunk text improve retrieval?</b></summary>
 
-Only `pageContent` is embedded. A chunk consisting of a table's rows under a `## Refund Policy`
-heading contains no occurrence of the word "refund" once the heading has been split away, so its
-embedding means something like "tabular data about durations" — and a query about refunds won't
-match it.
+Only `pageContent` is embedded. Take a chunk made of a table's rows under a `## Refund Policy`
+heading. Once the heading has been split away, the chunk never contains the word "refund". So
+its embedding means something like "tabular data about durations", and a query about refunds
+won't match it.
 
-Prepending the header breadcrumb (`Handbook > Refund Policy`) puts that topical signal into the
-embedded text. It costs a handful of tokens per chunk and routinely moves recall by double digits
+Prepending the header breadcrumb (`Handbook > Refund Policy`) — the path of headings above the
+chunk — puts that topical signal into the embedded text. It costs a handful of tokens per chunk and routinely moves recall by double digits
 on structured documents. It also gives you a natural citation string.
 </details>
 
@@ -2173,7 +2218,7 @@ on structured documents. It also gives you a natural citation string.
 `Document[]` and returns `Document[]` with the parent's metadata copied onto every child chunk.
 
 Use `splitDocuments` in any real pipeline, because you need `source` and `page` for citation and
-filtering. Note it doesn't add positional metadata, so enrich afterwards with `chunkIndex` — which
+filtering. Note it doesn't add positional metadata, so enrich afterwards with `chunkIndex`. That
 is what lets you later fetch neighbouring chunks.
 </details>
 
@@ -2181,14 +2226,18 @@ is what lets you later fetch neighbouring chunks.
 <summary><b>Q: How would you chunk source code, and why differently from prose?</b></summary>
 
 Use a language-aware splitter (`fromLanguage` / `from_language`) so splits prefer function and
-class boundaries. A function cut in half is both unparseable and semantically meaningless — the
-fragment embeds to noise.
+class boundaries. A function cut in half can't be parsed and has no clear meaning. The fragment
+embeds to noise.
 
-Differences from prose: overlap is usually zero or minimal, because functions are self-contained
-and duplicated code fragments confuse retrieval; chunk size can be larger, since a whole function
-is the natural unit; and you want file path, language and symbol name in metadata for filtering
-and citation. Ideally you'd inject the enclosing class or module name into the chunk text — the
-same header-injection idea as markdown.
+Differences from prose:
+
+- Overlap is usually zero or minimal. Functions are self-contained, and duplicated code
+  fragments confuse retrieval.
+- Chunk size can be larger, since a whole function is the natural unit.
+- You want file path, language and symbol name in metadata, for filtering and citation.
+
+Ideally you'd inject the enclosing class or module name into the chunk text — the same
+header-injection idea as markdown.
 </details>
 
 ### Advanced
@@ -2196,23 +2245,26 @@ same header-injection idea as markdown.
 <details>
 <summary><b>Q: Your RAG system fails to find answers that are definitely in the corpus. Walk through your debugging.</b></summary>
 
-The critical first move is **separating retrieval failure from generation failure**, because
-they have completely different fixes and conflating them is why RAG debugging goes in circles.
+The critical first move is **separating retrieval failure from generation failure**. They have
+completely different fixes, and mixing them up is why RAG debugging goes round in circles.
 
 1. **Is the answer in any chunk, intact?** Search the raw chunk text for the expected string. If
-   it's not there, it's a *chunking* bug — the answer is split across a boundary — and no
-   retriever improvement will ever fix it. Fix with overlap or larger chunks.
+   it's not there, it's a *chunking* bug: the answer is split across a boundary. No retriever
+   improvement will ever fix it. Fix it with overlap or larger chunks.
 2. **If it is in a chunk, does retrieval return that chunk?** Retrieve for the question and check
    whether the known-good chunk is in the results. If not, it's a retrieval problem.
 3. **If retrieval fails**, ask why the chunk's embedding doesn't match. Most often the chunk lost
-   its heading, so it lacks the topical vocabulary of the question. Also check: is the query
-   phrased very differently from the document (fix with query rewriting or HyDE, Day 13)? Are
-   there exact identifiers like error codes that embeddings handle badly (fix with hybrid BM25)?
-   Is a metadata filter wrongly excluding it?
-4. **If retrieval succeeds but the answer is wrong**, it's generation — check whether the chunk
-   is buried among many others (lost in the middle: retrieve fewer, or rerank), whether the
-   prompt actually instructs grounding, and whether the model is overriding context with
-   parametric knowledge.
+   its heading, so it lacks the topic words the question uses. Also check these:
+   - Is the query phrased very differently from the document? Fix with query rewriting or HyDE
+     (Day 13).
+   - Are there exact identifiers, like error codes, that embeddings handle badly? Fix with
+     hybrid search that adds BM25, a keyword-ranking method.
+   - Is a metadata filter wrongly excluding it?
+4. **If retrieval succeeds but the answer is wrong**, it's generation. Check whether the chunk
+   is buried among many others (lost in the middle: retrieve fewer, or rerank). Check whether
+   the prompt actually instructs grounding (answering only from the given text). And check
+   whether the model is overriding the context with parametric knowledge — what it learned in
+   training.
 5. **Then make it a regression test.** Every bug found this way becomes a case in the eval set,
    so a future "improvement" to the splitter can't silently reintroduce it.
 
@@ -2223,31 +2275,33 @@ The single highest-yield check is step 1, and it's the one most people skip.
 <summary><b>Q: Design an ingestion pipeline for a company wiki with 50,000 pages that changes daily.</b></summary>
 
 **Incremental, not full re-ingest.** Re-embedding 50k pages nightly is wasteful and slow. Hash
-each chunk's content; on re-ingest, compare hashes and only embed what's new or changed, and
-delete vectors for chunks that disappeared. LangChain's indexing API (record manager) does this
-bookkeeping, or implement it directly against your store.
+each chunk's content. On re-ingest, compare hashes and only embed what's new or changed. Delete
+vectors for chunks that disappeared. LangChain's indexing API (record manager) does this
+bookkeeping, or you can implement it directly against your store.
 
-**Per-type handling.** Wikis are heterogeneous — markdown pages, attached PDFs, tables, code
-snippets. Route by type to the right loader and splitter profile, with markdown header injection
-so chunks carry their section breadcrumb.
+**Per-type handling.** Wikis hold many kinds of content: markdown pages, attached PDFs, tables,
+code snippets. Route each type to the right loader and splitter profile. Use markdown header
+injection so chunks carry their section breadcrumb.
 
-**Metadata is the design centre.** Space/team, author, last-modified, ACL group, page URL,
-heading breadcrumb. This drives access-control filtering (mandatory — a shared vector store
-without tenant/ACL filtering is a data-leak vector), freshness filtering, and citation.
+**Metadata is the design centre.** Store space or team, author, last-modified date, ACL group
+(access-control list: who may see it), page URL and heading breadcrumb. This drives
+access-control filtering, freshness filtering and citation. Access-control filtering is
+mandatory: a shared vector store without tenant or ACL filtering is a way for data to leak.
 
 **Handle deletions and moves explicitly.** A page deleted from the wiki must have its vectors
 removed, or your bot will confidently cite content that no longer exists. This is the most
 commonly missed requirement.
 
-**Pipeline shape:** a change feed or webhook from the wiki → a queue → workers that load, split,
-hash, diff, embed and upsert. Batch embedding calls with a concurrency cap and retry on 429.
-Make it idempotent so a replayed message doesn't duplicate.
+**Pipeline shape:** a change feed or webhook from the wiki sends events to a queue. Workers then
+load, split, hash, diff, embed and upsert (insert or update). Batch embedding calls with a
+concurrency cap, and retry on 429 (the "too many requests" error). Make it idempotent (safe to
+run twice), so a replayed message doesn't create duplicates.
 
-**Versioning and rollback.** Tag each ingest run; keep the previous index queryable so a bad
+**Versioning and rollback.** Tag each ingest run. Keep the previous index queryable, so a bad
 splitter change can be rolled back without a full re-embed.
 
-**Observability.** Track chunks added/updated/deleted per run, embedding cost, failure rate per
-source type, and — most importantly — run the retrieval eval set after each ingest. A chunking
+**Observability.** Track chunks added, updated and deleted per run, embedding cost, and failure
+rate per source type. Most importantly, run the retrieval eval set after each ingest. A chunking
 regression is invisible until someone complains, unless you measure it.
 </details>
 
@@ -2267,14 +2321,15 @@ Whenever the content has natural semantic units that don't align with a characte
   and speaker attribution must be preserved.
 - **Slide decks** — one chunk per slide.
 
-There's also a middle path worth knowing: **semantic chunking**, which embeds sentences and
-splits where consecutive-sentence similarity drops, putting boundaries at genuine topic shifts.
-It's more expensive at ingest and harder to reason about, and in practice good structure-aware
-splitting plus header injection gets most of the benefit for far less complexity.
+There's also a middle path worth knowing: **semantic chunking**. It embeds each sentence and
+splits where the similarity between neighbouring sentences drops. That puts boundaries at real
+changes of topic. It's more expensive at ingest and harder to reason about. In practice, good
+structure-aware splitting plus header injection gets most of the benefit for far less
+complexity.
 
 The general principle: fixed-size chunking is a *fallback* for unstructured prose. If your
-content has structure, use it — the structure is information the author already encoded for you,
-and throwing it away to hit a character count is almost always a downgrade.
+content has structure, use it. The structure is information the author already encoded for you.
+Throwing it away to hit a character count is almost always a downgrade.
 </details>
 
 ---
@@ -2282,22 +2337,23 @@ and throwing it away to hit a character count is almost always a downgrade.
 ## 10. Recap
 
 - ✅ `Document` = `pageContent` (embedded) + `metadata` (filtered, cited, access-controlled)
-- ✅ Load → split → enrich. Loaders rarely produce correctly-sized chunks
-- ✅ `RecursiveCharacterTextSplitter` is the default: coarse → fine separators, respects `chunkSize`
+- ✅ Load, then split, then enrich. Loaders rarely produce correctly-sized chunks
+- ✅ `RecursiveCharacterTextSplitter` is the default: coarse-to-fine separators, respects `chunkSize`
 - ✅ `CharacterTextSplitter` silently exceeds `chunkSize` — usually the wrong choice
 - ✅ `chunkSize` is a **maximum**, not a target
 - ✅ Overlap 10–20% for prose; zero for atomic units (rows, Q&A pairs, clauses)
 - ✅ **Inject header breadcrumbs into chunk text** — highest-ROI fix for structured documents
 - ✅ Use `splitDocuments`, not `splitText`, so metadata survives
 - ✅ Language-aware splitting for code; structure-aware for markdown/HTML/JSON
-- ✅ Choose chunk size by **measuring recall@k on an eval set**, not by vibes
+- ✅ Choose chunk size by **measuring recall@k on an eval set**, not by gut feeling
 
 ### Tomorrow
 
 **[Day 10 — Embeddings deep dive](day-10-embeddings.md)**: you now have well-formed chunks. Time
-to turn them into vectors. Tomorrow: what an embedding actually *is*, cosine vs euclidean vs dot
-product worked by hand, choosing an embedding model, dimensions and cost, batching, caching — and
-why the query and the document sometimes need *different* embedding treatments.
+to turn them into vectors. Tomorrow you learn what an embedding actually *is*, and work through
+cosine, euclidean and dot-product similarity by hand. You also learn how to choose an embedding
+model, and about dimensions and cost, batching and caching. Finally, you see why the query and
+the document sometimes need *different* embedding treatments.
 
 ### Quick self-check
 
@@ -2317,3 +2373,11 @@ why the query and the document sometimes need *different* embedding treatments.
    `Document`s with the parent's metadata copied to every chunk, which you need for citation,
    filtering and access control. Enrich afterwards with `chunkIndex` for positional lookups.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 08 — Chains](day-08-chains.md)** · **[Week 2 index](README.md)** · **[Day 10 — Embeddings →](day-10-embeddings.md)**
+
+</div>

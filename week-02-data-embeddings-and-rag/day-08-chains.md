@@ -2,12 +2,28 @@
 
 > ⏱ **Time:** ~2.5 hours · 🎯 **Prereqs:** [Day 07](../week-01-foundations/day-07-lcel-and-runnables.md) · 🧩 **Difficulty:** ●●○○○
 
-**Today you learn:** what "a chain" actually means, the four classic chain shapes (sequential,
-parallel, router, conversation), and the **document chains** — stuff, map-reduce, refine,
-map-rerank — that decide how you feed 500 pages into an 8K context window.
+**Today you learn:** Real tasks need more than one model call, and real documents are far bigger
+than the model can read at once. Today you learn what a **chain** is and the four classic chain
+shapes: sequential, parallel, router and conversation. Then you learn the four **document
+chains** — stuff, map-reduce, refine and map-rerank — that decide how you feed 500 pages into an
+8K context window.
 
 That last part is the bridge into RAG. You can't retrieve documents usefully until you know how
 to *combine* them.
+
+> 📖 **Words you'll meet today**
+>
+> - **Chain** — a fixed sequence of steps that you decide in advance, such as prompt, then model,
+>   then parser.
+> - **Agent** — a program where the model itself chooses the next step while it runs (Day 16).
+> - **Router chain** — a chain that first classifies the input, then sends it down one of
+>   several paths.
+> - **Document chain** — a strategy for combining many documents into one answer from the model.
+> - **Stuff** — put every document into one prompt and make a single model call.
+> - **Map-reduce** — ask about each document separately (map), then combine the results in one
+>   final call (reduce).
+> - **Refine** — build an answer one document at a time, updating it after each new document.
+> - **Map-rerank** — answer from each document separately, score each answer, and keep the best.
 
 ---
 
@@ -23,15 +39,15 @@ You have a 90-page contract and a question: *"What are the termination clauses?"
 It doesn't fit. So what do you do?
 
 - **Truncate it?** You'd throw away 80% of the contract, probably including the answer.
-- **Use a 1M-context model?** Expensive per call, slow, and "lost in the middle" (Day 01) means
-  it may ignore the clause anyway.
+- **Use a 1M-context model?** Expensive per call, and slow. Also, "lost in the middle" (Day 01:
+  models pay less attention to the middle of a long prompt) means it may ignore the clause anyway.
 - **Split it and ask 90 times?** Now you have 90 answers and no way to combine them.
 
 That last option is *almost* right — you just need a strategy for the combining step. That
-strategy is a **document chain**, and there are four of them, each with a different
-cost/quality/latency trade-off.
+strategy is a **document chain**. There are four of them, and each makes a different trade-off
+between cost, quality and latency (how long you wait).
 
-By the end of today you'll know which one to reach for and why.
+By the end of today you'll know which one to use and why.
 
 ---
 
@@ -53,7 +69,8 @@ By the end of today you'll know which one to reach for and why.
 ```
 
 **A chain is a fixed sequence of steps.** That's the whole definition. In modern LangChain a
-chain is just an LCEL composition — there's no `Chain` class you need any more.
+chain is just an LCEL composition (steps joined together, as on Day 07). There's no `Chain`
+class you need any more.
 
 ### The four classic shapes
 
@@ -132,7 +149,10 @@ You built all four on Day 07 — `RunnableSequence`, `RunnableParallel`, `Runnab
 
 ### 3.1 Sequential chains
 
-Each step consumes the previous step's output.
+> 💬 **In plain words:** a sequential chain is a pipeline where each step feeds the next. Build
+> it so that earlier results stay available to later steps.
+
+Each step uses the previous step's output as its input.
 
 ```js
 outline = generateOutline(topic)
@@ -140,8 +160,8 @@ draft   = writeDraft(outline)      // needs outline
 edited  = edit(draft)              // needs draft
 ```
 
-In LCEL that's just `.pipe()` / `|`. The only real skill is **managing the seams** — step N's
-output must match step N+1's input. Two techniques:
+In LCEL that's just `.pipe()` / `|`. The only real skill is **managing the seams** (the joins
+between steps): step N's output must match step N+1's input. Two techniques:
 
 ```js
 // A) Reshape with a lambda between steps
@@ -156,18 +176,25 @@ RunnablePassthrough.assign({ outline: a }).pipe(RunnablePassthrough.assign({ dra
 
 ### 3.2 Parallel chains
 
-Independent steps on the same input, run concurrently. Turns *sum* of latencies into *max*.
+> 💬 **In plain words:** steps that don't depend on each other can run at the same time. You
+> then wait for the slowest step, not for all of them added together.
+
+Independent steps on the same input, run concurrently (at the same time). This turns the *sum*
+of the latencies into the *max*.
 
 ```js
 RunnableParallel.from({ summary: sumChain, sentiment: sentChain, topics: topicChain })
 ```
 
-The trap from Day 07, restated because it bites everyone: **`RunnableParallel` replaces the
-input**; `RunnablePassthrough.assign` *extends* it.
+Here is the trap from Day 07 again, because it catches almost everyone. **`RunnableParallel`
+replaces the input**, while `RunnablePassthrough.assign` *extends* it.
 
 ### 3.3 Router chains
 
-Classify, then dispatch. Two implementations:
+> 💬 **In plain words:** first decide what kind of request this is, then send it to the chain
+> best suited to it. Often that means a cheaper model for easy questions.
+
+Classify, then dispatch (send the input on to the chosen chain). Two implementations:
 
 ```js
 // Declarative
@@ -186,15 +213,18 @@ RunnableLambda.from((x) => CHAINS[x.category] ?? defaultChain)
 | Reason | Example |
 |---|---|
 | **Different prompts** | A billing reply and a bug reply need different instructions |
-| **Different models** | Route simple queries to an 8B model, hard ones to a 70B |
+| **Different models** | Route simple queries to a 20B model, hard ones to a 120B |
 | **Different tools/data** | A code question searches your docs; a billing question hits Stripe |
 
-That second one is where the money is. Most production systems route *by difficulty* to control
-cost, not just by topic.
+That second one is where the savings are. Most production systems route *by difficulty* to
+control cost, not just by topic.
 
 ### 3.4 Conversation chains
 
-A sequential chain whose input includes accumulated history. You built this on Day 05:
+> 💬 **In plain words:** a conversation chain is a sequential chain that also receives the chat
+> so far. The chain itself remembers nothing; your code keeps the history.
+
+A sequential chain whose input includes the history built up so far. You built this on Day 05:
 
 ```js
 ChatPromptTemplate.fromMessages([
@@ -204,10 +234,14 @@ ChatPromptTemplate.fromMessages([
 ])
 ```
 
-The chain itself is stateless — **you** own the history array. Making that automatic and
-persistent is what LangGraph checkpointers do (Day 20). We cover the interim options on Day 14.
+The chain itself is stateless (it keeps nothing between calls) — **you** own the history array.
+Making that automatic and persistent is what LangGraph checkpointers do (Day 20). We cover the
+in-between options on Day 14.
 
 ### 3.5 Document chains — the details that matter
+
+> 💬 **In plain words:** there are four ways to combine many documents into one answer. Each
+> trades cost, speed and quality in a different way.
 
 #### Stuff
 
@@ -217,8 +251,8 @@ context = docs.map(d => d.pageContent).join("\n\n")
 ```
 
 One call. Best quality, because the model sees everything at once and can reason across
-documents. **This is what you should use 90% of the time** — and the entire point of RAG
-(Day 12) is to *make* stuffing viable by retrieving only the 5 chunks that matter.
+documents. **This is what you should use 90% of the time.** The entire point of RAG (Day 12) is
+to *make* stuffing work, by retrieving only the 5 chunks that matter.
 
 The formatting matters more than people expect:
 
@@ -241,13 +275,13 @@ map:    "Summarise this excerpt: {doc}"
 reduce: "Combine these summaries into one answer: {summaries}"
 ```
 
-Parallel, so it's fast. The cost is **cross-document reasoning** — if the answer requires
-connecting a fact on page 3 to a fact on page 60, map-reduce will likely miss it, because
-neither map call saw both.
+Parallel, so it's fast. The cost is **cross-document reasoning** — connecting facts that sit in
+different documents. Say the answer needs a fact on page 3 and a fact on page 60. Map-reduce will
+likely miss it, because neither map call saw both.
 
 > ⚠️ If the summaries themselves overflow the context window, you need a **recursive** reduce:
-> reduce in batches, then reduce the reductions. Production map-reduce implementations do this;
-> a naive one silently breaks on large inputs.
+> reduce in batches, then reduce the reductions. Production map-reduce implementations do this.
+> A naive one silently breaks on large inputs.
 
 #### Refine
 
@@ -262,18 +296,24 @@ refine:  "Here is your current answer: {answer}
 
 Keeps full context, so cross-document reasoning works. Two real costs:
 
-1. **It's serial** — N documents means N sequential round trips. Slow, and you can't parallelise it.
-2. **Drift** — each rewrite can degrade the answer. Later documents get more influence than
+1. **It's serial** — N documents means N round trips, one after another. Slow, and you can't
+   run them in parallel.
+2. **Drift** — each rewrite can make the answer worse. Later documents get more influence than
    early ones, and the model sometimes "improves" a correct answer into a wrong one.
 
 #### Map-rerank
 
-Each document produces an answer *and* a self-reported confidence score. Take the highest.
+Each document produces an answer *and* a confidence score that the model gives itself. Take the
+highest.
 
-Great for needle-in-a-haystack lookups. Useless when the answer is a synthesis. Also note the
-score is the model's own opinion, which is only loosely calibrated.
+Great for needle-in-a-haystack lookups (finding one small fact in a large pile). Useless when the
+answer is a synthesis (a combination of several facts). Also note the score is the model's own
+opinion, which is only loosely calibrated — it doesn't reliably match how often it is right.
 
 ### 3.6 The modern API
+
+> 💬 **In plain words:** only the stuff pattern still has a ready-made helper. You build the
+> others yourself from LCEL, and the old import paths have moved to a separate package.
 
 LangChain still ships helpers for the stuff pattern:
 
@@ -283,9 +323,10 @@ create_stuff_documents_chain(llm, prompt)    # Python — langchain_classic.chai
 ```
 
 These handle document formatting and the `{context}` variable for you. Map-reduce and refine no
-longer have blessed helper functions in 1.x — **you compose them from LCEL**, which is what
-we'll do below. That's a deliberate design decision: the old `MapReduceDocumentsChain` was
-opaque and hard to customise, and the LCEL version is about 15 lines and fully inspectable.
+longer have official helper functions in 1.x. Instead, **you compose them from LCEL**, which is
+what we'll do below. That's a deliberate design decision. The old `MapReduceDocumentsChain` was
+opaque (you couldn't see inside it) and hard to customise. The LCEL version is a short block
+(well under twenty lines), and you can read every one of them.
 
 > 🚨 **Version warning — this is the big one for Week 2.**
 >
@@ -300,10 +341,49 @@ opaque and hard to customise, and the LCEL version is about 15 lines and fully i
 > | `from langchain.chains import ...` | `from langchain_classic.chains import ...` |
 > | `from langchain.retrievers import ...` | `from langchain_classic.retrievers import ...` |
 >
-> Install: `npm install @langchain/classic` · `pip install langchain-classic`
+> Install: `npm install @langchain/classic` (JavaScript) or `pip install langchain-classic`
+> (Python).
 >
 > Every import in this book was verified by actually importing it against
 > `langchain@1.5.10` / `@langchain/core@1.2.9` and `langchain==1.3.17` / `langchain-classic==1.0.8`.
+
+### 3.7 The industry names for these patterns
+
+> 💬 **In plain words:** the chain shapes you just learned have standard names across the
+> industry. Knowing them helps you read articles, follow design talks and answer interviews.
+
+In December 2024 Anthropic published an essay called "Building Effective Agents". It names a
+small set of **workflow patterns** — fixed ways of connecting model calls. These names are widely
+used, so you will meet them in articles and interviews. Three of them are shapes you met today:
+
+| Today's name | Industry name | What it means |
+|---|---|---|
+| Sequential chain (§3.1) | **Prompt chaining** | Each call works on the output of the call before it. |
+| Parallel chain (§3.2) | **Parallelisation** | Several calls run at the same time, and their results are combined. |
+| Router chain (§3.3) | **Routing** | One step classifies the input, then sends it to the path best suited to it. |
+
+Parallelisation (spelled *parallelization* in the essay) comes in two flavours:
+
+- **Sectioning** — you split the work into *different* subtasks and run them at once. The
+  summary, sentiment and topics example in §3.2 is sectioning. The map step of map-reduce is
+  too: each call handles a different document.
+- **Voting** — you run the *same* task several times and compare the answers. This gives you
+  more confidence than a single run.
+
+One of the essay's routing examples is the one you build in §4.2: easy questions go to a
+smaller, cheaper model, and hard questions go to a more capable one.
+
+The essay names two more patterns. **Orchestrator-workers** is where one model call decides at
+run time how to split a job, and workers handle the parts. **Evaluator-optimizer** is where one
+call writes an answer, another critiques it, and the loop repeats until the answer passes. The
+critique-and-revise steps in §4.1 run only once, in a fixed order. Evaluator-optimizer repeats
+them until a check passes. Both patterns need a loop or a split decided at run time, which a
+fixed chain can't express. You meet them on
+[Day 19](../week-03-tools-agents-and-langgraph/day-19-control-flow.md), with LangGraph's `Send`,
+and Day 36 compares all five patterns side by side.
+
+> 📚 **Source:** Anthropic, ["Building Effective Agents"](https://www.anthropic.com/engineering/building-effective-agents),
+> published 19 December 2024. Checked October 2026.
 
 ---
 
@@ -323,7 +403,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnablePassthrough } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.3 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.3 });
 const str = new StringOutputParser();
 
 const step = (system, human, runName) =>
@@ -381,8 +461,8 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnablePassthrough, RunnableLambda } from "@langchain/core/runnables";
 
-const cheap = new ChatGroq({ model: "llama-3.1-8b-instant", temperature: 0 });
-const smart = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.3 });
+const cheap = new ChatGroq({ model: "openai/gpt-oss-20b", temperature: 0 });
+const smart = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.3 });
 const str = new StringOutputParser();
 
 const Difficulty = z.object({
@@ -425,7 +505,7 @@ for (const question of [
 }
 ```
 
-Two of those three questions never touch the 70B model. At scale that's most of your bill.
+Two of those three questions never touch the 120B model. At scale that's most of your bill.
 
 ### 4.3 The four document chains, built from LCEL
 
@@ -438,7 +518,7 @@ import { Document } from "@langchain/core/documents";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const str = new StringOutputParser();
 
 // A tiny fake "contract", one Document per clause.
@@ -556,7 +636,7 @@ import { Document } from "@langchain/core/documents";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { createStuffDocumentsChain } from "@langchain/classic/chains/combine_documents";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const prompt = ChatPromptTemplate.fromMessages([
   ["system", "Answer using only the context below.\n\n{context}"],
@@ -597,7 +677,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 strp = StrOutputParser()
 
 def step(system, human, run_name):
@@ -659,8 +739,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
 load_dotenv()
-cheap = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+cheap = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 strp = StrOutputParser()
 
 class Difficulty(BaseModel):
@@ -718,7 +798,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 strp = StrOutputParser()
 
 # A tiny fake "contract", one Document per clause.
@@ -831,7 +911,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", "Answer using only the context below.\n\n{context}"),
@@ -877,9 +957,10 @@ Each hid its control flow inside a `_call()` method. That caused three concrete 
 2. **Customising meant subclassing.** Want to filter documents between map and reduce? Fork the class.
 3. **Streaming was inconsistent.** Some chains streamed, some didn't, and you couldn't tell which.
 
-Compare to the map-reduce you just wrote: about 12 lines, every step visible, trivially
-customisable (you added a `NOTHING RELEVANT` filter — try that with the old class), and it
-batches with a concurrency cap because `.batch()` is part of the `Runnable` interface.
+Compare that with the map-reduce you just wrote. It is a short block (well under twenty
+lines), and every step is visible. It is easy to customise: you added a `NOTHING RELEVANT` filter — try that with the old
+class. And it batches with a concurrency cap (a limit on how many calls run at once), because
+`.batch()` is part of the `Runnable` interface.
 
 **The interview-ready framing:** *the legacy chains were classes that hid control flow; LCEL made
 control flow explicit. The replacement for `MapReduceDocumentsChain` isn't another class — it's
@@ -899,9 +980,9 @@ For **N** documents:
 **Stuff wins on every axis except capacity.** This is why the industry moved to RAG rather than
 to cleverer combination strategies: *retrieve fewer, better documents so that stuffing works.*
 
-Map-reduce and refine are what you use when you genuinely must process everything — summarising
-a whole book, auditing every row, generating a report over a full corpus. For question
-answering, retrieve instead.
+Map-reduce and refine are what you use when you genuinely must process everything. Examples:
+summarising a whole book, auditing every row, or generating a report over a full corpus (your
+whole collection of documents). For question answering, retrieve instead.
 
 ### Where document chains fit in a RAG pipeline
 
@@ -939,9 +1020,9 @@ Today you learned the last step. The rest of Week 2 builds the steps above it.
 | `RetrievalQA` | retrieve + stuff + answer | `createRetrievalChain` (Day 12) |
 | `ConversationalRetrievalChain` | + history & query rewriting | LCEL, or a graph (Day 13/17) |
 
-A very common interview question is **"what replaced `RetrievalQA`?"** The answer:
-`create_retrieval_chain` for the simple case, and hand-built LCEL (or LangGraph) when you need
-query rewriting, reranking, or corrective loops — which in practice you almost always do.
+A very common interview question is **"what replaced `RetrievalQA`?"** The answer is
+`create_retrieval_chain` for the simple case. Use hand-built LCEL (or LangGraph) when you need
+query rewriting, reranking or corrective loops. In practice, you almost always do.
 </details>
 
 ---
@@ -967,7 +1048,7 @@ Map calls see one document each. A fact on page 3 plus a fact on page 60 will ne
 
 **❌ Naive map-reduce that overflows on the reduce step**
 
-100 documents → 100 summaries → they don't fit in the reduce prompt either.
+100 documents give 100 summaries, and they don't fit in the reduce prompt either.
 ✅ Reduce in batches recursively, or filter irrelevant maps first (as we did with
 `NOTHING RELEVANT`).
 
@@ -975,7 +1056,7 @@ Map calls see one document each. A fact on page 3 plus a fact on page 60 will ne
 
 **❌ Refine on 200 documents**
 
-200 sequential round trips ≈ several minutes, and drift accumulates the whole way.
+200 round trips, one after another, take several minutes, and drift builds up the whole way.
 ✅ Refine is for tens of documents, not hundreds.
 
 ---
@@ -1005,9 +1086,10 @@ The helper expects `context` (documents) — not `documents`, not `docs`.
 
 **❌ Reaching for a document chain when you should retrieve**
 
-If you're map-reducing 400 chunks to answer one question, you're burning 400 calls to find 5
+If you're map-reducing 400 chunks to answer one question, you're wasting 400 calls to find 5
 relevant chunks.
-✅ Retrieve first (Day 12), then stuff. Orders of magnitude cheaper and usually more accurate.
+✅ Retrieve first (Day 12), then stuff. Orders of magnitude (factors of ten) cheaper, and
+usually more accurate.
 
 ---
 
@@ -1015,9 +1097,10 @@ relevant chunks.
 
 ### Exercise 1 — Sequential pipeline with a quality gate ●●○○○
 
-Build a translate → back-translate → compare chain: translate English to French, translate the
-French back to English, then have the model score how much meaning was lost (0–1) and explain
-any drift. Use `assign` so the original, both translations and the score are all in the output.
+Build a three-step chain: translate, back-translate, compare. First translate English to French.
+Then translate the French back to English. Finally, have the model score how much meaning was
+lost (0–1) and explain any drift. Use `assign` so the original, both translations and the score
+are all in the output.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1031,7 +1114,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { RunnablePassthrough } from "@langchain/core/runnables";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const str = new StringOutputParser();
 
 const toFrench = ChatPromptTemplate.fromMessages([
@@ -1088,7 +1171,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 strp = StrOutputParser()
 
 to_french = (ChatPromptTemplate.from_messages([
@@ -1141,8 +1224,8 @@ for text in TEXTS:
 joke.
 
 **Why this exercise is worth more than it looks:** round-trip consistency is a real,
-reference-free evaluation technique. You don't need a labelled dataset — you generate the signal
-from the model itself. Day 25 formalises this as one of several automatic evaluators.
+reference-free evaluation technique — it needs no "correct answer" to compare against. You don't
+need a labelled dataset; you generate the signal from the model itself. Day 25 formalises this as one of several automatic evaluators.
 
 Note the `"Translate literally — do not 'fix' anything"` instruction. Without it, the model
 silently repairs the drift on the way back and every score reads 1.0 — the measurement destroys
@@ -1167,7 +1250,11 @@ import * as z from "zod";
 import { ChatGroq } from "@langchain/groq";
 import { Document } from "@langchain/core/documents";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+// This benchmark makes 32 calls in quick succession. Groq's free tier allows 8,000 tokens per
+// minute per model, so we use the small 20B model and keep its hidden reasoning short.
+const model = new ChatGroq({
+  model: "openai/gpt-oss-20b", temperature: 0, reasoningEffort: "low",
+});
 
 // The answer requires chunks 2, 5 and 8 — deliberately spread out.
 const DOCS = [
@@ -1184,7 +1271,7 @@ const DOCS = [
 ].map((t, i) => new Document({ pageContent: t, metadata: { id: i + 1 } }));
 
 const QUESTION = "A team of 12 wants the Pro plan billed annually. What discounts apply " +
-                 "and what is the base price?";
+                 "and what is the base price? Answer in under 60 words.";   // short = fewer tokens
 const REQUIRED = [/80/, /20\s*%/, /15\s*%/];
 
 const usage = { calls: 0, tokens: 0 };
@@ -1250,12 +1337,16 @@ await bench("refine", async () => {
 
 // ── MAP-RERANK ──
 const Scored = z.object({ answer: z.string(), score: z.number().min(0).max(1) });
+// includeRaw keeps the AIMessage next to the parsed object — that's where the usage lives.
+const scorer = model.withStructuredOutput(Scored, { includeRaw: true });
 await bench("map-rerank", async () => {
   const scored = await Promise.all(DOCS.map(async (d) => {
-    usage.calls++;
-    return model.withStructuredOutput(Scored).invoke(
+    const { raw, parsed } = await scorer.invoke(
       `Question: ${QUESTION}\n\nExcerpt: ${d.pageContent}\n\nAnswer and score 0-1.`
     );
+    usage.calls++;
+    usage.tokens += raw.usage_metadata?.total_tokens ?? 0;
+    return parsed;
   }));
   return scored.sort((a, b) => b.score - a.score)[0].answer;
 });
@@ -1270,7 +1361,9 @@ from langchain_groq import ChatGroq
 from langchain_core.documents import Document
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+# This benchmark makes 32 calls in quick succession. Groq's free tier allows 8,000 tokens per
+# minute per model, so we use the small 20B model and keep its hidden reasoning short.
+model = ChatGroq(model="openai/gpt-oss-20b", temperature=0, reasoning_effort="low")
 
 # The answer requires chunks 2, 5 and 8 — deliberately spread out.
 DOCS = [Document(page_content=t, metadata={"id": i}) for i, t in enumerate([
@@ -1287,15 +1380,18 @@ DOCS = [Document(page_content=t, metadata={"id": i}) for i, t in enumerate([
 ], 1)]
 
 QUESTION = ("A team of 12 wants the Pro plan billed annually. What discounts apply "
-            "and what is the base price?")
+            "and what is the base price? Answer in under 60 words.")   # short = fewer tokens
 REQUIRED = [r"80", r"20\s*%", r"15\s*%"]
 
 usage = {"calls": 0, "tokens": 0}
 
-def ask(content):
-    r = model.invoke(content)
+def count(r):                           # add one response's usage to the running totals
     usage["calls"] += 1
     usage["tokens"] += (r.usage_metadata or {}).get("total_tokens", 0)
+
+def ask(content):
+    r = model.invoke(content)
+    count(r)
     return r.content
 
 fmt = lambda docs: "\n".join(f"[{d.metadata['id']}] {d.page_content}" for d in docs)
@@ -1322,9 +1418,12 @@ bench("stuff", lambda: ask([
 
 # ── MAP-REDUCE ──
 def map_reduce():
-    extracts = [ask(f"Question: {QUESTION}\n\nExcerpt: {d.page_content}\n\n"
-                    'Extract anything relevant, or reply exactly "NONE".') for d in DOCS]
-    kept = [e for e in extracts if "NONE" not in e]
+    # batch() runs the map calls concurrently, like Promise.all in the JS version.
+    rs = model.batch([f"Question: {QUESTION}\n\nExcerpt: {d.page_content}\n\n"
+                      'Extract anything relevant, or reply exactly "NONE".' for d in DOCS])
+    for r in rs:
+        count(r)
+    kept = [r.content for r in rs if "NONE" not in r.content]
     joined = "\n".join(kept)
     return ask(f"Question: {QUESTION}\n\nExtracts:\n{joined}\n\nCombine into one answer.")
 bench("map-reduce", map_reduce)
@@ -1346,37 +1445,64 @@ class Scored(BaseModel):
     answer: str
     score: float = Field(ge=0, le=1)
 
+# include_raw keeps the AIMessage next to the parsed object — that's where the usage lives.
+scorer = model.with_structured_output(Scored, include_raw=True)
+
 def map_rerank():
-    scored = []
-    for d in DOCS:
-        usage["calls"] += 1
-        scored.append(model.with_structured_output(Scored).invoke(
-            f"Question: {QUESTION}\n\nExcerpt: {d.page_content}\n\nAnswer and score 0-1."))
-    return max(scored, key=lambda s: s.score).answer
+    outs = scorer.batch([f"Question: {QUESTION}\n\nExcerpt: {d.page_content}\n\n"
+                         "Answer and score 0-1." for d in DOCS])
+    for o in outs:
+        count(o["raw"])
+    return max((o["parsed"] for o in outs), key=lambda s: s.score).answer
 bench("map-rerank", map_rerank)
 ```
 
-**Typical results:**
+**Real results** (`openai/gpt-oss-20b`, `reasoningEffort: "low"`, 8 October 2026). Both
+languages make the map calls concurrently, so the timings compare. Your numbers will differ by
+model, provider and load; the *shape* of the comparison is the point.
 
 ```
+JavaScript
 strategy         time  calls  tokens  facts
 ------------------------------------------------------------------------------
-stuff             890ms  calls= 1  tokens=  412  facts=3/3 ✅
-map-reduce       2140ms  calls=11  tokens= 2180  facts=3/3 ✅
-refine           7300ms  calls=10  tokens= 4900  facts=3/3 ✅
-map-rerank       1900ms  calls=10  tokens= 1650  facts=1/3 ❌
+stuff         1129ms  calls= 1  tokens=  430  facts=3/3 ✅
+map-reduce    2017ms  calls=11  tokens= 2483  facts=2/3 ❌
+refine        7815ms  calls=10  tokens= 3326  facts=3/3 ✅
+map-rerank    1118ms  calls=10  tokens= 3304  facts=0/3 ❌
+
+Python
+stuff          864ms  calls= 1  tokens=  430  facts=3/3 ✅
+map-reduce    2281ms  calls=11  tokens= 2153  facts=2/3 ❌
+refine        6770ms  calls=10  tokens= 3337  facts=3/3 ✅
+map-rerank    1748ms  calls=10  tokens= 3378  facts=1/3 ❌
 ```
+
+(We paused a minute between strategies, outside the timed part, so one strategy's tokens didn't
+push the next one over the free tier's per-minute limit.)
 
 **Read that table carefully, because it's the whole lesson:**
 
-- **Stuff wins on every single axis** — fastest, 1 call, fewest tokens, correct. When the
-  documents fit, there is no argument for anything else.
+- **Stuff wins on every single axis** — 1 call, the fewest tokens, about a second, and correct
+  in both runs. When the documents fit, there is no argument for anything else.
 - **Map-rerank structurally cannot answer this question.** No single chunk contains all three
-  facts, and it returns exactly one chunk's answer. This isn't a tuning problem.
-- **Refine is ~8× slower than stuff** for the same answer, because the calls are serial.
-- **Map-reduce costs 5× the tokens** of stuff for the same answer.
+  facts, and it returns exactly one chunk's answer. The JavaScript winner even invented a price
+  ("$12 × $12 = $144 per month"). This isn't a tuning problem.
+- **Map-reduce lost a fact in both runs.** Each map call sees one chunk, so the reduce step can
+  only combine what the map steps happened to extract. The JavaScript answer turned $80 a month
+  into "$10.80". Cross-chunk reasoning is exactly what this shape gives up.
+- **Refine was correct but slow**: about 7–8× stuff's time, because its 10 calls run one after
+  another.
+- **Every multi-call strategy cost 5–8× stuff's tokens.**
 
-The practical conclusion: your engineering effort should go into *making stuff viable* — i.e.
+> ⚠️ **The free tier will stop this benchmark if you remove the pauses or the word limit.**
+> Before we added "Answer in under 60 words", refine's answers grew with every call. The run
+> died with `429 … Rate limit reached for model openai/gpt-oss-20b … on tokens per minute (TPM):
+> Limit 8000, Used 6507, Requested 1597`. JavaScript did not retry it at all. LangChain JS
+> (`@langchain/core` 1.2.17) treats any 429 whose message mentions "billing" as an exhausted
+> quota, and Groq's message links to its billing page. Python's Groq client retries a 429
+> (twice by default) before giving up. Day 24 covers proper rate-limit handling.
+
+The practical conclusion: put your engineering effort into *making stuff work* — that is,
 retrieving the right 5 chunks — not into cleverer combination strategies. That's Day 12.
 </details>
 
@@ -1398,7 +1524,7 @@ import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 
 const reduceChain = ChatPromptTemplate.fromMessages([
   ["human", "Combine these into ONE summary of at most 60 words. Keep all distinct facts.\n\n{items}"],
@@ -1473,7 +1599,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 reduce_chain = ChatPromptTemplate.from_messages([
     ("human", "Combine these into ONE summary of at most 60 words. "
@@ -1555,8 +1681,8 @@ reducing 30 items (5730 chars total)
 1. **The oversized-item guard.** If one item alone exceeds `maxChars`, a naive batcher either
    loops forever or silently drops it. Here it gets its own batch and passes through.
 2. **The `batches.length === 1` base case.** Without it, a set of items that already fits would
-   reduce to one item, recurse, and reduce again — burning an extra call every time and
-   degrading the summary through repeated rewriting.
+   reduce to one item, recurse, and reduce again. That wastes an extra call every time, and the
+   repeated rewriting makes the summary worse.
 3. **Batching by size, not by count.** Fixed-size batches (`chunks of 10`) overflow whenever
    items are long. The real budget is tokens; approximate with characters, or count properly
    with the tokenizer from Day 01.
@@ -1570,9 +1696,10 @@ it was hard to customise. You couldn't insert the relevance filter from §4.3 wi
 
 ### Exercise 4 — Cost-aware router with a budget ●●●●○
 
-Build a router that tracks cumulative spend and **degrades gracefully**: under budget it routes
-hard questions to the expensive model; at 80% it routes everything to the cheap model; at 100%
-it refuses. Report per-question cost and the running total.
+Build a router that tracks how much it has spent so far and **degrades gracefully** — it gets
+cheaper step by step instead of suddenly failing. Under budget, it routes hard questions to the
+expensive model. At 80% of the budget, it routes everything to the cheap model. At 100%, it
+refuses. Report the cost of each question and the running total.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1585,14 +1712,14 @@ import { ChatGroq } from "@langchain/groq";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { RunnableLambda } from "@langchain/core/runnables";
 
-// Rough public rates, USD per 1M tokens.
+// Groq's listed rates, USD per 1M tokens (console.groq.com/docs/models, checked 7 Oct 2026).
 const PRICING = {
-  "llama-3.1-8b-instant":    { in: 0.05, out: 0.08 },
-  "llama-3.3-70b-versatile": { in: 0.59, out: 0.79 },
+  "openai/gpt-oss-20b":  { in: 0.075, out: 0.30 },
+  "openai/gpt-oss-120b": { in: 0.15,  out: 0.60 },
 };
 
-const cheap = new ChatGroq({ model: "llama-3.1-8b-instant", temperature: 0 });
-const smart = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0.3 });
+const cheap = new ChatGroq({ model: "openai/gpt-oss-20b", temperature: 0 });
+const smart = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0.3 });
 
 class Budget {
   constructor(limitUsd) { this.limit = limitUsd; this.spent = 0; this.log = []; }
@@ -1636,20 +1763,20 @@ async function route(question, budget) {
 
   // ── degraded: skip classification entirely, everything goes cheap ──
   if (budget.state === "degraded") {
-    const r = await ask(cheap, "llama-3.1-8b-instant",
+    const r = await ask(cheap, "openai/gpt-oss-20b",
       "Answer concisely in 2 sentences.", question, budget);
     return { tier: "degraded", ...r, modelUsed: "cheap" };
   }
 
   // ── normal: classify with the cheap model, then route ──
-  const cls = await cheap.withStructuredOutput(Difficulty)
+  const cls = await cheap.withStructuredOutput(Difficulty, { method: "jsonSchema" })
     .withFallbacks([RunnableLambda.from(() => ({ tier: "easy" }))])
     .invoke(question);
 
   const useSmart = cls.tier === "hard";
   const r = await ask(
     useSmart ? smart : cheap,
-    useSmart ? "llama-3.3-70b-versatile" : "llama-3.1-8b-instant",
+    useSmart ? "openai/gpt-oss-120b" : "openai/gpt-oss-20b",
     useSmart ? "Think carefully. Give a thorough, structured answer."
              : "Answer concisely in 2 sentences.",
     question, budget
@@ -1658,7 +1785,8 @@ async function route(question, budget) {
 }
 
 // ── run ──
-const budget = new Budget(0.0025);        // deliberately tiny so we hit the limits
+// Deliberately tiny so we hit the limits: just above one hard answer (~$0.0019 in our run).
+const budget = new Budget(0.002);
 
 const QUESTIONS = [
   "What does API stand for?",
@@ -1699,14 +1827,14 @@ from langchain_core.runnables import RunnableLambda
 
 load_dotenv()
 
-# Rough public rates, USD per 1M tokens.
+# Groq's listed rates, USD per 1M tokens (console.groq.com/docs/models, checked 7 Oct 2026).
 PRICING = {
-    "llama-3.1-8b-instant":    {"in": 0.05, "out": 0.08},
-    "llama-3.3-70b-versatile": {"in": 0.59, "out": 0.79},
+    "openai/gpt-oss-20b":  {"in": 0.075, "out": 0.30},
+    "openai/gpt-oss-120b": {"in": 0.15,  "out": 0.60},
 }
 
-cheap = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
-smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
+cheap = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+smart = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3)
 
 class Budget:
     def __init__(self, limit_usd):
@@ -1749,19 +1877,19 @@ def route(question, budget):
 
     # ── degraded: skip classification entirely, everything goes cheap ──
     if budget.state == "degraded":
-        text, cost = ask(cheap, "llama-3.1-8b-instant",
+        text, cost = ask(cheap, "openai/gpt-oss-20b",
                          "Answer concisely in 2 sentences.", question, budget)
         return {"tier": "degraded", "text": text, "cost": cost, "model_used": "cheap"}
 
     # ── normal: classify with the cheap model, then route ──
-    cls = (cheap.with_structured_output(Difficulty)
+    cls = (cheap.with_structured_output(Difficulty, method="json_schema", strict=True)
            .with_fallbacks([RunnableLambda(lambda _: Difficulty(tier="easy"))])
            .invoke(question))
 
     use_smart = cls.tier == "hard"
     text, cost = ask(
         smart if use_smart else cheap,
-        "llama-3.3-70b-versatile" if use_smart else "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b" if use_smart else "openai/gpt-oss-20b",
         "Think carefully. Give a thorough, structured answer." if use_smart
             else "Answer concisely in 2 sentences.",
         question, budget,
@@ -1770,7 +1898,8 @@ def route(question, budget):
             "model_used": "smart" if use_smart else "cheap"}
 
 # ── run ──
-budget = Budget(0.0025)          # deliberately tiny so we hit the limits
+# Deliberately tiny so we hit the limits: just above one hard answer (~$0.0019 in our run).
+budget = Budget(0.002)
 
 QUESTIONS = [
     "What does API stand for?",
@@ -1797,28 +1926,57 @@ print(f"\nspent ${budget.spent:.6f} of ${budget.limit:.4f} "
       f"({budget.ratio * 100:.1f}%) across {len(budget.log)} calls")
 ```
 
+What the JavaScript run printed (8 October 2026):
+
+```
+state      tier      model  cost      total     question
+--------------------------------------------------------------------------------------------
+normal     easy      cheap  $0.000041 $0.000041  What does API stand for?
+normal     hard      smart  $0.001857 $0.001898  Design a distributed rate limiter that s
+degraded   degraded  cheap  $0.000035 $0.001934  What is a hash map?
+degraded   degraded  cheap  $0.000063 $0.001996  Architect a multi-tenant vector search s
+degraded   degraded  cheap  $0.000032 $0.002029  What is JSON?
+exhausted  refused   none   $0.000000 $0.002029  Explain CAP theorem trade-offs for a pay
+exhausted  refused   none   $0.000000 $0.002029  What port does HTTPS use?
+exhausted  refused   none   $0.000000 $0.002029  Design an event-sourced order system wit
+
+spent $0.002029 of $0.0020 (101.4%) across 5 calls
+```
+
+The Python run, 20 minutes later, printed the same table, cost for cost. All three states
+appear. Look at the costs: one hard answer from the 120B model (about 3,000
+output tokens, hidden reasoning included) cost about 50 times an easy answer from the 20B model.
+That one answer took the budget to 95%. So the budget only shows all three states if it sits
+just above one hard answer. Do the sum for a `$0.0025` budget: the same first hard answer
+leaves it at 76%, still "normal". A second hard answer of similar size then jumps straight
+past 100%, and "degraded" never appears. Your answer lengths will differ. If you skip a state, set the budget to about 1.05×
+the cost of your first hard answer. (The classifier's own calls are not charged: structured
+output returns the parsed object, not the usage.)
+
 **Three design points that make this production-shaped:**
 
-1. **Degradation skips the classifier too.** Once degraded, everything goes cheap anyway — so
-   paying for a classification call is pure waste. Easy to miss.
+1. **Degradation skips the classifier too.** Once degraded, everything goes to the cheap model
+   anyway, so paying for a classification call is pure waste. Easy to miss.
 2. **The budget is checked *before* the call, not after.** Checking afterwards means you always
    overspend by one call, and that call could be the expensive one.
 3. **`refused` is a returned value, not a thrown error.** The caller gets a usable response and
    can show the user something sensible.
 
 **What this deliberately doesn't solve, and you should say so in an interview:** the counter
-lives in one process's memory. A multi-instance deployment needs it in Redis with atomic
-increments, plus a *reservation* pattern — reserve an estimate before the call, settle the actual
-cost after — so concurrent requests can't race past the limit. That's Day 24.
+lives in one process's memory. A deployment with several instances needs the counter in Redis,
+with atomic increments (updates that can't interfere with each other). It also needs a
+*reservation* pattern: reserve an estimate before the call, then settle the actual cost after.
+Together, these stop concurrent requests from racing past the limit. That's Day 24.
 </details>
 
 ---
 
 ### Exercise 5 — 🏆 Document Q&A with automatic strategy selection ●●●●●
 
-Build a CLI that takes a long text file, splits it into chunks, and answers questions using a
-strategy it picks **automatically**: stuff if everything fits the token budget, otherwise
-map-reduce. Show which strategy it chose and why, stream the answer, and cite the chunks used.
+Build a CLI (a command-line program) that takes a long text file, splits it into chunks, and
+answers questions. It picks the strategy **automatically**: stuff if everything fits the token
+budget, otherwise map-reduce. Show which strategy it chose and why, stream the answer, and cite
+the chunks used.
 
 <details>
 <summary>✅ Solution</summary>
@@ -1834,7 +1992,7 @@ import { Document } from "@langchain/core/documents";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 
-const model = new ChatGroq({ model: "llama-3.3-70b-versatile", temperature: 0 });
+const model = new ChatGroq({ model: "openai/gpt-oss-120b", temperature: 0 });
 const str = new StringOutputParser();
 
 // Budget: leave room for the question, the instructions and the answer.
@@ -1959,7 +2117,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 load_dotenv()
-model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+model = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 strp = StrOutputParser()
 
 # Budget: leave room for the question, the instructions and the answer.
@@ -2083,22 +2241,24 @@ Try `"Who does Alice meet at the tea party?"` and watch it choose map-reduce.
 
 1. **The strategy choice is measured, not guessed.** It estimates tokens and compares against a
    budget. A hard-coded "always map-reduce" wastes 10× the tokens on short documents.
-2. **Chunk IDs are threaded into the map prompt**, so citations survive the reduce step. Without
-   that, map-reduce loses all provenance and you can't tell the user where the answer came from.
+2. **Chunk IDs are passed into the map prompt**, so citations survive the reduce step. Without
+   that, map-reduce loses all provenance (the record of where each fact came from). You then
+   can't tell the user where the answer came from.
 3. **Irrelevant chunks are filtered before reducing.** On a book, 95% of chunks return `NONE`.
-   Reducing over all of them would overflow and cost a fortune.
-4. **It streams the final answer** in both strategies, so time-to-first-token stays low even
-   though map-reduce does seconds of preparatory work.
+   Reducing over all of them would overflow and cost a lot.
+4. **It streams the final answer** in both strategies. So time-to-first-token (the wait before
+   the first word appears) stays low, even though map-reduce does seconds of preparatory work.
 
-**And now the punchline for the whole week.** Run it on a full novel and watch it map over 200
-chunks — 200 LLM calls, tens of seconds, real money — to answer one question about a tea party
-that appears in *three* chunks.
+**And now the key lesson for the whole week.** Run it on a full novel and watch it map over 200
+chunks. That is 200 LLM calls, tens of seconds and real money — to answer one question about a
+tea party that appears in *three* chunks.
 
 That is enormously wasteful. What you actually want is to find those three chunks *first*, then
-stuff only those. Finding them cheaply, without an LLM call per chunk, requires **embeddings**
-and a **vector store**.
+stuff only those. Finding them cheaply, without an LLM call per chunk, needs **embeddings**
+(numbers that capture the meaning of text) and a **vector store** (a database that searches
+them).
 
-That's Days 09–12, and you've just earned the motivation for them.
+That's Days 09–12 (loading, embedding, storing and retrieving), and you've just earned the motivation for them.
 </details>
 
 ---
@@ -2110,11 +2270,11 @@ That's Days 09–12, and you've just earned the motivation for them.
 <details>
 <summary><b>Q: What is a chain in LangChain?</b></summary>
 
-A fixed sequence of steps where *you* define the control flow — typically prompt → model →
-parser, or retrieve → prompt → generate. In modern LangChain a chain is just an LCEL composition
-of `Runnable`s; there's no `Chain` base class you need any more. Chains are predictable in cost
-and latency and easy to test, which is why you prefer them over agents whenever the process is
-known in advance.
+A fixed sequence of steps where *you* define the control flow (the order the steps run in).
+Typical examples are prompt, then model, then parser; or retrieve, then prompt, then generate. In
+modern LangChain a chain is just an LCEL composition of `Runnable`s. There's no `Chain` base
+class you need any more. Chains are predictable in cost and latency and easy to test. That is
+why you prefer them over agents whenever the process is known in advance.
 </details>
 
 <details>
@@ -2124,9 +2284,9 @@ Control flow. In a chain the sequence of steps is decided by the developer and f
 time. In an agent the model decides at runtime which tool to call next and when to stop, so the
 number of steps is unknown in advance.
 
-Consequences: chains have bounded cost and latency and are easy to unit-test; agents are flexible
-but need step limits, error handling and monitoring. Use a chain when the process is known; use
-an agent when the process depends on what you find.
+Consequences: chains have bounded cost and latency, and are easy to unit-test. Agents are
+flexible, but need step limits, error handling and monitoring. Use a chain when the process is
+known. Use an agent when the process depends on what you find.
 </details>
 
 <details>
@@ -2142,14 +2302,14 @@ Four ways to handle more documents than fit in the context window:
 - **Map-rerank** — answer from each document with a self-score, return the best. Good for finding
   one fact, useless when the answer spans documents.
 
-Default to stuff, and use retrieval to make stuffing viable.
+Default to stuff, and use retrieval to make stuffing possible.
 </details>
 
 <details>
 <summary><b>Q: What replaced `LLMChain`?</b></summary>
 
 LCEL composition: `prompt | model` (Python) or `prompt.pipe(model)` (JS). It's not a renamed
-class — the insight was that a chain doesn't need a class at all, just a shared interface plus
+class. The insight was that a chain doesn't need a class at all — just a shared interface plus
 composition. `LLMChain` and the other legacy chains now live in `@langchain/classic` /
 `langchain-classic` for backwards compatibility.
 </details>
@@ -2159,12 +2319,12 @@ composition. `LLMChain` and the other legacy chains now live in `@langchain/clas
 <details>
 <summary><b>Q: When would you use map-reduce over stuff, and what do you lose?</b></summary>
 
-Use map-reduce when the documents genuinely don't fit *and* you need to process all of them —
-summarising a whole book, auditing every record, generating a report over a corpus.
+Use map-reduce when the documents genuinely don't fit *and* you need to process all of them.
+Examples: summarising a whole book, auditing every record, or generating a report over a corpus.
 
-You lose cross-document reasoning: each map call sees exactly one document, so a question whose
-answer requires connecting a fact on page 3 to a fact on page 60 will usually fail. You also pay
-N+1 calls instead of 1.
+You lose cross-document reasoning. Each map call sees exactly one document. So a question whose
+answer connects a fact on page 3 to a fact on page 60 will usually fail. You also pay for N+1
+calls instead of 1.
 
 The important follow-up: for *question answering*, map-reduce is usually the wrong tool entirely.
 Retrieving the handful of relevant chunks and stuffing those is faster, cheaper and more accurate.
@@ -2174,46 +2334,51 @@ Map-reduce is for when you truly must touch everything.
 <details>
 <summary><b>Q: Why is refine slow, and when is it worth it?</b></summary>
 
-Refine is inherently **sequential** — each call needs the previous call's answer as input, so N
-documents means N serial round trips that cannot be parallelised. Map-reduce with the same N
-finishes in roughly the time of two calls.
+Refine is inherently **sequential**: each call needs the previous call's answer as input. So N
+documents means N round trips, one after another, that cannot run in parallel. Map-reduce with
+the same N finishes in roughly the time of two calls.
 
 It's worth it when you need cross-document context preserved *and* can't fit everything in one
-prompt — building a chronology, or a running analysis where each new document genuinely changes
-the interpretation of earlier ones.
+prompt. Examples: building a chronology (a timeline of events), or a running analysis where each
+new document genuinely changes how you read the earlier ones.
 
-Its other failure mode is **drift**: each rewrite can degrade the answer, and later documents get
-disproportionate influence. Mitigate by instructing the model to return the current answer
-unchanged when new context doesn't help, and by keeping N small.
+Its other failure mode is **drift**: each rewrite can make the answer worse, and later documents
+get too much influence. Reduce the risk in two ways. Tell the model to return the current answer
+unchanged when new context doesn't help, and keep N small.
 </details>
 
 <details>
 <summary><b>Q: How do you handle map-reduce when the summaries themselves overflow?</b></summary>
 
-Reduce recursively: batch the summaries into groups that fit the context budget, reduce each
-group, then reduce those results, repeating until one remains — a reduction tree.
+Reduce recursively. Batch the summaries into groups that fit the context budget, and reduce each
+group. Then reduce those results, and repeat until one remains. This is called a reduction tree.
 
-Three implementation details matter: batch by *token budget* rather than fixed count, since item
-lengths vary; give any single oversized item its own batch instead of dropping it or looping
-forever; and short-circuit when everything already fits in one batch, or you burn an extra call
-and degrade the summary through needless rewriting.
+Three implementation details matter:
 
-Filtering irrelevant map outputs before reducing is usually the biggest win — on a large corpus
+- Batch by *token budget* rather than a fixed count, since item lengths vary.
+- Give any single oversized item its own batch, instead of dropping it or looping forever.
+- Short-circuit (stop early) when everything already fits in one batch. Otherwise you waste an
+  extra call, and the needless rewriting makes the summary worse.
+
+Filtering irrelevant map outputs before reducing is usually the biggest win. On a large corpus,
 most chunks contribute nothing.
 </details>
 
 <details>
 <summary><b>Q: How would you route between models to control cost?</b></summary>
 
-Classify the request with a cheap model, then dispatch to a model matched to difficulty — a small
-model for lookups and classification, a large one for reasoning and generation. Most traffic is
-easy, so this typically cuts spend substantially with no quality loss on the easy path.
+Classify the request with a cheap model, then send it to a model matched to its difficulty. Use
+a small model for lookups and classification, and a large one for reasoning and generation. Most
+traffic is easy, so this typically cuts spend a lot, with no quality loss on the easy path.
 
-Production details: the classifier must itself be cheap and must have a *fallback value* (not an
-error) so a classifier outage degrades rather than fails; track cumulative spend and degrade
-deliberately near a budget, skipping the classifier once everything is going cheap anyway; check
-budget *before* the call; and log which tier each request took so you can see the distribution
-shift.
+Production details:
+
+- The classifier must itself be cheap. It must also have a *fallback value* (not an error), so
+  a classifier outage degrades the service rather than breaking it.
+- Track total spend so far, and degrade deliberately near a budget. Once everything is going to
+  the cheap model anyway, skip the classifier.
+- Check the budget *before* the call.
+- Log which tier each request took, so you can see when the mix of requests changes.
 </details>
 
 ### Advanced
@@ -2222,19 +2387,23 @@ shift.
 <summary><b>Q: Why did LangChain remove the legacy chain classes, and what's the general lesson?</b></summary>
 
 The 0.x chains were classes that hid control flow inside a `_call()` method. Three concrete
-problems followed: you couldn't see the data flow without reading LangChain's source; any
-customisation required subclassing; and streaming support was inconsistent and undiscoverable.
+problems followed:
+
+- You couldn't see the data flow without reading LangChain's source.
+- Any customisation required subclassing.
+- Streaming support was inconsistent, and you couldn't easily find out which chains had it.
 
 The replacement isn't another class — it's composition over a shared interface.
-`MapReduceDocumentsChain` becomes `.batch()` plus a reduce prompt, roughly a dozen readable lines
-you can modify freely (adding a relevance filter between map and reduce is trivial in LCEL and
-required a fork before).
+`MapReduceDocumentsChain` becomes `.batch()` plus a reduce prompt. That is a short block
+(well under twenty readable lines) you can change freely. Adding a relevance filter between map and reduce is
+trivial in LCEL. Before, it required a fork (your own modified copy of the class).
 
 The general lesson, and the part worth saying out loud: **abstractions should hide implementation,
 not control flow.** Hiding *how* a model call is made across providers is valuable — that's
-`BaseChatModel`, and it earns its keep. Hiding *what order your steps run in* removes the
-developer's ability to reason about, debug and modify their own program. LangChain 1.x moves
-consistently toward less magic in orchestration and more in integration.
+`BaseChatModel`, and it is worth having. Hiding *what order your steps run in* takes away the
+developer's ability to reason about, debug and change their own program. LangChain 1.x moves
+steadily toward less hidden behaviour in orchestration (how steps are connected) and more in
+integration (how each provider is called).
 </details>
 
 <details>
@@ -2243,26 +2412,32 @@ consistently toward less magic in orchestration and more in integration.
 **Don't use document chains as the primary path.** Map-reducing 500 pages per question is roughly
 1,500 LLM calls per query — unaffordable and slow at 10k/day. The architecture is retrieval-first:
 
-**Ingest (offline, once per manual version)** — load, split into ~500-token chunks with overlap,
-preserving section headers in metadata; embed; store in a vector database. Run this in CI when
-the manual changes, not per request. Tag by version so a bad ingest can be rolled back.
+**Ingest (offline, once per manual version)** — load the manual and split it into ~500-token
+chunks with overlap, keeping section headers in metadata. Then embed the chunks and store them in
+a vector database. Run this in CI (your automated build pipeline) when the manual changes, not
+per request. Tag by version so a bad ingest can be rolled back.
 
-**Query path (online)** — rewrite the question using conversation history so follow-ups are
-retrievable; retrieve ~20 candidates with hybrid search (vector + BM25, since manuals are full of
-exact part numbers and error codes that embeddings handle poorly); rerank to the top 5; then
-**stuff** those 5 into one call with citations. Two to three model calls per question, not 1,500.
+**Query path (online)** — four steps:
 
-**Caching** — semantic caching on the question embedding catches near-duplicate questions, which
-in support traffic is a large fraction. Cache retrieval results too.
+1. Rewrite the question using conversation history, so follow-up questions can be retrieved.
+2. Retrieve ~20 candidates with hybrid search: vector search plus BM25, a classic keyword-ranking
+   method. Manuals are full of exact part numbers and error codes, which embeddings handle poorly.
+3. Rerank (re-score with a more accurate model) down to the top 5.
+4. **Stuff** those 5 into one call with citations.
 
-**Quality** — a golden set of question/answer pairs run in CI on every prompt, chunking or model
-change. Track **retrieval recall separately from answer quality**: if the right chunk was never
-retrieved, no prompt work will fix the answer, and conflating the two is the most common way RAG
-debugging goes in circles.
+That is two to three model calls per question, not 1,500.
 
-**Where document chains still belong** — genuinely corpus-wide tasks: "summarise everything new
-in version 7", "list every deprecated API". Those touch everything by definition, so map-reduce
-with recursive reduction is correct. Run offline, cache the result.
+**Caching** — semantic caching on the question embedding catches near-duplicate questions. In
+support traffic, those are a large fraction. Cache retrieval results too.
+
+**Quality** — a golden set of question/answer pairs (trusted examples), run in CI on every prompt,
+chunking or model change. Track **retrieval recall separately from answer quality**. If the right
+chunk was never retrieved, no prompt work will fix the answer. Mixing up the two is the most
+common reason RAG debugging goes round in circles without progress.
+
+**Where document chains still belong** — genuinely corpus-wide tasks, such as "summarise
+everything new in version 7" or "list every deprecated API". Those touch everything by
+definition, so map-reduce with recursive reduction is correct. Run offline, cache the result.
 
 **Ops** — stream answers, rate-limit per user, monitor cost per query and retrieval latency
 separately, keep a cross-provider fallback.
@@ -2271,15 +2446,15 @@ separately, keep a cross-provider fallback.
 <details>
 <summary><b>Q: Your map-reduce summariser produces bland, generic summaries. Diagnose it.</b></summary>
 
-Bland output from map-reduce is usually **compounding lossy compression**, not a bad prompt. Each
-map call compresses a chunk, the reduce compresses the compressions, and specifics — numbers,
-names, caveats — get smoothed away at every level. Recursive reduction makes it worse, since each
-level is another lossy pass.
+Bland output from map-reduce is usually **compounding lossy compression**, not a bad prompt.
+"Lossy" means some detail is thrown away each time. Each map call compresses a chunk, and the
+reduce compresses the compressions. Specifics — numbers, names, caveats — get smoothed away at
+every level. Recursive reduction makes it worse, since each level is another lossy pass.
 
 How I'd work through it:
 
 1. **Inspect intermediate outputs first.** Are the *map* outputs already generic, or only the
-   final? That localises the problem immediately, and people routinely skip it.
+   final one? That tells you at once where the problem is, and people often skip it.
 2. **If maps are generic** — the map prompt asks for a summary when it should ask for
    *extraction*. "Summarise this chunk" invites paraphrase; "extract every specific figure, name,
    date and claim relevant to X, verbatim where possible" preserves detail. Biggest single fix.
@@ -2307,16 +2482,17 @@ and make each level *extract* rather than *summarise*.
 - ✅ Four document strategies: **stuff** (default), map-reduce (parallel, loses cross-doc context), refine (serial, preserves context, drifts), map-rerank (one fact only)
 - ✅ Format documents with separators, numbers and metadata so the model can cite them
 - ✅ Naive map-reduce overflows — reduce recursively, batch by token budget, filter irrelevant maps
-- ✅ Legacy chains left the main package → `@langchain/classic` / `langchain-classic`
+- ✅ Legacy chains moved out of the main package, into `@langchain/classic` / `langchain-classic`
+- ✅ Industry names: sequential is **prompt chaining**, parallel is **parallelisation**, router is **routing**
 - ✅ **Stuff wins on every axis except capacity** — so the real goal is retrieving fewer, better documents
 
 ### Tomorrow
 
 **[Day 09 — Documents, loaders & splitting](day-09-documents-and-splitting.md)**: today you split
 text with `slice()`, which cuts sentences in half and destroys tables and code blocks. Tomorrow
-you learn real splitting — recursive, markdown-aware, HTML-aware, token-aware — plus loaders for
-PDF, CSV, JSON and the web, and how chunk size quietly determines whether your whole RAG system
-works or fails.
+you learn real splitting: recursive, markdown-aware, HTML-aware and token-aware. You also learn
+loaders for PDF, CSV, JSON and the web. And you see how chunk size quietly decides whether your
+whole RAG system works or fails.
 
 ### Quick self-check
 
@@ -2335,5 +2511,13 @@ works or fails.
    round trips. Map-reduce's map calls are independent and run concurrently, finishing in roughly
    the time of two calls.
 3. Retrieve first. Embed the chunks once, find the ~5 relevant to *this* question, and stuff only
-   those — 1 call instead of 401, and usually a better answer. That's Days 10–12.
+   those — 1 call instead of 401, and usually a better answer. That's Days 09–12.
 </details>
+
+---
+
+<div align="center">
+
+**[← Day 07 — LCEL & Runnables (the #1 interview topic)](../week-01-foundations/day-07-lcel-and-runnables.md)** · **[Week 2 index](README.md)** · **[Day 09 — Documents, Loaders, Splitting & Chunking Strategy →](day-09-documents-and-splitting.md)**
+
+</div>
